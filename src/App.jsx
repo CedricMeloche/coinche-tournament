@@ -1,19 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * Coinche Tournament Manager (Vite friendly)
- * - Hash routes:
- *    #/            Admin (full control)
- *    #/public      Public View (read-only scoreboard/stats)
- *    #/table?table=1  Table View (only that table's games; can enter score)
- * - NOTE: Without Supabase, data is per-device (localStorage). Public view won't auto-sync across devices yet.
+ * 9th Annual Coinche Tournament — Vite-friendly single file
+ * - Exactly 8 teams (2 pools of 4) → pool round robin → bracket QF/SF/Final + 3rd
+ * - Admin view (edit everything), Public view (read-only TV), Table view (enter hands for one match)
+ * - Fast mode upgraded: track every hand; auto-calc; running total; winner immediately at >= 2000
+ * - Live scoreboard + stats (live within same browser). Supabase later for multi-device live.
  */
 
-const LS_KEY = "coinche_tournament_vite_simple_v4";
+const LS_KEY = "coinche_tournament_vite_v2_hand_tracker";
+const GAME_MINUTES = 40;
+const BREAK_MINUTES = 5;
+const SLOT_MINUTES = GAME_MINUTES + BREAK_MINUTES; // 45
+const START_TIME_STR = "10:00"; // display only
+const DEFAULT_TARGET = 2000;
 
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 }
+
 function shuffleArray(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -22,42 +27,21 @@ function shuffleArray(arr) {
   }
   return a;
 }
+
 function safeInt(v) {
   if (v === "" || v === null || v === undefined) return null;
   const n = Number(String(v).replace(/[^0-9\-]/g, ""));
   return Number.isFinite(n) ? n : null;
 }
-function clampNum(n, min = 0, max = 999999) {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return min;
-  return Math.max(min, Math.min(max, x));
-}
-function fmt(n) {
-  if (n === null || n === undefined) return "—";
-  if (!Number.isFinite(Number(n))) return "—";
-  return String(n);
-}
 
-/** Hash routing helpers */
-function parseHashRoute() {
-  const raw = window.location.hash || "#/";
-  const withoutHash = raw.startsWith("#") ? raw.slice(1) : raw;
-  const [pathPart, queryPart] = withoutHash.split("?");
-  const path = pathPart || "/";
-  const qs = new URLSearchParams(queryPart || "");
-  const params = Object.fromEntries(qs.entries());
-  return { path, params };
-}
-function setHash(path, params = {}) {
-  const qs = new URLSearchParams(params).toString();
-  window.location.hash = qs ? `#${path}?${qs}` : `#${path}`;
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
 }
 
 /** Circle method RR scheduler */
 function circleRoundRobin(teamIds) {
   const ids = [...teamIds];
-  const hasOdd = ids.length % 2 === 1;
-  if (hasOdd) ids.push("BYE");
+  if (ids.length % 2 === 1) ids.push("BYE");
 
   const n = ids.length;
   const rounds = n - 1;
@@ -85,9 +69,9 @@ function circleRoundRobin(teamIds) {
   return out;
 }
 
-function computeMatchPoints(scoreWinner, threshold, highPts, lowPts) {
+function computeMatchPoints(scoreWinner, threshold2000, highPts, lowPts) {
   if (scoreWinner === null) return 0;
-  return scoreWinner >= threshold ? highPts : lowPts;
+  return scoreWinner >= threshold2000 ? highPts : lowPts;
 }
 
 function sortStandings(rows) {
@@ -98,28 +82,27 @@ function sortStandings(rows) {
   });
 }
 
-function buildPoolAssignment(teamIds) {
-  const shuffled = shuffleArray(teamIds);
-  const mid = Math.ceil(shuffled.length / 2);
-  return { A: shuffled.slice(0, mid), B: shuffled.slice(mid) };
-}
-
 /** ===== Fast mode Coinche scoring helpers ===== */
 function roundTrickPoints(x) {
   if (x == null) return 0;
-  const n = Math.max(0, Math.min(162, Number(x) || 0));
+  const n = clamp(Number(x) || 0, 0, 162);
+  // nearest 10 with .5 down (approx using +4 then floor)
   return Math.floor((n + 4) / 10) * 10;
 }
 
-function computeFastCoincheScore({
-  bidder,
-  bid,
-  coincheLevel,
-  capot,
-  bidderTrickPoints,
-  announceA,
-  announceB,
-  beloteTeam,
+/**
+ * Returns hand score for A and B for ONE hand.
+ * (This matches the simplified "fast mode" rules you provided previously.)
+ */
+function computeFastCoincheHandScore({
+  bidder, // "A"|"B"
+  bid, // number
+  coincheLevel, // "NONE"|"COINCHE"|"SURCOINCHE"
+  capot, // boolean
+  bidderTrickPoints, // 0..162 raw
+  announceA, // non-belote announces total A
+  announceB, // non-belote announces total B
+  beloteTeam, // "NONE"|"A"|"B"
 }) {
   const BIDDER_IS_A = bidder === "A";
   const bidVal = Number(bid) || 0;
@@ -128,7 +111,7 @@ function computeFastCoincheScore({
   const beloteA = beloteTeam === "A" ? 20 : 0;
   const beloteB = beloteTeam === "B" ? 20 : 0;
 
-  const rawBidder = Math.max(0, Math.min(162, Number(bidderTrickPoints) || 0));
+  const rawBidder = clamp(Number(bidderTrickPoints) || 0, 0, 162);
   const rawOpp = 162 - rawBidder;
 
   const tricksBidder = roundTrickPoints(rawBidder);
@@ -139,10 +122,13 @@ function computeFastCoincheScore({
 
   const bidderAnn = BIDDER_IS_A ? aAnn : bAnn;
 
-  const bidderHasBelote = (BIDDER_IS_A && beloteTeam === "A") || (!BIDDER_IS_A && beloteTeam === "B");
+  // Minimum needed: base 81. If bidder has belote: 71. If bid==80 must be 81.
+  const bidderHasBelote =
+    (BIDDER_IS_A && beloteTeam === "A") || (!BIDDER_IS_A && beloteTeam === "B");
   const baseMin = bidderHasBelote ? 71 : 81;
   const special80 = bidVal === 80 ? 81 : 0;
 
+  // Announces help (simple fast mode): allow them to reduce requirement.
   const announceHelp = bidderAnn + (bidderHasBelote ? 20 : 0);
   const required = Math.max(baseMin, special80, bidVal - announceHelp);
 
@@ -155,6 +141,7 @@ function computeFastCoincheScore({
   let scoreB = 0;
 
   if (capot) {
+    // winner gets 250 + all announces (incl belote) + bid; loser 0
     const winnerGets = 250 + aAnn + bAnn + belotePts + bidVal;
     if (BIDDER_IS_A) {
       scoreA = winnerGets;
@@ -167,6 +154,7 @@ function computeFastCoincheScore({
   }
 
   if (isCoinche) {
+    // winner gets 160 + (mult*bid) + all announces; loser 0; belote stays with declaring team
     const winnerNonBelote = 160 + mult * bidVal + (aAnn + bAnn);
     if (bidderSucceeded) {
       if (BIDDER_IS_A) {
@@ -188,7 +176,9 @@ function computeFastCoincheScore({
     return { scoreA, scoreB, bidderSucceeded };
   }
 
+  // Normal scoring
   if (bidderSucceeded) {
+    // bidder: rounded tricks + their announces + bid (+ belote); opp: rounded tricks + their announces (+ belote)
     if (BIDDER_IS_A) {
       scoreA = tricksBidder + aAnn + beloteA + bidVal;
       scoreB = tricksOpp + bAnn + beloteB;
@@ -197,6 +187,7 @@ function computeFastCoincheScore({
       scoreA = tricksOpp + aAnn + beloteA;
     }
   } else {
+    // fail: bidder gets 0 but keeps belote; opponents get 160 + bid + announces (non-belote); belote stays with declaring team
     const oppGets = 160 + bidVal + (aAnn + bAnn);
     if (BIDDER_IS_A) {
       scoreA = beloteA;
@@ -210,76 +201,163 @@ function computeFastCoincheScore({
   return { scoreA, scoreB, bidderSucceeded };
 }
 
-/** ===== Simple UI components ===== */
-function Section({ title, right, children }) {
+/** ===== UI Styling (simple but much prettier) ===== */
+const UI = {
+  bg: "#0b1220",
+  panel: "rgba(255,255,255,0.06)",
+  panel2: "rgba(255,255,255,0.09)",
+  border: "rgba(255,255,255,0.12)",
+  text: "rgba(255,255,255,0.92)",
+  muted: "rgba(255,255,255,0.65)",
+  faint: "rgba(255,255,255,0.45)",
+  good: "#22c55e",
+  warn: "#f59e0b",
+  bad: "#ef4444",
+  chip: "rgba(255,255,255,0.10)",
+  accent: "#60a5fa",
+};
+
+function Chip({ children, tone = "neutral" }) {
+  const bg =
+    tone === "good"
+      ? "rgba(34,197,94,0.18)"
+      : tone === "warn"
+      ? "rgba(245,158,11,0.18)"
+      : tone === "bad"
+      ? "rgba(239,68,68,0.18)"
+      : UI.chip;
+  const border =
+    tone === "good"
+      ? "rgba(34,197,94,0.35)"
+      : tone === "warn"
+      ? "rgba(245,158,11,0.35)"
+      : tone === "bad"
+      ? "rgba(239,68,68,0.35)"
+      : UI.border;
   return (
-    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 16, marginBottom: 14 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginBottom: 10 }}>
-        <h2 style={{ fontSize: 18, margin: 0 }}>{title}</h2>
-        <div>{right}</div>
-      </div>
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 10px",
+        borderRadius: 999,
+        border: `1px solid ${border}`,
+        background: bg,
+        color: UI.text,
+        fontWeight: 700,
+        fontSize: 12,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function Card({ title, right, children }) {
+  return (
+    <div
+      style={{
+        background: UI.panel,
+        border: `1px solid ${UI.border}`,
+        borderRadius: 16,
+        padding: 14,
+        boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+      }}
+    >
+      {(title || right) && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            gap: 10,
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ fontSize: 16, fontWeight: 900, color: UI.text }}>{title}</div>
+          <div>{right}</div>
+        </div>
+      )}
       {children}
     </div>
   );
 }
-function Btn({ children, onClick, disabled, kind = "primary" }) {
-  const bg = kind === "primary" ? "#111827" : kind === "danger" ? "#b91c1c" : "#fff";
-  const fg = kind === "primary" || kind === "danger" ? "#fff" : "#111827";
-  const border = kind === "secondary" ? "1px solid #e5e7eb" : "1px solid transparent";
+
+function Btn({ children, onClick, disabled, kind = "primary", small = false }) {
+  const padding = small ? "8px 10px" : "10px 12px";
+  const bg =
+    kind === "primary"
+      ? "linear-gradient(135deg, rgba(96,165,250,0.95), rgba(34,211,238,0.75))"
+      : kind === "danger"
+      ? "linear-gradient(135deg, rgba(239,68,68,0.95), rgba(244,63,94,0.75))"
+      : kind === "ghost"
+      ? "transparent"
+      : UI.panel2;
+
+  const border =
+    kind === "ghost" ? `1px solid ${UI.border}` : `1px solid rgba(255,255,255,0.14)`;
+
+  const color = kind === "ghost" ? UI.text : "#06101f";
+
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       style={{
-        padding: "10px 12px",
-        borderRadius: 12,
+        padding,
+        borderRadius: 14,
         border,
-        background: disabled ? "#e5e7eb" : bg,
-        color: disabled ? "#6b7280" : fg,
+        background: disabled ? "rgba(255,255,255,0.08)" : bg,
+        color: disabled ? UI.faint : color,
         cursor: disabled ? "not-allowed" : "pointer",
-        fontWeight: 800,
+        fontWeight: 900,
+        letterSpacing: 0.2,
       }}
     >
       {children}
     </button>
   );
 }
-function Input({ value, onChange, placeholder, width = 220, type = "text", disabled }) {
+
+function TextInput({ value, onChange, placeholder, width = 220, type = "text" }) {
   return (
     <input
       type={type}
       value={value}
       placeholder={placeholder}
-      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
       style={{
         width,
         padding: "10px 12px",
-        borderRadius: 12,
-        border: "1px solid #e5e7eb",
-        background: disabled ? "#f3f4f6" : "#fff",
-        color: disabled ? "#6b7280" : "#111827",
+        borderRadius: 14,
+        border: `1px solid ${UI.border}`,
+        background: "rgba(0,0,0,0.20)",
+        color: UI.text,
+        outline: "none",
       }}
     />
   );
 }
-function Select({ value, onChange, options, width = 160, disabled }) {
+
+function Select({ value, onChange, options, width = 180 }) {
   return (
     <select
       value={value}
-      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
       style={{
         width,
         padding: "10px 12px",
-        borderRadius: 12,
-        border: "1px solid #e5e7eb",
-        background: disabled ? "#f3f4f6" : "#fff",
-        color: disabled ? "#6b7280" : "#111827",
+        borderRadius: 14,
+        border: `1px solid ${UI.border}`,
+        background: "rgba(0,0,0,0.20)",
+        color: UI.text,
+        outline: "none",
       }}
     >
       {options.map((o) => (
-        <option key={o.value} value={o.value}>
+        <option key={o.value} value={o.value} style={{ color: "#111" }}>
           {o.label}
         </option>
       ))}
@@ -287,210 +365,102 @@ function Select({ value, onChange, options, width = 160, disabled }) {
   );
 }
 
-const tdStyle = {
-  padding: "10px 10px",
-  borderBottom: "1px solid #e5e7eb",
-  whiteSpace: "nowrap",
-  fontSize: 14,
-};
-
-function StatCard({ label, value }) {
-  return (
-    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
-      <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 900 }}>{label}</div>
-      <div style={{ fontSize: 16, fontWeight: 900, marginTop: 4 }}>{value}</div>
-    </div>
-  );
+function Divider() {
+  return <div style={{ height: 1, background: UI.border, margin: "12px 0" }} />;
 }
 
-function FunMatchCard({ title, match }) {
-  return (
-    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
-      <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 900 }}>{title}</div>
-      {match ? (
-        <div style={{ marginTop: 6 }}>
-          <div style={{ fontWeight: 900 }}>
-            {match.aName} {match.sa} — {match.sb} {match.bName}
-          </div>
-          <div style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
-            {match.label} • Winner: <span style={{ fontWeight: 900 }}>{match.winner}</span> • Margin: {match.margin} • Total: {match.total}
-          </div>
-        </div>
-      ) : (
-        <div style={{ marginTop: 6, color: "#6b7280" }}>No completed games yet.</div>
-      )}
-    </div>
-  );
+/** ===== Simple hash router (#/admin, #/public, #/table) ===== */
+function getRoute() {
+  const h = (window.location.hash || "#/admin").replace("#", "");
+  const [path, queryString] = h.split("?");
+  const q = {};
+  if (queryString) {
+    queryString.split("&").forEach((kv) => {
+      const [k, v] = kv.split("=");
+      q[decodeURIComponent(k)] = decodeURIComponent(v || "");
+    });
+  }
+  return { path: path || "/admin", q };
 }
 
-function PodiumCard({ label, value }) {
-  return (
-    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 14 }}>
-      <div style={{ color: "#6b7280", fontSize: 12 }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 900 }}>{value ?? "—"}</div>
-    </div>
-  );
+function setRoute(path, q = {}) {
+  const qs = Object.keys(q).length
+    ? "?" +
+      Object.entries(q)
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+        .join("&")
+    : "";
+  window.location.hash = `#${path}${qs}`;
 }
 
-function GameCard({ g, teamById, onScore, onClear, onToggleFast, onFastPatch, readOnly }) {
-  const teamA = teamById.get(g.teamAId)?.name ?? "—";
-  const teamB = teamById.get(g.teamBId)?.name ?? "—";
-  const pending = !g.winnerId;
-
-  return (
-    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, marginBottom: 10 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-        <div style={{ fontWeight: 900 }}>
-          Table {g.table} <span style={{ color: "#6b7280", fontWeight: 700 }}>•</span> {teamA} vs {teamB}
-        </div>
-        <div style={{ color: pending ? "#6b7280" : "#065f46", fontWeight: 900 }}>
-          {pending ? "Pending" : `Winner: ${teamById.get(g.winnerId)?.name ?? "—"}`}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
-        <Input value={g.scoreA} onChange={(v) => onScore("A", v)} width={90} placeholder="A pts" disabled={readOnly} />
-        <span style={{ color: "#6b7280" }}>vs</span>
-        <Input value={g.scoreB} onChange={(v) => onScore("B", v)} width={90} placeholder="B pts" disabled={readOnly} />
-
-        <div style={{ marginLeft: 10, color: "#6b7280", fontSize: 12 }}>
-          Match pts: A +{g.matchPtsA} / B +{g.matchPtsB}
-        </div>
-
-        {!readOnly ? (
-          <button onClick={onClear} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "#6b7280", fontWeight: 900, cursor: "pointer" }}>
-            Clear
-          </button>
-        ) : null}
-      </div>
-
-      {/* Fast mode scoring */}
-      <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 900 }}>
-          <input type="checkbox" checked={Boolean(g.fast?.enabled)} onChange={(e) => onToggleFast(e.target.checked)} disabled={readOnly} />
-          Fast mode scorer (auto-calculates game points)
-        </label>
-
-        {g.fast?.enabled ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10, marginTop: 10 }}>
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Bidder</div>
-              <Select
-                value={g.fast.bidder}
-                onChange={(v) => onFastPatch({ bidder: v })}
-                disabled={readOnly}
-                options={[
-                  { value: "A", label: "Team A (left)" },
-                  { value: "B", label: "Team B (right)" },
-                ]}
-              />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Bid</div>
-              <Input value={String(g.fast.bid)} onChange={(v) => onFastPatch({ bid: Number(v || 0) })} width={120} disabled={readOnly} />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Coinche</div>
-              <Select
-                value={g.fast.coincheLevel}
-                onChange={(v) => onFastPatch({ coincheLevel: v })}
-                disabled={readOnly}
-                options={[
-                  { value: "NONE", label: "None" },
-                  { value: "COINCHE", label: "Coinche (x2)" },
-                  { value: "SURCOINCHE", label: "Surcoinche (x4)" },
-                ]}
-              />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Capot</div>
-              <Select
-                value={g.fast.capot ? "YES" : "NO"}
-                onChange={(v) => onFastPatch({ capot: v === "YES" })}
-                disabled={readOnly}
-                options={[
-                  { value: "NO", label: "No" },
-                  { value: "YES", label: "Yes" },
-                ]}
-              />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Bidder trick points (0–162)</div>
-              <Input value={String(g.fast.bidderTrickPoints)} onChange={(v) => onFastPatch({ bidderTrickPoints: Number(v || 0) })} width={140} disabled={readOnly} />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Announces Team A (non-belote)</div>
-              <Input value={String(g.fast.announceA)} onChange={(v) => onFastPatch({ announceA: Number(v || 0) })} width={140} disabled={readOnly} />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Announces Team B (non-belote)</div>
-              <Input value={String(g.fast.announceB)} onChange={(v) => onFastPatch({ announceB: Number(v || 0) })} width={140} disabled={readOnly} />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Belote (who has it)</div>
-              <Select
-                value={g.fast.beloteTeam}
-                onChange={(v) => onFastPatch({ beloteTeam: v })}
-                disabled={readOnly}
-                options={[
-                  { value: "NONE", label: "None" },
-                  { value: "A", label: "Team A" },
-                  { value: "B", label: "Team B" },
-                ]}
-              />
-            </div>
-
-            <div style={{ gridColumn: "1/-1", color: "#6b7280", fontSize: 12 }}>
-              Fast mode writes the calculated score into the A/B score boxes above.
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
+function formatMinutes(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+/** ===== App ===== */
 export default function App() {
-  // ===== routing state =====
-  const [route, setRouteState] = useState(() => parseHashRoute());
+  const [loaded, setLoaded] = useState(false);
+
+  // router state
+  const [route, setRouteState] = useState(getRoute());
   useEffect(() => {
-    const onHash = () => setRouteState(parseHashRoute());
+    const onHash = () => setRouteState(getRoute());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // ===== data =====
-  const [loaded, setLoaded] = useState(false);
+  // core
   const [tournamentName, setTournamentName] = useState("9th Annual Coinche Tournament");
 
+  // players
   const [players, setPlayers] = useState([]); // {id,name}
-  const [teams, setTeams] = useState([]); // {id,name,playerIds,isBye}
+  const [newPlayerName, setNewPlayerName] = useState("");
+  const inputRef = useRef(null);
+
+  // teams (exactly 8)
+  const [teams, setTeams] = useState([]); // {id,name,playerIds:[p1,p2], locked:boolean}
   const [avoidSameTeams, setAvoidSameTeams] = useState(true);
   const [pairHistory, setPairHistory] = useState([]); // pair keys
 
-  const [manualTeamsMode, setManualTeamsMode] = useState(true);
-  const [manualP1, setManualP1] = useState("");
-  const [manualP2, setManualP2] = useState("");
-
-  const [teamsLocked, setTeamsLocked] = useState(false);
-
+  // tournament structure
   const [poolMap, setPoolMap] = useState({ A: [], B: [] });
-  const [games, setGames] = useState([]); // pool games
-  const [bracket, setBracket] = useState([]);
 
+  /**
+   * games:
+   * {
+   *  id, stage:"POOL", pool:"A"|"B", round, table,
+   *  teamAId, teamBId,
+   *  scoreA, scoreB, winnerId, matchPtsA, matchPtsB,
+   *  tableTarget: 2000,
+   *  hands: [ {id, createdAt, ...handInput, scoreA, scoreB} ]
+   * }
+   */
+  const [games, setGames] = useState([]);
+
+  // bracket
+  const [bracket, setBracket] = useState([]); // QF/SF/F/3P matches
+
+  // scoring settings
   const [winThreshold, setWinThreshold] = useState(2000);
   const [winHighPts, setWinHighPts] = useState(2);
   const [winLowPts, setWinLowPts] = useState(1);
 
-  const [newPlayerName, setNewPlayerName] = useState("");
-  const inputRef = useRef(null);
+  // schedule/timer (manual start/pause)
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [timerStartEpoch, setTimerStartEpoch] = useState(null); // ms
+  const [timerElapsedMs, setTimerElapsedMs] = useState(0); // ms accumulated while paused
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (!timerRunning) return;
+    const t = setInterval(() => forceTick((x) => x + 1), 250);
+    return () => clearInterval(t);
+  }, [timerRunning]);
+
+  const nowMs = Date.now();
+  const timerLiveMs = timerRunning && timerStartEpoch ? timerElapsedMs + (nowMs - timerStartEpoch) : timerElapsedMs;
 
   // load
   useEffect(() => {
@@ -509,14 +479,20 @@ export default function App() {
         setWinThreshold(data.winThreshold ?? 2000);
         setWinHighPts(data.winHighPts ?? 2);
         setWinLowPts(data.winLowPts ?? 1);
-        setManualTeamsMode(Boolean(data.manualTeamsMode ?? true));
-        setTeamsLocked(Boolean(data.teamsLocked ?? false));
+
+        setTimerRunning(Boolean(data.timerRunning ?? false));
+        setTimerStartEpoch(data.timerStartEpoch ?? null);
+        setTimerElapsedMs(data.timerElapsedMs ?? 0);
+      } else {
+        // initialize 8 empty teams by default (nice UX)
+        initEmptyTeams();
       }
     } catch {
       // ignore
     } finally {
       setLoaded(true);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // persist
@@ -536,8 +512,9 @@ export default function App() {
         winThreshold,
         winHighPts,
         winLowPts,
-        manualTeamsMode,
-        teamsLocked,
+        timerRunning,
+        timerStartEpoch,
+        timerElapsedMs,
       })
     );
   }, [
@@ -553,34 +530,52 @@ export default function App() {
     winThreshold,
     winHighPts,
     winLowPts,
-    manualTeamsMode,
-    teamsLocked,
+    timerRunning,
+    timerStartEpoch,
+    timerElapsedMs,
   ]);
 
-  // maps
   const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
   const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
+
   const realTeams = useMemo(() => teams.filter((t) => !t.isBye), [teams]);
+  const tournamentReady = useMemo(() => realTeams.length === 8 && realTeams.every((t) => t.playerIds?.length === 2), [realTeams]);
 
-  const tournamentReady = realTeams.length >= 8;
-
+  /** ===== Basic actions ===== */
   function resetTournamentStructure() {
     setPoolMap({ A: [], B: [] });
     setGames([]);
     setBracket([]);
+    // timer stays
   }
+
   function fullReset() {
     setTournamentName("9th Annual Coinche Tournament");
     setPlayers([]);
     setTeams([]);
     setPairHistory([]);
-    setManualP1("");
-    setManualP2("");
-    setTeamsLocked(false);
-    resetTournamentStructure();
+    setPoolMap({ A: [], B: [] });
+    setGames([]);
+    setBracket([]);
+    setTimerRunning(false);
+    setTimerStartEpoch(null);
+    setTimerElapsedMs(0);
+    initEmptyTeams();
   }
 
-  // players
+  function initEmptyTeams() {
+    setTeams(
+      Array.from({ length: 8 }).map((_, i) => ({
+        id: uid("t"),
+        name: `Team ${i + 1}`,
+        playerIds: ["", ""],
+        locked: false,
+        isBye: false,
+      }))
+    );
+  }
+
+  /** ===== Players ===== */
   function addPlayer() {
     const name = newPlayerName.trim();
     if (!name) return;
@@ -588,81 +583,80 @@ export default function App() {
     setNewPlayerName("");
     setTimeout(() => inputRef.current?.focus?.(), 0);
   }
+
   function removePlayer(id) {
-    if (teamsLocked) return;
     setPlayers((prev) => prev.filter((p) => p.id !== id));
-    setTeams([]);
-    setPairHistory([]);
+    // also remove from teams if used
+    setTeams((prev) =>
+      prev.map((t) => ({
+        ...t,
+        playerIds: (t.playerIds || []).map((pid) => (pid === id ? "" : pid)),
+      }))
+    );
     resetTournamentStructure();
   }
 
-  // team helpers
-  function usedPlayerIdsFromTeams(ts) {
+  /** ===== Teams: manual picking + randomize unlocked ===== */
+  function setTeamPlayer(teamId, slotIdx, playerId) {
+    setTeams((prev) =>
+      prev.map((t) => {
+        if (t.id !== teamId) return t;
+        const next = [...(t.playerIds || ["", ""])];
+        next[slotIdx] = playerId;
+        const p1 = playerById.get(next[0])?.name || "—";
+        const p2 = playerById.get(next[1])?.name || "—";
+        const name = next[0] && next[1] ? `${p1} / ${p2}` : t.name;
+        return { ...t, playerIds: next, name };
+      })
+    );
+    resetTournamentStructure();
+  }
+
+  function toggleTeamLock(teamId) {
+    setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, locked: !t.locked } : t)));
+  }
+
+  function randomizeUnlockedTeams() {
+    // Pick from players not already assigned OR allow reuse? We'll enforce no duplicates across all teams.
     const used = new Set();
-    ts.forEach((t) => (t.playerIds || []).forEach((pid) => used.add(pid)));
-    return used;
-  }
-  const usedPlayers = useMemo(() => usedPlayerIdsFromTeams(teams), [teams]);
+    teams.forEach((t) => (t.playerIds || []).forEach((pid) => pid && used.add(pid)));
 
-  function safeResetAfterTeamChange() {
-    if (teamsLocked) return;
-    resetTournamentStructure();
-  }
-  function clearAllTeams() {
-    if (teamsLocked) return;
-    setTeams([]);
-    safeResetAfterTeamChange();
-  }
-  function removeTeam(teamId) {
-    if (teamsLocked) return;
-    setTeams((prev) => prev.filter((t) => t.id !== teamId));
-    safeResetAfterTeamChange();
-  }
-  function addManualTeam() {
-    if (teamsLocked) return;
-    if (!manualP1 || !manualP2) return;
-    if (manualP1 === manualP2) return;
-    if (usedPlayers.has(manualP1) || usedPlayers.has(manualP2)) return;
+    // Build pool of available players (unassigned) + allow reassignment for unlocked teams by clearing them first
+    const clearedTeams = teams.map((t) => {
+      if (t.locked) return t;
+      return { ...t, playerIds: ["", ""], name: t.name };
+    });
 
-    const p1 = playerById.get(manualP1)?.name ?? "P1";
-    const p2 = playerById.get(manualP2)?.name ?? "P2";
+    const usedAfterClear = new Set();
+    clearedTeams.forEach((t) => (t.playerIds || []).forEach((pid) => pid && usedAfterClear.add(pid)));
 
-    const newTeam = {
-      id: uid("t"),
-      name: `${p1} / ${p2}`,
-      playerIds: [manualP1, manualP2],
-      isBye: false,
-    };
+    const available = players.map((p) => p.id).filter((id) => !usedAfterClear.has(id));
+    const shuffled = shuffleArray(available);
 
-    setTeams((prev) => [...prev, newTeam]);
-    setManualP1("");
-    setManualP2("");
-    safeResetAfterTeamChange();
-  }
-
-  // teams (random)
-  function buildRandomTeams() {
-    if (teamsLocked) return;
-    if (players.length < 2) return;
-
-    const ids = players.map((p) => p.id);
-    const tries = avoidSameTeams ? 40 : 1;
-    let best = null;
+    // history logic (reduce repeats) only when fully building new pairs for unlocked teams
     const historySet = new Set(pairHistory);
+    const tries = avoidSameTeams ? 30 : 1;
 
-    for (let t = 0; t < tries; t++) {
-      const shuffled = shuffleArray(ids);
+    let best = null;
+
+    const unlockedTeamIds = clearedTeams.filter((t) => !t.locked).map((t) => t.id);
+    const unlockedCount = unlockedTeamIds.length;
+
+    // Need 2 players per unlocked team
+    if (shuffled.length < unlockedCount * 2) {
+      alert("Not enough unassigned players to fill unlocked teams. Add more players or unlock fewer teams.");
+      return;
+    }
+
+    for (let attempt = 0; attempt < tries; attempt++) {
+      const s = attempt === 0 ? shuffled : shuffleArray(shuffled);
       const pairs = [];
-      for (let i = 0; i < shuffled.length; i += 2) {
-        const a = shuffled[i];
-        const b = shuffled[i + 1];
-        if (!b) pairs.push([a, null]);
-        else pairs.push([a, b]);
+      for (let i = 0; i < unlockedCount * 2; i += 2) {
+        pairs.push([s[i], s[i + 1]]);
       }
 
       let repeats = 0;
       for (const [a, b] of pairs) {
-        if (!b) continue;
         const key = [a, b].sort().join("|");
         if (historySet.has(key)) repeats++;
       }
@@ -673,37 +667,51 @@ export default function App() {
       }
     }
 
-    const finalPairs = best?.pairs ?? [];
-    const builtTeams = finalPairs.map(([a, b]) => {
-      if (!b) {
-        const p1 = playerById.get(a)?.name ?? "Player";
-        return { id: uid("t"), name: `${p1} + BYE`, playerIds: [a], isBye: true };
-      }
-      const p1 = playerById.get(a)?.name ?? "P1";
-      const p2 = playerById.get(b)?.name ?? "P2";
-      return { id: uid("t"), name: `${p1} / ${p2}`, playerIds: [a, b], isBye: false };
+    const chosenPairs = best?.pairs ?? [];
+
+    const updated = clearedTeams.map((t) => {
+      if (t.locked) return t;
+      const idx = unlockedTeamIds.indexOf(t.id);
+      const pair = chosenPairs[idx];
+      if (!pair) return t;
+
+      const p1 = playerById.get(pair[0])?.name || "P1";
+      const p2 = playerById.get(pair[1])?.name || "P2";
+      return { ...t, playerIds: [pair[0], pair[1]], name: `${p1} / ${p2}` };
     });
 
     const newPairs = [];
-    for (const tm of builtTeams) {
-      if (tm.playerIds.length === 2) newPairs.push([...tm.playerIds].sort().join("|"));
-    }
+    updated.forEach((t) => {
+      if (t.playerIds?.length === 2 && t.playerIds[0] && t.playerIds[1]) {
+        newPairs.push([...t.playerIds].sort().join("|"));
+      }
+    });
 
-    setTeams(builtTeams);
+    setTeams(updated);
     setPairHistory((prev) => Array.from(new Set([...prev, ...newPairs])));
-    safeResetAfterTeamChange();
+    resetTournamentStructure();
   }
 
-  // scheduling: pools
+  /** ===== Scheduling: pools ===== */
+  function buildPoolAssignmentExact8(teamIds) {
+    // deterministic-ish split after shuffle: 4 and 4
+    const shuffled = shuffleArray(teamIds);
+    return { A: shuffled.slice(0, 4), B: shuffled.slice(4, 8) };
+  }
+
   function createPoolsRoundRobin() {
-    if (!tournamentReady) return;
+    if (!tournamentReady) {
+      alert("You need exactly 8 teams with 2 players each.");
+      return;
+    }
+
     const teamIds = realTeams.map((t) => t.id);
-    const pools = buildPoolAssignment(teamIds);
+    const pools = buildPoolAssignmentExact8(teamIds);
     setPoolMap(pools);
 
     const built = [];
     const makePoolGames = (poolName, ids, tableOffset) => {
-      const rounds = circleRoundRobin(ids);
+      const rounds = circleRoundRobin(ids); // for 4 teams => 3 rounds, 2 matches each round
       rounds.forEach((pairings, rIdx) => {
         pairings.forEach(([a, b], pIdx) => {
           built.push({
@@ -711,25 +719,16 @@ export default function App() {
             stage: "POOL",
             pool: poolName,
             round: rIdx + 1,
-            table: tableOffset + (pIdx + 1), // Pool A: 1-2, Pool B: 3-4 (for 8 teams)
+            table: tableOffset + (pIdx + 1), // Pool A tables 1-2, Pool B tables 3-4
             teamAId: a,
             teamBId: b,
-            scoreA: "",
-            scoreB: "",
+            scoreA: "0",
+            scoreB: "0",
             winnerId: null,
             matchPtsA: 0,
             matchPtsB: 0,
-            fast: {
-              enabled: false,
-              bidder: "A",
-              bid: 80,
-              coincheLevel: "NONE",
-              capot: false,
-              bidderTrickPoints: 81,
-              announceA: 0,
-              announceB: 0,
-              beloteTeam: "NONE",
-            },
+            tableTarget: DEFAULT_TARGET,
+            hands: [],
           });
         });
       });
@@ -742,69 +741,120 @@ export default function App() {
     setBracket([]);
   }
 
-  // game scoring
-  function recomputeGameOutcome(g) {
-    const a = safeInt(g.scoreA);
-    const b = safeInt(g.scoreB);
-    if (a === null || b === null) return { ...g, winnerId: null, matchPtsA: 0, matchPtsB: 0 };
-    if (a === b) return { ...g, winnerId: null, matchPtsA: 0, matchPtsB: 0 };
-    const winnerId = a > b ? g.teamAId : g.teamBId;
+  /** ===== Game scoring (totals) ===== */
+  function recomputeGameOutcome(game) {
+    const a = safeInt(game.scoreA);
+    const b = safeInt(game.scoreB);
+
+    if (a === null || b === null) {
+      return { ...game, winnerId: null, matchPtsA: 0, matchPtsB: 0 };
+    }
+    if (a === b) {
+      return { ...game, winnerId: null, matchPtsA: 0, matchPtsB: 0 };
+    }
+
+    // Winner immediately at >= target (your rule)
+    const target = Number(game.tableTarget) || DEFAULT_TARGET;
+    const aReached = a >= target;
+    const bReached = b >= target;
+    const winnerId =
+      aReached && !bReached ? game.teamAId : bReached && !aReached ? game.teamBId : a > b ? game.teamAId : game.teamBId;
+
     const winnerScore = Math.max(a, b);
     const mp = computeMatchPoints(winnerScore, winThreshold, winHighPts, winLowPts);
+
     return {
-      ...g,
+      ...game,
       winnerId,
-      matchPtsA: winnerId === g.teamAId ? mp : 0,
-      matchPtsB: winnerId === g.teamBId ? mp : 0,
+      matchPtsA: winnerId === game.teamAId ? mp : 0,
+      matchPtsB: winnerId === game.teamBId ? mp : 0,
     };
   }
-  function setGameScore(gameId, side, value) {
+
+  function recomputeFromHands(game) {
+    const totalA = (game.hands || []).reduce((s, h) => s + (Number(h.scoreA) || 0), 0);
+    const totalB = (game.hands || []).reduce((s, h) => s + (Number(h.scoreB) || 0), 0);
+    const updated = { ...game, scoreA: String(totalA), scoreB: String(totalB) };
+    return recomputeGameOutcome(updated);
+  }
+
+  function setGameTarget(gameId, target) {
     setGames((prev) =>
       prev.map((g) => {
         if (g.id !== gameId) return g;
-        const updated = { ...g, [side === "A" ? "scoreA" : "scoreB"]: value };
-        return recomputeGameOutcome(updated);
+        const updated = { ...g, tableTarget: clamp(Number(target) || DEFAULT_TARGET, 100, 99999) };
+        return recomputeFromHands(updated);
       })
     );
   }
+
   function clearGame(gameId) {
     setGames((prev) =>
       prev.map((g) =>
-        g.id === gameId ? { ...g, scoreA: "", scoreB: "", winnerId: null, matchPtsA: 0, matchPtsB: 0 } : g
+        g.id === gameId
+          ? recomputeGameOutcome({
+              ...g,
+              hands: [],
+              scoreA: "0",
+              scoreB: "0",
+              winnerId: null,
+              matchPtsA: 0,
+              matchPtsB: 0,
+            })
+          : g
       )
     );
   }
-  function toggleFast(gameId, enabled) {
-    setGames((prev) => prev.map((g) => (g.id === gameId ? { ...g, fast: { ...g.fast, enabled } } : g)));
-  }
-  function updateFast(gameId, patch) {
+
+  /** ===== Hands: add/edit/delete ===== */
+  function addHand(gameId, handInput) {
     setGames((prev) =>
       prev.map((g) => {
         if (g.id !== gameId) return g;
-        const fast = { ...g.fast, ...patch };
-        const updated = { ...g, fast };
 
-        if (!fast.enabled) return updated;
+        const res = computeFastCoincheHandScore(handInput);
+        const newHand = {
+          id: uid("hand"),
+          createdAt: Date.now(),
+          ...handInput,
+          scoreA: res.scoreA,
+          scoreB: res.scoreB,
+        };
 
-        const res = computeFastCoincheScore({
-          bidder: fast.bidder,
-          bid: Number(fast.bid) || 0,
-          coincheLevel: fast.coincheLevel,
-          capot: Boolean(fast.capot),
-          bidderTrickPoints: Number(fast.bidderTrickPoints) || 0,
-          announceA: Number(fast.announceA) || 0,
-          announceB: Number(fast.announceB) || 0,
-          beloteTeam: fast.beloteTeam,
-        });
-
-        updated.scoreA = String(res.scoreA);
-        updated.scoreB = String(res.scoreB);
-        return recomputeGameOutcome(updated);
+        const updated = { ...g, hands: [...(g.hands || []), newHand] };
+        return recomputeFromHands(updated);
       })
     );
   }
 
-  // standings
+  function updateHand(gameId, handId, patch) {
+    setGames((prev) =>
+      prev.map((g) => {
+        if (g.id !== gameId) return g;
+
+        const hands = (g.hands || []).map((h) => {
+          if (h.id !== handId) return h;
+          const next = { ...h, ...patch };
+          const res = computeFastCoincheHandScore(next);
+          return { ...next, scoreA: res.scoreA, scoreB: res.scoreB };
+        });
+
+        return recomputeFromHands({ ...g, hands });
+      })
+    );
+  }
+
+  function deleteHand(gameId, handId) {
+    setGames((prev) =>
+      prev.map((g) => {
+        if (g.id !== gameId) return g;
+        const hands = (g.hands || []).filter((h) => h.id !== handId);
+        return recomputeFromHands({ ...g, hands });
+      })
+    );
+  }
+
+  /** ===== Standings ===== */
   function poolStandings(poolName) {
     const ids = poolMap[poolName] || [];
     const rows = ids
@@ -838,10 +888,10 @@ export default function App() {
     return sortStandings(rows);
   }
 
-  const standingsA = useMemo(() => (tournamentReady ? poolStandings("A") : []), [tournamentReady, games, poolMap, teamById]);
-  const standingsB = useMemo(() => (tournamentReady ? poolStandings("B") : []), [tournamentReady, games, poolMap, teamById]);
+  const standingsA = useMemo(() => (poolMap.A.length ? poolStandings("A") : []), [games, poolMap, teamById]);
+  const standingsB = useMemo(() => (poolMap.B.length ? poolStandings("B") : []), [games, poolMap, teamById]);
 
-  // bracket (kept as-is)
+  /** ===== Bracket ===== */
   function propagateBracketWinners(ms) {
     const byId = new Map(ms.map((m) => [m.id, { ...m }]));
     for (const m of ms) {
@@ -859,6 +909,7 @@ export default function App() {
     }
     return Array.from(byId.values());
   }
+
   function fillThirdPlace(ms) {
     const sf = ms.filter((x) => x.round === "SF");
     const third = ms.find((x) => x.round === "3P");
@@ -870,13 +921,18 @@ export default function App() {
     const loser2 = sf[1].winnerId === sf[1].teamAId ? sf[1].teamBId : sf[1].teamAId;
 
     if (third.teamAId === loser1 && third.teamBId === loser2) return ms;
-    return ms.map((m) => (m.id === third.id ? { ...m, teamAId: loser1, teamBId: loser2, winnerId: null, scoreA: "", scoreB: "" } : m));
+    return ms.map((m) =>
+      m.id === third.id ? { ...m, teamAId: loser1, teamBId: loser2, winnerId: null, scoreA: "", scoreB: "" } : m
+    );
   }
 
   function buildBracketFromPools() {
     const a = standingsA.slice(0, 4).map((x) => x.teamId);
     const b = standingsB.slice(0, 4).map((x) => x.teamId);
-    if (a.length < 4 || b.length < 4) return;
+    if (a.length < 4 || b.length < 4) {
+      alert("Need pool standings with top 4 from each pool (enter some scores first).");
+      return;
+    }
 
     const qf = [
       { label: "QF1", A: a[0], B: b[3] },
@@ -969,7 +1025,9 @@ export default function App() {
 
   function setBracketScore(matchId, side, value) {
     setBracket((prev) => {
-      const updated = prev.map((m) => (m.id === matchId ? { ...m, [side === "A" ? "scoreA" : "scoreB"]: value } : m));
+      const updated = prev.map((m) =>
+        m.id === matchId ? { ...m, [side === "A" ? "scoreA" : "scoreB"]: value } : m
+      );
       const withWinners = updated.map((m) => {
         if (m.id !== matchId) return m;
         if (!m.teamAId || !m.teamBId) return { ...m, winnerId: null };
@@ -985,18 +1043,24 @@ export default function App() {
 
   function clearBracketMatch(matchId) {
     setBracket((prev) => {
-      const cleared = prev.map((m) => (m.id === matchId ? { ...m, scoreA: "", scoreB: "", winnerId: null } : m));
+      const cleared = prev.map((m) =>
+        m.id === matchId ? { ...m, scoreA: "", scoreB: "", winnerId: null } : m
+      );
       return fillThirdPlace(propagateBracketWinners(cleared));
     });
   }
 
-  // winner board
+  /** ===== Winner board ===== */
   const winnerBoard = useMemo(() => {
     const final = bracket.find((m) => m.round === "F");
     const third = bracket.find((m) => m.round === "3P");
 
     const champId = final?.winnerId ?? null;
-    const runnerId = final?.winnerId ? (final.winnerId === final.teamAId ? final.teamBId : final.teamAId) : null;
+    const runnerId = final?.winnerId
+      ? final.winnerId === final.teamAId
+        ? final.teamBId
+        : final.teamAId
+      : null;
     const thirdId = third?.winnerId ?? null;
 
     return {
@@ -1006,837 +1070,1425 @@ export default function App() {
     };
   }, [bracket, teamById]);
 
-  // pool games per pool
-  const poolGamesA = useMemo(
-    () => games.filter((g) => g.stage === "POOL" && g.pool === "A").sort((x, y) => x.round - y.round || x.table - y.table),
-    [games]
-  );
-  const poolGamesB = useMemo(
-    () => games.filter((g) => g.stage === "POOL" && g.pool === "B").sort((x, y) => x.round - y.round || x.table - y.table),
-    [games]
-  );
-
-  // ===== Live scoreboard + stats (pool+bracket for PF/PA/W/L; MP from pool only)
-  const allMatchesForStats = useMemo(() => {
-    const poolMatches = games.map((g) => ({
-      id: g.id,
-      stage: "POOL",
-      label: `Pool ${g.pool} R${g.round} (Table ${g.table})`,
-      teamAId: g.teamAId,
-      teamBId: g.teamBId,
-      scoreA: g.scoreA,
-      scoreB: g.scoreB,
-    }));
-    const bracketMatches = bracket.map((m) => ({
-      id: m.id,
-      stage: "BRACKET",
-      label: `${m.label} (${m.round})`,
-      teamAId: m.teamAId,
-      teamBId: m.teamBId,
-      scoreA: m.scoreA,
-      scoreB: m.scoreB,
-    }));
-    return [...poolMatches, ...bracketMatches];
-  }, [games, bracket]);
-
-  const scoreboard = useMemo(() => {
+  /** ===== Scoreboard: global standings across all pool games ===== */
+  const overallScoreboard = useMemo(() => {
     const rows = realTeams.map((t) => ({
       teamId: t.id,
       name: t.name,
-      pool: poolMap.A.includes(t.id) ? "A" : poolMap.B.includes(t.id) ? "B" : "—",
-      gp: 0,
-      w: 0,
-      l: 0,
-      mp: 0,
-      pf: 0,
-      pa: 0,
-      diff: 0,
-      avgFor: 0,
-      avgAgainst: 0,
+      matchPoints: 0,
+      totalGamePoints: 0,
+      gamesPlayed: 0,
+      wins: 0,
+      losses: 0,
+      hands: 0,
+      coinches: 0,
+      surcoinches: 0,
+      capots: 0,
+      belotes: 0,
     }));
+
     const byId = new Map(rows.map((r) => [r.teamId, r]));
 
-    // MP from pool only
     games.forEach((g) => {
-      const a = byId.get(g.teamAId);
-      const b = byId.get(g.teamBId);
-      if (!a || !b) return;
-      a.mp += g.matchPtsA ?? 0;
-      b.mp += g.matchPtsB ?? 0;
-    });
+      const aRow = byId.get(g.teamAId);
+      const bRow = byId.get(g.teamBId);
+      if (!aRow || !bRow) return;
 
-    // W/L and PF/PA from all matches with scores
-    allMatchesForStats.forEach((m) => {
-      const a = byId.get(m.teamAId);
-      const b = byId.get(m.teamBId);
-      if (!a || !b) return;
+      const sa = safeInt(g.scoreA);
+      const sb = safeInt(g.scoreB);
 
-      const sa = safeInt(m.scoreA);
-      const sb = safeInt(m.scoreB);
-      if (sa === null || sb === null) return;
+      if (sa !== null && sb !== null) {
+        aRow.totalGamePoints += sa;
+        bRow.totalGamePoints += sb;
+        aRow.gamesPlayed += 1;
+        bRow.gamesPlayed += 1;
 
-      a.gp += 1;
-      b.gp += 1;
-
-      a.pf += sa;
-      a.pa += sb;
-      b.pf += sb;
-      b.pa += sa;
-
-      if (sa > sb) {
-        a.w += 1;
-        b.l += 1;
-      } else if (sb > sa) {
-        b.w += 1;
-        a.l += 1;
+        if (g.winnerId) {
+          if (g.winnerId === g.teamAId) {
+            aRow.wins += 1;
+            bRow.losses += 1;
+          } else {
+            bRow.wins += 1;
+            aRow.losses += 1;
+          }
+        }
       }
+
+      aRow.matchPoints += g.matchPtsA ?? 0;
+      bRow.matchPoints += g.matchPtsB ?? 0;
+
+      const hands = g.hands || [];
+      aRow.hands += hands.length;
+      bRow.hands += hands.length;
+
+      hands.forEach((h) => {
+        if (h.coincheLevel === "COINCHE") {
+          aRow.coinches += 1;
+          bRow.coinches += 1;
+        }
+        if (h.coincheLevel === "SURCOINCHE") {
+          aRow.surcoinches += 1;
+          bRow.surcoinches += 1;
+        }
+        if (h.capot) {
+          aRow.capots += 1;
+          bRow.capots += 1;
+        }
+        if (h.beloteTeam === "A") aRow.belotes += 1;
+        if (h.beloteTeam === "B") bRow.belotes += 1;
+      });
     });
 
-    rows.forEach((r) => {
-      r.diff = r.pf - r.pa;
-      r.avgFor = r.gp ? Math.round((r.pf / r.gp) * 10) / 10 : 0;
-      r.avgAgainst = r.gp ? Math.round((r.pa / r.gp) * 10) / 10 : 0;
+    // sort by matchPoints then totalGamePoints
+    return sortStandings(rows);
+  }, [realTeams, games]);
+
+  /** ===== Stats + funny stats ===== */
+  const stats = useMemo(() => {
+    const allHands = games.flatMap((g) => (g.hands || []).map((h) => ({ ...h, gameId: g.id })));
+    const totalHands = allHands.length;
+
+    let biggestHand = null; // {score, hand, game}
+    let biggestSwing = null; // abs(scoreA-scoreB)
+    let highestBid = null;
+
+    let totalPointsA = 0;
+    let totalPointsB = 0;
+
+    games.forEach((g) => {
+      totalPointsA += Number(g.scoreA) || 0;
+      totalPointsB += Number(g.scoreB) || 0;
     });
 
-    return [...rows].sort((x, y) => {
-      if (y.mp !== x.mp) return y.mp - x.mp;
-      if (y.diff !== x.diff) return y.diff - x.diff;
-      if (y.pf !== x.pf) return y.pf - x.pf;
-      return x.name.localeCompare(y.name);
-    });
-  }, [realTeams, poolMap, games, allMatchesForStats]);
+    allHands.forEach((h) => {
+      const ha = Number(h.scoreA) || 0;
+      const hb = Number(h.scoreB) || 0;
+      const sum = ha + hb;
+      const swing = Math.abs(ha - hb);
 
-  const liveStats = useMemo(() => {
-    const played = [];
-    allMatchesForStats.forEach((m) => {
-      const aName = teamById.get(m.teamAId)?.name;
-      const bName = teamById.get(m.teamBId)?.name;
-      if (!aName || !bName) return;
+      if (!biggestHand || sum > biggestHand.sum) biggestHand = { sum, ha, hb, h };
+      if (!biggestSwing || swing > biggestSwing.swing) biggestSwing = { swing, ha, hb, h };
 
-      const sa = safeInt(m.scoreA);
-      const sb = safeInt(m.scoreB);
-      if (sa === null || sb === null) return;
-
-      const total = sa + sb;
-      const margin = Math.abs(sa - sb);
-      const winner = sa > sb ? aName : sb > sa ? bName : "Tie";
-      played.push({ ...m, aName, bName, sa, sb, total, margin, winner });
+      const bid = Number(h.bid) || 0;
+      if (!highestBid || bid > highestBid.bid) highestBid = { bid, h };
     });
 
-    const totalGames = played.length;
-    const totalPoints = played.reduce((acc, x) => acc + x.total, 0);
-
-    const biggestBlowout = played.length ? [...played].sort((a, b) => b.margin - a.margin || b.total - a.total)[0] : null;
-    const closestGame = played.length ? [...played].sort((a, b) => a.margin - b.margin || b.total - a.total)[0] : null;
-    const highestScoringGame = played.length ? [...played].sort((a, b) => b.total - a.total || a.margin - b.margin)[0] : null;
-
-    const mostPointsTeam = scoreboard.length ? [...scoreboard].sort((a, b) => b.pf - a.pf)[0] : null;
-    const bestDefenseTeam = scoreboard.length ? [...scoreboard].filter((r) => r.gp > 0).sort((a, b) => a.pa - b.pa)[0] ?? null : null;
-    const bestDiffTeam = scoreboard.length ? [...scoreboard].filter((r) => r.gp > 0).sort((a, b) => b.diff - a.diff)[0] ?? null : null;
+    // Funny awards based on scoreboard
+    const topPoints = overallScoreboard[0] || null;
+    const mostHands = [...overallScoreboard].sort((a, b) => (b.hands || 0) - (a.hands || 0))[0] || null;
+    const mostBelotes = [...overallScoreboard].sort((a, b) => (b.belotes || 0) - (a.belotes || 0))[0] || null;
+    const mostCoinches = [...overallScoreboard].sort(
+      (a, b) => (b.coinches + b.surcoinches) - (a.coinches + a.surcoinches)
+    )[0] || null;
+    const capotKing = [...overallScoreboard].sort((a, b) => (b.capots || 0) - (a.capots || 0))[0] || null;
 
     return {
-      totalGames,
-      totalPoints,
-      avgPointsPerGame: totalGames ? Math.round((totalPoints / totalGames) * 10) / 10 : 0,
-      biggestBlowout,
-      closestGame,
-      highestScoringGame,
-      mostPointsTeam,
-      bestDefenseTeam,
-      bestDiffTeam,
+      totalHands,
+      totalTablePoints: totalPointsA + totalPointsB,
+      biggestHand,
+      biggestSwing,
+      highestBid,
+      funny: {
+        pointVacuum: topPoints ? { title: "Point Vacuum", team: topPoints.name, value: `${topPoints.totalGamePoints} pts` } : null,
+        marathonTable: mostHands ? { title: "Marathon Hands", team: mostHands.name, value: `${mostHands.hands} hands` } : null,
+        beloteBandit: mostBelotes ? { title: "Belote Bandit", team: mostBelotes.name, value: `${mostBelotes.belotes} belotes` } : null,
+        coincheMonster: mostCoinches ? { title: "Coinche Monster", team: mostCoinches.name, value: `${mostCoinches.coinches + mostCoinches.surcoinches} coinches` } : null,
+        capotKing: capotKing ? { title: "Capot King", team: capotKing.name, value: `${capotKing.capots} capots` } : null,
+      },
     };
-  }, [allMatchesForStats, teamById, scoreboard]);
+  }, [games, overallScoreboard]);
 
-  // ===== Table View helpers
-  const tableParam = route.path === "/table" ? clampNum(route.params.table ?? 1, 1, 20) : 1;
-  const tableGames = useMemo(() => games.filter((g) => g.stage === "POOL" && g.table === Number(tableParam)).sort((a, b) => a.round - b.round), [games, tableParam]);
+  /** ===== Schedule blocks ===== */
+  const schedule = useMemo(() => {
+    // Pools (3 rounds), then QF, SF, Final+3P
+    const blocks = [
+      { key: "P1", label: "Pool Round 1", tables: 4 },
+      { key: "P2", label: "Pool Round 2", tables: 4 },
+      { key: "P3", label: "Pool Round 3", tables: 4 },
+      { key: "QF", label: "Quarterfinals (4 matches)", tables: 4 },
+      { key: "SF", label: "Semifinals (2 matches)", tables: 2 },
+      { key: "F", label: "Final + 3rd Place (2 matches)", tables: 2 },
+    ];
+    return blocks.map((b, idx) => {
+      const startMin = idx * SLOT_MINUTES;
+      const endMin = startMin + GAME_MINUTES;
+      return { ...b, slotIndex: idx, startMin, endMin };
+    });
+  }, []);
 
-  const defaultRoundForTable = useMemo(() => {
-    // first round that isn't fully scored yet, else last round
-    const firstIncomplete = tableGames.find((g) => safeInt(g.scoreA) === null || safeInt(g.scoreB) === null);
-    return firstIncomplete?.round ?? (tableGames[tableGames.length - 1]?.round ?? 1);
-  }, [tableGames]);
+  const currentSlot = useMemo(() => {
+    const slotMs = SLOT_MINUTES * 60 * 1000;
+    const idx = Math.floor(timerLiveMs / slotMs);
+    return schedule[idx] || null;
+  }, [timerLiveMs, schedule]);
 
-  const [tableRound, setTableRound] = useState(1);
-  useEffect(() => {
-    setTableRound(defaultRoundForTable);
-  }, [defaultRoundForTable, tableParam]);
+  function timerStart() {
+    if (timerRunning) return;
+    setTimerRunning(true);
+    setTimerStartEpoch(Date.now());
+  }
+  function timerPause() {
+    if (!timerRunning) return;
+    const now = Date.now();
+    setTimerElapsedMs((prev) => prev + (timerStartEpoch ? now - timerStartEpoch : 0));
+    setTimerRunning(false);
+    setTimerStartEpoch(null);
+  }
+  function timerReset() {
+    setTimerRunning(false);
+    setTimerStartEpoch(null);
+    setTimerElapsedMs(0);
+  }
 
-  const gameForTableRound = useMemo(() => tableGames.find((g) => g.round === Number(tableRound)) ?? null, [tableGames, tableRound]);
+  /** ===== Views: Admin/Public/Table ===== */
+  const isPublic = route.path === "/public";
+  const isTable = route.path === "/table";
+  const isAdmin = !isPublic && !isTable;
 
-  // ===== Links
-  const base = `${window.location.origin}${window.location.pathname}`;
-  const publicUrl = `${base}#/public`;
-  const adminUrl = `${base}#/`;
-  const tableUrl = (n) => `${base}#/table?table=${n}`;
+  const publicLink = `${window.location.origin}${window.location.pathname}#/public`;
+  const tableLink = `${window.location.origin}${window.location.pathname}#/table`;
 
-  // ===== Top nav (works for all pages)
-  function TopNav() {
-    const active = route.path;
-    const pill = (label, path, params) => (
-      <button
-        onClick={() => setHash(path, params)}
-        style={{
-          border: "1px solid #e5e7eb",
-          background: active === path ? "#111827" : "#fff",
-          color: active === path ? "#fff" : "#111827",
-          borderRadius: 999,
-          padding: "8px 12px",
-          fontWeight: 900,
-          cursor: "pointer",
-        }}
-      >
-        {label}
-      </button>
+  /** ===== Table View selector ===== */
+  const tableGames = useMemo(() => {
+    // for 8-team pools we have tables 1..4 per round. We'll show all pool games (and later we can add bracket)
+    return [...games].sort((a, b) => (a.round || 0) - (b.round || 0) || (a.table || 0) - (b.table || 0));
+  }, [games]);
+
+  const selectedTable = route.q.table ? Number(route.q.table) : 1;
+  const selectedRound = route.q.round ? Number(route.q.round) : 1;
+  const selectedPool = route.q.pool ? route.q.pool : "A";
+
+  const tableMatch = useMemo(() => {
+    // Find match by pool+round+table
+    return games.find(
+      (g) => g.stage === "POOL" && g.pool === selectedPool && g.round === selectedRound && g.table === selectedTable
     );
+  }, [games, selectedPool, selectedRound, selectedTable]);
 
+  /** ===== Bracket sorting + visual layout ===== */
+  const bracketByRound = useMemo(() => {
+    const qf = bracket.filter((m) => m.round === "QF").sort((a, b) => a.idx - b.idx);
+    const sf = bracket.filter((m) => m.round === "SF").sort((a, b) => a.idx - b.idx);
+    const f = bracket.filter((m) => m.round === "F");
+    const p3 = bracket.filter((m) => m.round === "3P");
+    return { qf, sf, f: f[0] || null, p3: p3[0] || null };
+  }, [bracket]);
+
+  /** ===== Helper UI ===== */
+  function TeamName({ id }) {
+    const nm = id ? teamById.get(id)?.name : null;
+    return <span style={{ fontWeight: 900 }}>{nm || "TBD"}</span>;
+  }
+
+  function SectionTitle({ children, sub }) {
     return (
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-        {pill("Admin", "/")}
-        {pill("Public View", "/public")}
-        {pill(`Table View`, "/table", { table: String(tableParam) })}
-        <div style={{ marginLeft: "auto", color: "#6b7280", fontWeight: 800, alignSelf: "center" }}>
-          {route.path === "/table" ? `Table ${tableParam}` : ""}
-        </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+        <div style={{ fontSize: 18, fontWeight: 1000, color: UI.text }}>{children}</div>
+        {sub ? <div style={{ color: UI.muted, fontWeight: 800, fontSize: 12 }}>{sub}</div> : null}
       </div>
     );
   }
 
-  // ===== Shared Scoreboard section (used by Admin + Public)
-  function ScoreboardSection({ readOnly }) {
-    return (
-      <Section
-        title="Live Scoreboard + Stats"
-        right={<div style={{ color: "#065f46", fontWeight: 900 }}>{readOnly ? "Read-only" : "Auto-updates as you type"}</div>}
+  /** ===== RENDER ===== */
+  return (
+    <div style={{ minHeight: "100vh", background: UI.bg, color: UI.text }}>
+      {/* top bar */}
+      <div
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 10,
+          background: "linear-gradient(180deg, rgba(11,18,32,0.96), rgba(11,18,32,0.86))",
+          borderBottom: `1px solid ${UI.border}`,
+          backdropFilter: "blur(10px)",
+        }}
       >
-        {realTeams.length === 0 ? (
-          <div style={{ color: "#6b7280" }}>Create teams to see the scoreboard.</div>
-        ) : (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 12 }}>
-              <StatCard label="Games played" value={fmt(liveStats.totalGames)} />
-              <StatCard label="Total points entered" value={fmt(liveStats.totalPoints)} />
-              <StatCard label="Avg points/game" value={fmt(liveStats.avgPointsPerGame)} />
-              <StatCard
-                label="Top offense (PF)"
-                value={liveStats.mostPointsTeam ? `${liveStats.mostPointsTeam.name} (${liveStats.mostPointsTeam.pf})` : "—"}
-              />
-              <StatCard
-                label="Best defense (lowest PA)"
-                value={liveStats.bestDefenseTeam ? `${liveStats.bestDefenseTeam.name} (${liveStats.bestDefenseTeam.pa})` : "—"}
-              />
-              <StatCard label="Best diff" value={liveStats.bestDiffTeam ? `${liveStats.bestDiffTeam.name} (${liveStats.bestDiffTeam.diff})` : "—"} />
+        <div style={{ maxWidth: 1200, margin: "0 auto", padding: "14px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontWeight: 1000, fontSize: isPublic ? 22 : 20 }}>{tournamentName}</div>
+              <div style={{ color: UI.muted, fontWeight: 800, fontSize: 12, marginTop: 2 }}>
+                {isAdmin ? "Admin" : isPublic ? "Public View (read-only)" : "Table View (enter hands)"}
+                {" • "}
+                {tournamentReady ? "8 teams ready" : "Setup: add players + assign teams"}
+              </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 12 }}>
-              <FunMatchCard title="Biggest blowout" match={liveStats.biggestBlowout} />
-              <FunMatchCard title="Closest game" match={liveStats.closestGame} />
-              <FunMatchCard title="Highest scoring game" match={liveStats.highestScoringGame} />
-            </div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <Chip tone={timerRunning ? "good" : "warn"}>{timerRunning ? "LIVE TIMER" : "TIMER PAUSED"}</Chip>
+              <Chip>
+                {formatMinutes(timerLiveMs)}{" "}
+                <span style={{ color: UI.muted, fontWeight: 900 }}>
+                  ({START_TIME_STR} start plan)
+                </span>
+              </Chip>
 
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
-                <thead>
-                  <tr>
-                    {["#", "Team", "Pool", "GP", "W", "L", "MP", "PF", "PA", "Diff", "Avg PF", "Avg PA"].map((h) => (
-                      <th
-                        key={h}
-                        style={{
-                          textAlign: "left",
-                          fontSize: 12,
-                          color: "#6b7280",
-                          padding: "10px 10px",
-                          borderBottom: "1px solid #e5e7eb",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {scoreboard.map((r, idx) => (
-                    <tr key={r.teamId} style={{ background: idx % 2 === 0 ? "#fff" : "#fafafa" }}>
-                      <td style={tdStyle}>{idx + 1}</td>
-                      <td style={{ ...tdStyle, fontWeight: 900, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {r.name}
-                      </td>
-                      <td style={tdStyle}>{r.pool}</td>
-                      <td style={tdStyle}>{r.gp}</td>
-                      <td style={tdStyle}>{r.w}</td>
-                      <td style={tdStyle}>{r.l}</td>
-                      <td style={{ ...tdStyle, fontWeight: 900 }}>{r.mp}</td>
-                      <td style={tdStyle}>{r.pf}</td>
-                      <td style={tdStyle}>{r.pa}</td>
-                      <td style={{ ...tdStyle, fontWeight: 900, color: r.diff > 0 ? "#065f46" : r.diff < 0 ? "#b91c1c" : "#111827" }}>{r.diff}</td>
-                      <td style={tdStyle}>{r.avgFor}</td>
-                      <td style={tdStyle}>{r.avgAgainst}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+              {currentSlot ? <Chip tone="warn">Now: {currentSlot.label}</Chip> : <Chip tone="neutral">Now: —</Chip>}
 
-            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-              Notes: MP = pool match points only. W/L and PF/PA include pool + bracket games where both scores are entered.
+              <Btn kind="ghost" small onClick={() => setRoute("/admin")}>Admin</Btn>
+              <Btn kind="ghost" small onClick={() => setRoute("/public")}>Public</Btn>
+              <Btn kind="ghost" small onClick={() => setRoute("/table")}>Table</Btn>
             </div>
-          </>
-        )}
-      </Section>
-    );
-  }
-
-  // ===== Admin page (your original + link launcher)
-  function AdminView() {
-    const teamActionsDisabled = teamsLocked;
-
-    return (
-      <>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginBottom: 12 }}>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 26 }}>{tournamentName}</h1>
-            <div style={{ color: "#6b7280", marginTop: 4 }}>
-              Mode: {tournamentReady ? "8+ teams (2 pools + bracket)" : "Add players to reach 8 teams"}
-              {teamsLocked ? " • Teams Locked" : ""}
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <Btn kind="secondary" onClick={resetTournamentStructure} disabled={games.length === 0 && bracket.length === 0}>
-              Reset tournament
-            </Btn>
-            <Btn kind="danger" onClick={fullReset}>
-              Full reset
-            </Btn>
           </div>
         </div>
+      </div>
 
-        <Section title="Quick Links (Projector + Tables)">
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-            <LinkRow label="Admin" url={adminUrl} />
-            <LinkRow label="Public View (TV/Projector)" url={publicUrl} />
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
-              {[1, 2, 3, 4].map((n) => (
-                <LinkRow key={n} label={`Table View (Table ${n})`} url={tableUrl(n)} />
-              ))}
-            </div>
-            <div style={{ fontSize: 12, color: "#b45309", fontWeight: 900 }}>
-              Heads-up: Until we add Supabase, each device keeps its own scores. Public View won’t auto-update from other phones yet.
-            </div>
-          </div>
-        </Section>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: 14 }}>
+        {/* PUBLIC VIEW */}
+        {isPublic ? (
+          <PublicView
+            overallScoreboard={overallScoreboard}
+            standingsA={standingsA}
+            standingsB={standingsB}
+            bracketByRound={bracketByRound}
+            teamById={teamById}
+            winnerBoard={winnerBoard}
+            stats={stats}
+            schedule={schedule}
+          />
+        ) : null}
 
-        <ScoreboardSection readOnly={false} />
+        {/* TABLE VIEW */}
+        {isTable ? (
+          <TableView
+            tableLink={tableLink}
+            games={games}
+            teamById={teamById}
+            selectedPool={selectedPool}
+            selectedRound={selectedRound}
+            selectedTable={selectedTable}
+            tableMatch={tableMatch}
+            onPick={(pool, round, table) => setRoute("/table", { pool, round, table })}
+            onSetTarget={setGameTarget}
+            onAddHand={addHand}
+            onUpdateHand={updateHand}
+            onDeleteHand={deleteHand}
+            onClearGame={clearGame}
+          />
+        ) : null}
 
-        <Section
-          title="Settings"
-          right={
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input type="checkbox" checked={avoidSameTeams} onChange={(e) => setAvoidSameTeams(e.target.checked)} disabled={teamActionsDisabled} />
-                Avoid same teams
-              </label>
+        {/* ADMIN VIEW */}
+        {isAdmin ? (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 14 }}>
+            {/* Links + timer + schedule */}
+            <Card
+              title="Quick Links + Schedule Timer"
+              right={
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <Btn kind="ghost" onClick={() => navigator.clipboard?.writeText(publicLink)}>Copy Public Link</Btn>
+                  <Btn kind="ghost" onClick={() => navigator.clipboard?.writeText(tableLink)}>Copy Table Link</Btn>
+                </div>
+              }
+            >
+              <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 12 }}>
+                <div>
+                  <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>Public View</div>
+                  <div style={{ fontWeight: 900, overflowWrap: "anywhere" }}>{publicLink}</div>
+                  <div style={{ height: 8 }} />
+                  <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>Table View</div>
+                  <div style={{ fontWeight: 900, overflowWrap: "anywhere" }}>{tableLink}</div>
 
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 900 }}>
-                <input type="checkbox" checked={teamsLocked} onChange={(e) => setTeamsLocked(e.target.checked)} />
-                Lock teams
-              </label>
-            </div>
-          }
-        >
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Tournament name</div>
-              <Input value={tournamentName} onChange={setTournamentName} width={360} />
-            </div>
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Win threshold</div>
-              <Input value={String(winThreshold)} onChange={(v) => setWinThreshold(clampNum(v, 0, 999999))} width={120} />
-            </div>
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Win ≥ threshold</div>
-              <Input value={String(winHighPts)} onChange={(v) => setWinHighPts(clampNum(v, 0, 20))} width={120} />
-            </div>
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Win &lt; threshold</div>
-              <Input value={String(winLowPts)} onChange={(v) => setWinLowPts(clampNum(v, 0, 20))} width={120} />
-            </div>
-          </div>
-        </Section>
+                  <Divider />
 
-        <Section title={`Players (${players.length})`}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <Input value={newPlayerName} onChange={setNewPlayerName} placeholder="Add player name" width={260} disabled={teamActionsDisabled} />
-            <Btn onClick={addPlayer} disabled={!newPlayerName.trim() || teamActionsDisabled}>
-              Add player
-            </Btn>
-            <Btn kind="secondary" onClick={buildRandomTeams} disabled={players.length < 2 || teamActionsDisabled}>
-              Randomize teams
-            </Btn>
-          </div>
+                  <SectionTitle sub="Start/Pause any time (no auto-start)">Timer Controls</SectionTitle>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+                    <Btn onClick={timerStart} disabled={timerRunning}>Start</Btn>
+                    <Btn kind="secondary" onClick={timerPause} disabled={!timerRunning}>Pause</Btn>
+                    <Btn kind="danger" onClick={timerReset}>Reset</Btn>
+                  </div>
+                  <div style={{ marginTop: 10, color: UI.muted, fontWeight: 800 }}>
+                    Slot length: {GAME_MINUTES} min game + {BREAK_MINUTES} min break = {SLOT_MINUTES} minutes
+                  </div>
+                </div>
 
-          {teamsLocked ? (
-            <div style={{ marginTop: 8, fontSize: 12, color: "#b45309", fontWeight: 900 }}>
-              Teams are locked — adding/removing players is disabled (unlock teams to change players).
-            </div>
-          ) : null}
-
-          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-            {players.map((p) => (
-              <div key={p.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff", display: "flex", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-                <button
-                  onClick={() => removePlayer(p.id)}
-                  disabled={teamsLocked}
-                  style={{ border: "none", background: "transparent", color: teamsLocked ? "#9ca3af" : "#b91c1c", fontWeight: 900, cursor: teamsLocked ? "not-allowed" : "pointer" }}
-                >
-                  Remove
-                </button>
+                <div>
+                  <SectionTitle sub={`${START_TIME_STR} planned start`}>Schedule</SectionTitle>
+                  <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                    {schedule.map((s) => (
+                      <div
+                        key={s.key}
+                        style={{
+                          border: `1px solid ${UI.border}`,
+                          borderRadius: 14,
+                          padding: 10,
+                          background: currentSlot?.key === s.key ? "rgba(96,165,250,0.14)" : UI.panel2,
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 10,
+                        }}
+                      >
+                        <div style={{ fontWeight: 950 }}>{s.label}</div>
+                        <div style={{ color: UI.muted, fontWeight: 900 }}>
+                          Tables: {s.tables} • Slot #{s.slotIndex + 1}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-            ))}
-            {players.length === 0 && <div style={{ color: "#6b7280" }}>Add players to get started.</div>}
-          </div>
-        </Section>
+            </Card>
 
-        <Section title={`Teams (${realTeams.length})`} right={<div style={{ color: "#6b7280", fontSize: 12 }}>Need 16 players for 8 teams</div>}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 900 }}>
-              <input type="checkbox" checked={manualTeamsMode} onChange={(e) => setManualTeamsMode(e.target.checked)} disabled={teamActionsDisabled} />
-              Manual teams mode
-            </label>
+            {/* Settings */}
+            <Card title="Tournament Settings">
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                <div>
+                  <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>Tournament name</div>
+                  <TextInput value={tournamentName} onChange={setTournamentName} width={380} />
+                </div>
 
-            <Btn kind="secondary" onClick={buildRandomTeams} disabled={players.length < 2 || teamActionsDisabled}>
-              Randomize teams
-            </Btn>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 900 }}>
+                    <input
+                      type="checkbox"
+                      checked={avoidSameTeams}
+                      onChange={(e) => setAvoidSameTeams(e.target.checked)}
+                    />
+                    Avoid repeating teams when randomizing
+                  </label>
+                </div>
+              </div>
 
-            <Btn kind="secondary" onClick={() => clearAllTeams()} disabled={teams.length === 0 || teamActionsDisabled}>
-              Clear teams
-            </Btn>
+              <Divider />
 
-            {teamsLocked ? <div style={{ fontSize: 12, color: "#b45309", fontWeight: 900 }}>Locked: team changes disabled</div> : null}
-          </div>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                <SettingBox label="Win threshold (points)" value={winThreshold} onChange={(v) => setWinThreshold(clamp(Number(v || 0), 0, 99999))} />
+                <SettingBox label="Match points (win ≥ threshold)" value={winHighPts} onChange={(v) => setWinHighPts(clamp(Number(v || 0), 0, 99))} />
+                <SettingBox label="Match points (win < threshold)" value={winLowPts} onChange={(v) => setWinLowPts(clamp(Number(v || 0), 0, 99))} />
+              </div>
 
-          {manualTeamsMode ? (
-            <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, marginBottom: 12 }}>
-              <div style={{ fontWeight: 900, marginBottom: 8 }}>Create team manually</div>
+              <div style={{ marginTop: 10, color: UI.muted, fontWeight: 800, fontSize: 12 }}>
+                Standings tiebreaker: total game points (sum of table totals).
+              </div>
+            </Card>
+
+            {/* Players */}
+            <Card title={`Players (${players.length})`}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <TextInput
+                  value={newPlayerName}
+                  onChange={setNewPlayerName}
+                  placeholder="Add player name"
+                  width={260}
+                />
+                <Btn onClick={addPlayer} disabled={!newPlayerName.trim()}>Add player</Btn>
+              </div>
+
+              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 10 }}>
+                {players.map((p) => (
+                  <div
+                    key={p.id}
+                    style={{
+                      border: `1px solid ${UI.border}`,
+                      borderRadius: 14,
+                      padding: 12,
+                      background: UI.panel2,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {p.name}
+                    </div>
+                    <Btn kind="danger" small onClick={() => removePlayer(p.id)}>Remove</Btn>
+                  </div>
+                ))}
+                {players.length === 0 ? <div style={{ color: UI.muted, fontWeight: 800 }}>Add players to get started.</div> : null}
+              </div>
+            </Card>
+
+            {/* Teams */}
+            <Card
+              title="Teams (exactly 8)"
+              right={
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <Btn kind="secondary" onClick={randomizeUnlockedTeams} disabled={players.length < 16}>
+                    Randomize UNLOCKED teams
+                  </Btn>
+                  <Btn kind="ghost" onClick={initEmptyTeams}>Reset teams to Team 1…8</Btn>
+                </div>
+              }
+            >
+              <div style={{ color: UI.muted, fontWeight: 800, marginBottom: 10 }}>
+                Tip: assign players manually OR lock some teams then randomize the rest. (Needs 16 players to fill all teams.)
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))", gap: 10 }}>
+                {teams.map((t, idx) => (
+                  <div
+                    key={t.id}
+                    style={{
+                      border: `1px solid ${UI.border}`,
+                      borderRadius: 16,
+                      padding: 12,
+                      background: t.locked ? "rgba(34,197,94,0.08)" : UI.panel2,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+                      <div style={{ fontWeight: 1000 }}>
+                        {t.name || `Team ${idx + 1}`}{" "}
+                        {t.locked ? <Chip tone="good">LOCKED</Chip> : <Chip>UNLOCKED</Chip>}
+                      </div>
+                      <Btn kind="ghost" small onClick={() => toggleTeamLock(t.id)}>
+                        {t.locked ? "Unlock" : "Lock"}
+                      </Btn>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+                      <div>
+                        <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>Player 1</div>
+                        <Select
+                          value={t.playerIds?.[0] || ""}
+                          onChange={(v) => setTeamPlayer(t.id, 0, v)}
+                          options={[
+                            { value: "", label: "— Select —" },
+                            ...players.map((p) => ({ value: p.id, label: p.name })),
+                          ]}
+                          width={220}
+                        />
+                      </div>
+                      <div>
+                        <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>Player 2</div>
+                        <Select
+                          value={t.playerIds?.[1] || ""}
+                          onChange={(v) => setTeamPlayer(t.id, 1, v)}
+                          options={[
+                            { value: "", label: "— Select —" },
+                            ...players.map((p) => ({ value: p.id, label: p.name })),
+                          ]}
+                          width={220}
+                        />
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 10, color: UI.muted, fontWeight: 800, fontSize: 12 }}>
+                      When both players are set, the team name updates automatically.
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <Divider />
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontSize: 12, color: "#6b7280" }}>Player 1</div>
-                  <Select
-                    value={manualP1}
-                    onChange={setManualP1}
-                    disabled={teamActionsDisabled}
-                    options={[
-                      { value: "", label: "Select..." },
-                      ...players
-                        .filter((p) => !usedPlayers.has(p.id) || p.id === manualP1)
-                        .map((p) => ({ value: p.id, label: p.name })),
-                    ]}
-                    width={220}
-                  />
+                {tournamentReady ? <Chip tone="good">8 teams ready ✅</Chip> : <Chip tone="warn">Need 8 teams filled (16 players) ⚠️</Chip>}
+                <Chip>Tables: 4</Chip>
+                <Chip>Target: {DEFAULT_TARGET}</Chip>
+              </div>
+            </Card>
+
+            {/* Tournament Controls */}
+            <Card
+              title="Tournament Builder"
+              right={
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <Btn onClick={createPoolsRoundRobin} disabled={!tournamentReady}>
+                    Create Pools + Round Robin
+                  </Btn>
+                  <Btn kind="secondary" onClick={buildBracketFromPools} disabled={standingsA.length < 4 || standingsB.length < 4}>
+                    Create Bracket
+                  </Btn>
+                  <Btn kind="danger" onClick={resetTournamentStructure} disabled={games.length === 0 && bracket.length === 0}>
+                    Clear tournament
+                  </Btn>
                 </div>
-
-                <div>
-                  <div style={{ fontSize: 12, color: "#6b7280" }}>Player 2</div>
-                  <Select
-                    value={manualP2}
-                    onChange={setManualP2}
-                    disabled={teamActionsDisabled}
-                    options={[
-                      { value: "", label: "Select..." },
-                      ...players
-                        .filter((p) => !usedPlayers.has(p.id) || p.id === manualP2)
-                        .map((p) => ({ value: p.id, label: p.name })),
-                    ]}
-                    width={220}
-                  />
-                </div>
-
-                <Btn onClick={addManualTeam} disabled={teamActionsDisabled || !manualP1 || !manualP2 || manualP1 === manualP2}>
-                  Add Team
-                </Btn>
-
-                {manualP1 && manualP2 && manualP1 === manualP2 ? <div style={{ color: "#b91c1c", fontWeight: 900 }}>Pick 2 different players</div> : null}
+              }
+            >
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <ScoreboardCard overallScoreboard={overallScoreboard} stats={stats} />
+                <WinnerBoardCard winnerBoard={winnerBoard} />
               </div>
 
-              <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>Prevents using the same player in two teams.</div>
-            </div>
-          ) : null}
+              <Divider />
 
-          {teams.length === 0 ? (
-            <div style={{ color: "#6b7280" }}>Use “Manual teams mode” (Add Team) or “Randomize teams”.</div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
-              {teams.map((t) => (
-                <div key={t.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-                    <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name}</div>
-
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      <button
-                        onClick={() => removeTeam(t.id)}
-                        disabled={teamActionsDisabled}
-                        style={{
-                          border: "none",
-                          background: "transparent",
-                          color: teamActionsDisabled ? "#9ca3af" : "#b91c1c",
-                          fontWeight: 900,
-                          cursor: teamActionsDisabled ? "not-allowed" : "pointer",
-                        }}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-                    {t.playerIds.map((pid) => playerById.get(pid)?.name).filter(Boolean).join(", ")}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Section>
-
-        <Section
-          title="Tournament"
-          right={
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <Btn kind="primary" onClick={createPoolsRoundRobin} disabled={!tournamentReady}>
-                Create 2 pools + round robin
-              </Btn>
-              <Btn kind="secondary" onClick={buildBracketFromPools} disabled={standingsA.length < 4 || standingsB.length < 4}>
-                Create bracket
-              </Btn>
-            </div>
-          }
-        >
-          {!tournamentReady ? (
-            <div style={{ color: "#6b7280" }}>
-              Add players until you have <b>8 teams</b> (16 players).
-            </div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-              <div>
-                <h3 style={{ marginTop: 0 }}>Pool A</h3>
-                <div style={{ color: "#6b7280", fontSize: 12, marginBottom: 8 }}>
-                  {poolMap.A.map((id) => teamById.get(id)?.name).filter(Boolean).join(" • ")}
-                </div>
-
-                {poolGamesA.length === 0 ? (
-                  <div style={{ color: "#6b7280" }}>Create pools to see games.</div>
-                ) : (
-                  <>
-                    {Array.from(new Set(poolGamesA.map((g) => g.round))).map((r) => (
-                      <div key={r} style={{ marginBottom: 14 }}>
-                        <div style={{ fontWeight: 900, marginBottom: 6 }}>Round {r}</div>
-                        {poolGamesA
-                          .filter((g) => g.round === r)
-                          .map((g) => (
-                            <GameCard
-                              key={g.id}
-                              g={g}
-                              teamById={teamById}
-                              onScore={(side, v) => setGameScore(g.id, side, v)}
-                              onClear={() => clearGame(g.id)}
-                              onToggleFast={(en) => toggleFast(g.id, en)}
-                              onFastPatch={(patch) => updateFast(g.id, patch)}
-                              readOnly={false}
-                            />
-                          ))}
-                      </div>
-                    ))}
-                  </>
-                )}
-
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Standings</div>
-                  {standingsA.map((s, idx) => (
-                    <div key={s.teamId} style={{ display: "flex", justifyContent: "space-between", background: "#fff", border: "1px solid #e5e7eb", padding: 10, borderRadius: 12, marginBottom: 8 }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          #{idx + 1} {s.name}
-                        </div>
-                        <div style={{ fontSize: 12, color: "#6b7280" }}>Tiebreak: {s.totalGamePoints}</div>
-                      </div>
-                      <div style={{ fontWeight: 900 }}>Pts: {s.matchPoints}</div>
-                    </div>
-                  ))}
-                </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <PoolCard
+                  title="Pool A"
+                  poolKey="A"
+                  poolMap={poolMap}
+                  teamById={teamById}
+                  standings={standingsA}
+                  games={games}
+                  onPickTable={(pool, round, table) => setRoute("/table", { pool, round, table })}
+                  onSetTarget={setGameTarget}
+                  onAddHand={addHand}
+                  onUpdateHand={updateHand}
+                  onDeleteHand={deleteHand}
+                  onClearGame={clearGame}
+                />
+                <PoolCard
+                  title="Pool B"
+                  poolKey="B"
+                  poolMap={poolMap}
+                  teamById={teamById}
+                  standings={standingsB}
+                  games={games}
+                  onPickTable={(pool, round, table) => setRoute("/table", { pool, round, table })}
+                  onSetTarget={setGameTarget}
+                  onAddHand={addHand}
+                  onUpdateHand={updateHand}
+                  onDeleteHand={deleteHand}
+                  onClearGame={clearGame}
+                />
               </div>
 
-              <div>
-                <h3 style={{ marginTop: 0 }}>Pool B</h3>
-                <div style={{ color: "#6b7280", fontSize: 12, marginBottom: 8 }}>
-                  {poolMap.B.map((id) => teamById.get(id)?.name).filter(Boolean).join(" • ")}
+              <Divider />
+
+              <Card title="Bracket (visual)">
+                <BracketVisual
+                  bracketByRound={bracketByRound}
+                  teamById={teamById}
+                  onScore={setBracketScore}
+                  onClear={clearBracketMatch}
+                />
+              </Card>
+
+              <Divider />
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ color: UI.muted, fontWeight: 900 }}>
+                  Public & Table views are read-only / table-only inside THIS device (localStorage). Supabase later makes it live for everyone.
                 </div>
-
-                {poolGamesB.length === 0 ? (
-                  <div style={{ color: "#6b7280" }}>Create pools to see games.</div>
-                ) : (
-                  <>
-                    {Array.from(new Set(poolGamesB.map((g) => g.round))).map((r) => (
-                      <div key={r} style={{ marginBottom: 14 }}>
-                        <div style={{ fontWeight: 900, marginBottom: 6 }}>Round {r}</div>
-                        {poolGamesB
-                          .filter((g) => g.round === r)
-                          .map((g) => (
-                            <GameCard
-                              key={g.id}
-                              g={g}
-                              teamById={teamById}
-                              onScore={(side, v) => setGameScore(g.id, side, v)}
-                              onClear={() => clearGame(g.id)}
-                              onToggleFast={(en) => toggleFast(g.id, en)}
-                              onFastPatch={(patch) => updateFast(g.id, patch)}
-                              readOnly={false}
-                            />
-                          ))}
-                      </div>
-                    ))}
-                  </>
-                )}
-
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Standings</div>
-                  {standingsB.map((s, idx) => (
-                    <div key={s.teamId} style={{ display: "flex", justifyContent: "space-between", background: "#fff", border: "1px solid #e5e7eb", padding: 10, borderRadius: 12, marginBottom: 8 }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          #{idx + 1} {s.name}
-                        </div>
-                        <div style={{ fontSize: 12, color: "#6b7280" }}>Tiebreak: {s.totalGamePoints}</div>
-                      </div>
-                      <div style={{ fontWeight: 900 }}>Pts: {s.matchPoints}</div>
-                    </div>
-                  ))}
-                </div>
+                <Btn kind="danger" onClick={fullReset}>FULL RESET (everything)</Btn>
               </div>
-            </div>
-          )}
-        </Section>
-
-        <Section title="Bracket + Winner Board">
-          {bracket.length === 0 ? (
-            <div style={{ color: "#6b7280" }}>Create bracket once Pool standings have at least top 4 each.</div>
-          ) : (
-            <>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 }}>
-                {bracket
-                  .slice()
-                  .sort((a, b) => {
-                    const order = { QF: 1, SF: 2, F: 3, "3P": 4 };
-                    return (order[a.round] ?? 99) - (order[b.round] ?? 99) || (a.idx ?? 0) - (b.idx ?? 0);
-                  })
-                  .map((m) => (
-                    <div key={m.id} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                        <div style={{ fontWeight: 900 }}>
-                          {m.label} <span style={{ color: "#6b7280", fontWeight: 700 }}>({m.round})</span>
-                        </div>
-                        <div style={{ color: m.winnerId ? "#065f46" : "#6b7280", fontWeight: 900 }}>
-                          {m.winnerId ? `Winner: ${teamById.get(m.winnerId)?.name ?? "—"}` : "Pending"}
-                        </div>
-                      </div>
-
-                      <div style={{ marginTop: 8 }}>
-                        <div style={{ fontWeight: 800 }}>{teamById.get(m.teamAId)?.name ?? "TBD"}</div>
-                        <div style={{ fontWeight: 800 }}>{teamById.get(m.teamBId)?.name ?? "TBD"}</div>
-                      </div>
-
-                      <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center" }}>
-                        <Input value={m.scoreA} onChange={(v) => setBracketScore(m.id, "A", v)} width={90} placeholder="A pts" />
-                        <span style={{ color: "#6b7280" }}>vs</span>
-                        <Input value={m.scoreB} onChange={(v) => setBracketScore(m.id, "B", v)} width={90} placeholder="B pts" />
-                        <button
-                          onClick={() => clearBracketMatch(m.id)}
-                          style={{ marginLeft: "auto", border: "none", background: "transparent", color: "#6b7280", fontWeight: 900, cursor: "pointer" }}
-                        >
-                          Clear
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-
-              <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-                <PodiumCard label="Champion" value={winnerBoard.champion} />
-                <PodiumCard label="Runner-up" value={winnerBoard.runnerUp} />
-                <PodiumCard label="3rd Place" value={winnerBoard.third} />
-              </div>
-            </>
-          )}
-        </Section>
-      </>
-    );
-  }
-
-  // ===== Public view (read-only)
-  function PublicView() {
-    return (
-      <>
-        <div style={{ marginBottom: 10 }}>
-          <h1 style={{ margin: 0, fontSize: 26 }}>{tournamentName}</h1>
-          <div style={{ color: "#6b7280", marginTop: 4, fontWeight: 800 }}>Public View (read-only)</div>
-        </div>
-
-        <ScoreboardSection readOnly={true} />
-
-        <Section title="Winners">
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-            <PodiumCard label="Champion" value={winnerBoard.champion} />
-            <PodiumCard label="Runner-up" value={winnerBoard.runnerUp} />
-            <PodiumCard label="3rd Place" value={winnerBoard.third} />
+            </Card>
           </div>
-        </Section>
-
-        <div style={{ color: "#6b7280", fontSize: 12 }}>
-          Tip: Put this page on a TV/projector. (Live sync across devices requires Supabase.)
-        </div>
-      </>
-    );
-  }
-
-  // ===== Table view (only this table; can enter score)
-  function TableView() {
-    const rounds = Array.from(new Set(tableGames.map((g) => g.round))).sort((a, b) => a - b);
-
-    return (
-      <>
-        <div style={{ marginBottom: 10 }}>
-          <h1 style={{ margin: 0, fontSize: 26 }}>{tournamentName}</h1>
-          <div style={{ color: "#6b7280", marginTop: 4, fontWeight: 900 }}>Table View — Table {tableParam}</div>
-        </div>
-
-        <Section
-          title="Pick your round"
-          right={
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <Btn kind="secondary" onClick={() => setHash("/table", { table: String(tableParam) })}>
-                Refresh
-              </Btn>
-            </div>
-          }
-        >
-          {tableGames.length === 0 ? (
-            <div style={{ color: "#6b7280" }}>
-              No games found for Table {tableParam}. (Create pools first on Admin.)
-            </div>
-          ) : (
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <div style={{ fontWeight: 900 }}>Round:</div>
-              <Select
-                value={String(tableRound)}
-                onChange={(v) => setTableRound(Number(v))}
-                options={rounds.map((r) => ({ value: String(r), label: `Round ${r}` }))}
-                width={160}
-              />
-              <div style={{ color: "#6b7280", fontWeight: 800 }}>
-                Auto-picks the next incomplete round when you open this page.
-              </div>
-            </div>
-          )}
-        </Section>
-
-        <Section title={`Your Match (Table ${tableParam})`}>
-          {gameForTableRound ? (
-            <GameCard
-              g={gameForTableRound}
-              teamById={teamById}
-              onScore={(side, v) => setGameScore(gameForTableRound.id, side, v)}
-              onClear={() => clearGame(gameForTableRound.id)}
-              onToggleFast={(en) => toggleFast(gameForTableRound.id, en)}
-              onFastPatch={(patch) => updateFast(gameForTableRound.id, patch)}
-              readOnly={false}
-            />
-          ) : (
-            <div style={{ color: "#6b7280" }}>No match loaded.</div>
-          )}
-        </Section>
-
-        <Section title="Mini scoreboard (read-only)">
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
-              <thead>
-                <tr>
-                  {["#", "Team", "Pool", "MP", "W", "L", "PF", "PA", "Diff"].map((h) => (
-                    <th key={h} style={{ textAlign: "left", fontSize: 12, color: "#6b7280", padding: "10px 10px", borderBottom: "1px solid #e5e7eb", whiteSpace: "nowrap" }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {scoreboard.map((r, idx) => (
-                  <tr key={r.teamId} style={{ background: idx % 2 === 0 ? "#fff" : "#fafafa" }}>
-                    <td style={tdStyle}>{idx + 1}</td>
-                    <td style={{ ...tdStyle, fontWeight: 900 }}>{r.name}</td>
-                    <td style={tdStyle}>{r.pool}</td>
-                    <td style={{ ...tdStyle, fontWeight: 900 }}>{r.mp}</td>
-                    <td style={tdStyle}>{r.w}</td>
-                    <td style={tdStyle}>{r.l}</td>
-                    <td style={tdStyle}>{r.pf}</td>
-                    <td style={tdStyle}>{r.pa}</td>
-                    <td style={{ ...tdStyle, fontWeight: 900, color: r.diff > 0 ? "#065f46" : r.diff < 0 ? "#b91c1c" : "#111827" }}>{r.diff}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-            This is read-only; only your match is editable above.
-          </div>
-        </Section>
-
-        <div style={{ color: "#b45309", fontSize: 12, fontWeight: 900 }}>
-          Note: Until we add Supabase, scores entered here won’t automatically appear on other devices.
-        </div>
-      </>
-    );
-  }
-
-  // ===== render page by route
-  const page =
-    route.path === "/public" ? (
-      <PublicView />
-    ) : route.path === "/table" ? (
-      <TableView />
-    ) : (
-      <AdminView />
-    );
-
-  return (
-    <div style={{ minHeight: "100vh", background: "#f3f4f6", padding: 18 }}>
-      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <TopNav />
-        {page}
+        ) : null}
       </div>
     </div>
   );
 }
 
-function LinkRow({ label, url }) {
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(url);
-      alert("Copied link!");
-    } catch {
-      // ignore
-    }
+/** ===== Subcomponents ===== */
+
+function SettingBox({ label, value, onChange }) {
+  return (
+    <div style={{ minWidth: 240 }}>
+      <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>{label}</div>
+      <TextInput value={String(value)} onChange={onChange} width={180} />
+    </div>
+  );
+}
+
+function ScoreboardCard({ overallScoreboard, stats }) {
+  return (
+    <Card title="Live Scoreboard + Stats" right={<Chip tone="good">LIVE</Chip>}>
+      <div style={{ color: UI.muted, fontWeight: 900, marginBottom: 10 }}>
+        Sort: match points, then total points.
+      </div>
+
+      <div style={{ display: "grid", gap: 8 }}>
+        {overallScoreboard.slice(0, 8).map((s, idx) => (
+          <div
+            key={s.teamId}
+            style={{
+              border: `1px solid ${UI.border}`,
+              borderRadius: 14,
+              padding: 10,
+              background: idx === 0 ? "rgba(34,197,94,0.08)" : UI.panel2,
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 10,
+              alignItems: "center",
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 1000, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                #{idx + 1} {s.name}
+              </div>
+              <div style={{ color: UI.muted, fontWeight: 800, fontSize: 12 }}>
+                W-L: {s.wins}-{s.losses} • Total pts: {s.totalGamePoints} • Hands: {s.hands}
+              </div>
+            </div>
+            <Chip tone="warn">MP: {s.matchPoints}</Chip>
+          </div>
+        ))}
+      </div>
+
+      <Divider />
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <StatMini label="Total hands played" value={stats.totalHands} />
+        <StatMini label="Total table points" value={stats.totalTablePoints} />
+
+        <StatMini
+          label="Biggest hand (A+B)"
+          value={stats.biggestHand ? `${stats.biggestHand.sum} pts` : "—"}
+          sub={stats.biggestHand ? `A ${stats.biggestHand.ha} / B ${stats.biggestHand.hb}` : ""}
+        />
+        <StatMini
+          label="Biggest swing"
+          value={stats.biggestSwing ? `${stats.biggestSwing.swing} pts` : "—"}
+          sub={stats.biggestSwing ? `A ${stats.biggestSwing.ha} / B ${stats.biggestSwing.hb}` : ""}
+        />
+      </div>
+
+      <Divider />
+
+      <div style={{ fontWeight: 1000, marginBottom: 8 }}>Funny Awards</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        {Object.values(stats.funny)
+          .filter(Boolean)
+          .map((a) => (
+            <div key={a.title} style={{ border: `1px solid ${UI.border}`, borderRadius: 14, padding: 10, background: UI.panel2 }}>
+              <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>{a.title}</div>
+              <div style={{ fontWeight: 1000 }}>{a.team}</div>
+              <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>{a.value}</div>
+            </div>
+          ))}
+      </div>
+    </Card>
+  );
+}
+
+function StatMini({ label, value, sub }) {
+  return (
+    <div style={{ border: `1px solid ${UI.border}`, borderRadius: 14, padding: 10, background: UI.panel2 }}>
+      <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>{label}</div>
+      <div style={{ fontWeight: 1100, fontSize: 18 }}>{value}</div>
+      {sub ? <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>{sub}</div> : null}
+    </div>
+  );
+}
+
+function WinnerBoardCard({ winnerBoard }) {
+  return (
+    <Card title="Winner Board">
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+        <Podium label="Champion" value={winnerBoard.champion} tone="good" />
+        <Podium label="Runner-up" value={winnerBoard.runnerUp} tone="warn" />
+        <Podium label="3rd Place" value={winnerBoard.third} tone="neutral" />
+      </div>
+
+      <Divider />
+      <div style={{ color: UI.muted, fontWeight: 900 }}>
+        When bracket is completed, winners appear here automatically.
+      </div>
+    </Card>
+  );
+}
+
+function Podium({ label, value, tone }) {
+  return (
+    <div style={{ border: `1px solid ${UI.border}`, borderRadius: 14, padding: 12, background: UI.panel2 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+        <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>{label}</div>
+        <Chip tone={tone}>{value ? "SET" : "—"}</Chip>
+      </div>
+      <div style={{ fontSize: 18, fontWeight: 1100 }}>{value || "—"}</div>
+    </div>
+  );
+}
+
+function PoolCard({
+  title,
+  poolKey,
+  poolMap,
+  teamById,
+  standings,
+  games,
+  onPickTable,
+  onSetTarget,
+  onAddHand,
+  onUpdateHand,
+  onDeleteHand,
+  onClearGame,
+}) {
+  const poolTeams = poolMap[poolKey] || [];
+  const poolGames = games
+    .filter((g) => g.stage === "POOL" && g.pool === poolKey)
+    .sort((a, b) => a.round - b.round || a.table - b.table);
+
+  return (
+    <Card
+      title={title}
+      right={<Chip>{poolTeams.length ? `Teams: ${poolTeams.length}` : "Not created"}</Chip>}
+    >
+      <div style={{ color: UI.muted, fontWeight: 900, marginBottom: 10 }}>
+        {poolTeams.length
+          ? poolTeams.map((id) => teamById.get(id)?.name).filter(Boolean).join(" • ")
+          : "Create pools to assign teams."}
+      </div>
+
+      <Divider />
+
+      <div style={{ fontWeight: 1000, marginBottom: 8 }}>Standings</div>
+      <div style={{ display: "grid", gap: 8 }}>
+        {standings.map((s, idx) => (
+          <div
+            key={s.teamId}
+            style={{
+              border: `1px solid ${UI.border}`,
+              borderRadius: 14,
+              padding: 10,
+              background: idx === 0 ? "rgba(96,165,250,0.12)" : UI.panel2,
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 10,
+              alignItems: "center",
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 1000, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                #{idx + 1} {s.name}
+              </div>
+              <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>Tiebreak pts: {s.totalGamePoints}</div>
+            </div>
+            <Chip tone="warn">MP: {s.matchPoints}</Chip>
+          </div>
+        ))}
+        {standings.length === 0 ? <div style={{ color: UI.muted, fontWeight: 900 }}>Standings appear after schedule.</div> : null}
+      </div>
+
+      <Divider />
+
+      <div style={{ fontWeight: 1000, marginBottom: 8 }}>Matches</div>
+
+      {poolGames.length === 0 ? (
+        <div style={{ color: UI.muted, fontWeight: 900 }}>Create pools to see matches.</div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {Array.from(new Set(poolGames.map((g) => g.round))).map((r) => (
+            <div key={r} style={{ border: `1px solid ${UI.border}`, borderRadius: 16, padding: 10, background: "rgba(0,0,0,0.14)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+                <div style={{ fontWeight: 1100 }}>Round {r}</div>
+                <Chip>Tables: {poolGames.filter((g) => g.round === r).length}</Chip>
+              </div>
+
+              <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+                {poolGames
+                  .filter((g) => g.round === r)
+                  .map((g) => (
+                    <MatchMini
+                      key={g.id}
+                      g={g}
+                      teamById={teamById}
+                      onPickTable={() => onPickTable(g.pool, g.round, g.table)}
+                      onSetTarget={(t) => onSetTarget(g.id, t)}
+                      onAddHand={(hand) => onAddHand(g.id, hand)}
+                      onUpdateHand={(handId, patch) => onUpdateHand(g.id, handId, patch)}
+                      onDeleteHand={(handId) => onDeleteHand(g.id, handId)}
+                      onClear={() => onClearGame(g.id)}
+                    />
+                  ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function MatchMini({ g, teamById, onPickTable, onSetTarget, onAddHand, onUpdateHand, onDeleteHand, onClear }) {
+  const aName = teamById.get(g.teamAId)?.name || "—";
+  const bName = teamById.get(g.teamBId)?.name || "—";
+  const aScore = Number(g.scoreA) || 0;
+  const bScore = Number(g.scoreB) || 0;
+  const target = Number(g.tableTarget) || DEFAULT_TARGET;
+
+  const pending = !g.winnerId;
+  const winner = g.winnerId ? teamById.get(g.winnerId)?.name : null;
+
+  const tone = !pending ? "good" : aScore || bScore ? "warn" : "neutral";
+
+  return (
+    <div style={{ border: `1px solid ${UI.border}`, borderRadius: 16, padding: 12, background: UI.panel2 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 1100 }}>
+          <Chip>Table {g.table}</Chip>{" "}
+          <span style={{ color: UI.muted, fontWeight: 900 }}>•</span>{" "}
+          {aName} <span style={{ color: UI.muted }}>vs</span> {bName}
+        </div>
+        <Chip tone={tone}>{pending ? "In progress" : `Winner: ${winner}`}</Chip>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+        <Chip tone={aScore >= target ? "good" : "neutral"}>A: {aScore}</Chip>
+        <Chip tone={bScore >= target ? "good" : "neutral"}>B: {bScore}</Chip>
+        <Chip>Target: {target}</Chip>
+        <Chip tone="warn">MP A +{g.matchPtsA} / B +{g.matchPtsB}</Chip>
+
+        <Btn kind="ghost" small onClick={onPickTable} style={{ marginLeft: "auto" }}>
+          Open Table View
+        </Btn>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+        <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>Edit target</div>
+        <TextInput value={String(g.tableTarget || DEFAULT_TARGET)} onChange={(v) => onSetTarget(v)} width={120} />
+        <Btn kind="ghost" small onClick={onClear}>Clear match</Btn>
+      </div>
+
+      <Divider />
+
+      <HandsEditor
+        compact
+        target={target}
+        totalA={aScore}
+        totalB={bScore}
+        hands={g.hands || []}
+        onAdd={onAddHand}
+        onUpdate={onUpdateHand}
+        onDelete={onDeleteHand}
+      />
+    </div>
+  );
+}
+
+function BracketVisual({ bracketByRound, teamById, onScore, onClear }) {
+  const { qf, sf, f, p3 } = bracketByRound;
+
+  if ((!qf || qf.length === 0) && !f && !p3) {
+    return <div style={{ color: UI.muted, fontWeight: 900 }}>Create bracket to see it here.</div>;
   }
 
   return (
-    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
-      <div style={{ fontWeight: 900 }}>{label}</div>
-      <div style={{ color: "#6b7280", fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 720 }}>
-        {url}
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+      <BracketCol title="Quarterfinals">
+        {qf.map((m) => (
+          <BracketMatch key={m.id} m={m} teamById={teamById} onScore={onScore} onClear={onClear} />
+        ))}
+      </BracketCol>
+
+      <BracketCol title="Semifinals">
+        {sf.map((m) => (
+          <BracketMatch key={m.id} m={m} teamById={teamById} onScore={onScore} onClear={onClear} />
+        ))}
+      </BracketCol>
+
+      <BracketCol title="Finals">
+        {f ? <BracketMatch m={f} teamById={teamById} onScore={onScore} onClear={onClear} big /> : null}
+        {p3 ? (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ color: UI.muted, fontWeight: 900, marginBottom: 6 }}>3rd Place</div>
+            <BracketMatch m={p3} teamById={teamById} onScore={onScore} onClear={onClear} />
+          </div>
+        ) : null}
+      </BracketCol>
+    </div>
+  );
+}
+
+function BracketCol({ title, children }) {
+  return (
+    <div style={{ border: `1px solid ${UI.border}`, borderRadius: 16, padding: 12, background: "rgba(0,0,0,0.14)" }}>
+      <div style={{ fontWeight: 1100, marginBottom: 10 }}>{title}</div>
+      <div style={{ display: "grid", gap: 10 }}>{children}</div>
+    </div>
+  );
+}
+
+function BracketMatch({ m, teamById, onScore, onClear, big }) {
+  const aName = m.teamAId ? teamById.get(m.teamAId)?.name : "TBD";
+  const bName = m.teamBId ? teamById.get(m.teamBId)?.name : "TBD";
+  const pending = !m.winnerId;
+  const winner = m.winnerId ? teamById.get(m.winnerId)?.name : null;
+
+  return (
+    <div style={{ border: `1px solid ${UI.border}`, borderRadius: 16, padding: 12, background: UI.panel2 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+        <div style={{ fontWeight: 1200, fontSize: big ? 16 : 14 }}>
+          {m.label} <span style={{ color: UI.muted, fontWeight: 900 }}>({m.round})</span>
+        </div>
+        <Chip tone={pending ? "warn" : "good"}>{pending ? "Pending" : `Winner: ${winner}`}</Chip>
       </div>
-      <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-        <Btn kind="secondary" onClick={copy}>Copy</Btn>
-        <Btn onClick={() => window.open(url, "_blank")}>Open</Btn>
+
+      <div style={{ marginTop: 8, fontWeight: 1000 }}>{aName}</div>
+      <div style={{ marginTop: 2, fontWeight: 1000 }}>{bName}</div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+        <TextInput value={m.scoreA} onChange={(v) => onScore(m.id, "A", v)} width={90} placeholder="A pts" />
+        <span style={{ color: UI.muted, fontWeight: 900 }}>vs</span>
+        <TextInput value={m.scoreB} onChange={(v) => onScore(m.id, "B", v)} width={90} placeholder="B pts" />
+        <Btn kind="ghost" small onClick={() => onClear(m.id)} style={{ marginLeft: "auto" }}>
+          Clear
+        </Btn>
       </div>
+
+      {m.nextMatchId ? (
+        <div style={{ marginTop: 8, color: UI.muted, fontWeight: 900, fontSize: 12 }}>
+          Winner advances → slot {m.nextSlot}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function HandsEditor({ compact, target, totalA, totalB, hands, onAdd, onUpdate, onDelete }) {
+  const [form, setForm] = useState({
+    bidder: "A",
+    bid: 80,
+    coincheLevel: "NONE",
+    capot: false,
+    bidderTrickPoints: 81,
+    announceA: 0,
+    announceB: 0,
+    beloteTeam: "NONE",
+  });
+
+  const winnerA = totalA >= target;
+  const winnerB = totalB >= target;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ fontWeight: 1100 }}>Hand-by-hand tracker</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Chip tone={winnerA ? "good" : "neutral"}>A total: {totalA}</Chip>
+          <Chip tone={winnerB ? "good" : "neutral"}>B total: {totalB}</Chip>
+          <Chip>First to {target}</Chip>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: compact ? "repeat(auto-fit, minmax(160px, 1fr))" : "repeat(auto-fit, minmax(190px, 1fr))", gap: 10, marginTop: 10 }}>
+        <Field label="Bidder">
+          <Select
+            value={form.bidder}
+            onChange={(v) => setForm((p) => ({ ...p, bidder: v }))}
+            options={[
+              { value: "A", label: "Team A (left)" },
+              { value: "B", label: "Team B (right)" },
+            ]}
+            width={compact ? 170 : 190}
+          />
+        </Field>
+
+        <Field label="Bid">
+          <TextInput value={String(form.bid)} onChange={(v) => setForm((p) => ({ ...p, bid: Number(v || 0) }))} width={compact ? 120 : 150} />
+        </Field>
+
+        <Field label="Coinche">
+          <Select
+            value={form.coincheLevel}
+            onChange={(v) => setForm((p) => ({ ...p, coincheLevel: v }))}
+            options={[
+              { value: "NONE", label: "None" },
+              { value: "COINCHE", label: "Coinche (x2)" },
+              { value: "SURCOINCHE", label: "Surcoinche (x4)" },
+            ]}
+            width={compact ? 170 : 190}
+          />
+        </Field>
+
+        <Field label="Capot">
+          <Select
+            value={form.capot ? "YES" : "NO"}
+            onChange={(v) => setForm((p) => ({ ...p, capot: v === "YES" }))}
+            options={[
+              { value: "NO", label: "No" },
+              { value: "YES", label: "Yes" },
+            ]}
+            width={compact ? 120 : 150}
+          />
+        </Field>
+
+        <Field label="Bidder trick pts (0–162)">
+          <TextInput
+            value={String(form.bidderTrickPoints)}
+            onChange={(v) => setForm((p) => ({ ...p, bidderTrickPoints: Number(v || 0) }))}
+            width={compact ? 140 : 170}
+          />
+        </Field>
+
+        <Field label="Announces A (non-belote)">
+          <TextInput value={String(form.announceA)} onChange={(v) => setForm((p) => ({ ...p, announceA: Number(v || 0) }))} width={compact ? 140 : 170} />
+        </Field>
+
+        <Field label="Announces B (non-belote)">
+          <TextInput value={String(form.announceB)} onChange={(v) => setForm((p) => ({ ...p, announceB: Number(v || 0) }))} width={compact ? 140 : 170} />
+        </Field>
+
+        <Field label="Belote (who has it)">
+          <Select
+            value={form.beloteTeam}
+            onChange={(v) => setForm((p) => ({ ...p, beloteTeam: v }))}
+            options={[
+              { value: "NONE", label: "None" },
+              { value: "A", label: "Team A" },
+              { value: "B", label: "Team B" },
+            ]}
+            width={compact ? 160 : 190}
+          />
+        </Field>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <Btn
+          onClick={() => {
+            onAdd(form);
+          }}
+          disabled={winnerA || winnerB}
+        >
+          Add Hand
+        </Btn>
+        {winnerA || winnerB ? (
+          <Chip tone="good">Match ended (winner reached {target})</Chip>
+        ) : (
+          <Chip tone="warn">Match live</Chip>
+        )}
+        <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>
+          You can edit any hand below — totals recalc automatically.
+        </div>
+      </div>
+
+      <Divider />
+
+      {hands.length === 0 ? (
+        <div style={{ color: UI.muted, fontWeight: 900 }}>No hands yet. Add the first hand above.</div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {hands
+            .slice()
+            .sort((a, b) => a.createdAt - b.createdAt)
+            .map((h, idx) => (
+              <HandRow
+                key={h.id}
+                idx={idx}
+                h={h}
+                onUpdate={(patch) => onUpdate(h.id, patch)}
+                onDelete={() => onDelete(h.id)}
+              />
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div>
+      <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12, marginBottom: 6 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function HandRow({ idx, h, onUpdate, onDelete }) {
+  return (
+    <div style={{ border: `1px solid ${UI.border}`, borderRadius: 16, padding: 12, background: "rgba(0,0,0,0.14)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+        <div style={{ fontWeight: 1100 }}>
+          Hand #{idx + 1}{" "}
+          <span style={{ color: UI.muted, fontWeight: 900 }}>
+            • Bidder {h.bidder} • Bid {h.bid} • {h.coincheLevel}
+            {h.capot ? " • Capot" : ""}
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Chip>A +{Number(h.scoreA) || 0}</Chip>
+          <Chip>B +{Number(h.scoreB) || 0}</Chip>
+          <Btn kind="danger" small onClick={onDelete}>Delete</Btn>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginTop: 10 }}>
+        <Field label="Bidder">
+          <Select
+            value={h.bidder}
+            onChange={(v) => onUpdate({ bidder: v })}
+            options={[
+              { value: "A", label: "A" },
+              { value: "B", label: "B" },
+            ]}
+            width={160}
+          />
+        </Field>
+
+        <Field label="Bid">
+          <TextInput value={String(h.bid)} onChange={(v) => onUpdate({ bid: Number(v || 0) })} width={130} />
+        </Field>
+
+        <Field label="Coinche">
+          <Select
+            value={h.coincheLevel}
+            onChange={(v) => onUpdate({ coincheLevel: v })}
+            options={[
+              { value: "NONE", label: "None" },
+              { value: "COINCHE", label: "Coinche (x2)" },
+              { value: "SURCOINCHE", label: "Surcoinche (x4)" },
+            ]}
+            width={180}
+          />
+        </Field>
+
+        <Field label="Capot">
+          <Select
+            value={h.capot ? "YES" : "NO"}
+            onChange={(v) => onUpdate({ capot: v === "YES" })}
+            options={[
+              { value: "NO", label: "No" },
+              { value: "YES", label: "Yes" },
+            ]}
+            width={130}
+          />
+        </Field>
+
+        <Field label="Bidder trick pts">
+          <TextInput
+            value={String(h.bidderTrickPoints)}
+            onChange={(v) => onUpdate({ bidderTrickPoints: Number(v || 0) })}
+            width={150}
+          />
+        </Field>
+
+        <Field label="Announce A">
+          <TextInput value={String(h.announceA)} onChange={(v) => onUpdate({ announceA: Number(v || 0) })} width={150} />
+        </Field>
+
+        <Field label="Announce B">
+          <TextInput value={String(h.announceB)} onChange={(v) => onUpdate({ announceB: Number(v || 0) })} width={150} />
+        </Field>
+
+        <Field label="Belote">
+          <Select
+            value={h.beloteTeam}
+            onChange={(v) => onUpdate({ beloteTeam: v })}
+            options={[
+              { value: "NONE", label: "None" },
+              { value: "A", label: "Team A" },
+              { value: "B", label: "Team B" },
+            ]}
+            width={160}
+          />
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+function PublicView({ overallScoreboard, standingsA, standingsB, bracketByRound, teamById, winnerBoard, stats, schedule }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 14 }}>
+      <Card
+        title="Public Scoreboard (TV Mode)"
+        right={
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Chip tone="good">LIVE</Chip>
+            <Chip>8 teams</Chip>
+            <Chip>{GAME_MINUTES}m game + {BREAK_MINUTES}m break</Chip>
+          </div>
+        }
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 1100, marginBottom: 10 }}>Overall</div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {overallScoreboard.map((s, idx) => (
+                <div
+                  key={s.teamId}
+                  style={{
+                    border: `1px solid ${UI.border}`,
+                    borderRadius: 16,
+                    padding: 12,
+                    background: idx === 0 ? "rgba(34,197,94,0.10)" : UI.panel2,
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    alignItems: "center",
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 1200, fontSize: 18, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      #{idx + 1} {s.name}
+                    </div>
+                    <div style={{ color: UI.muted, fontWeight: 900 }}>
+                      MP {s.matchPoints} • Total {s.totalGamePoints} • W-L {s.wins}-{s.losses}
+                    </div>
+                  </div>
+                  <Chip tone="warn">MP {s.matchPoints}</Chip>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontWeight: 1100, marginBottom: 10 }}>Winner Board</div>
+            <div style={{ display: "grid", gap: 10 }}>
+              <Podium label="Champion" value={winnerBoard.champion} tone="good" />
+              <Podium label="Runner-up" value={winnerBoard.runnerUp} tone="warn" />
+              <Podium label="3rd Place" value={winnerBoard.third} tone="neutral" />
+            </div>
+
+            <Divider />
+
+            <div style={{ fontWeight: 1100, marginBottom: 10 }}>Quick Stats</div>
+            <div style={{ display: "grid", gap: 10 }}>
+              <StatMini label="Hands played" value={stats.totalHands} />
+              <StatMini label="Total table points" value={stats.totalTablePoints} />
+              <StatMini label="Biggest hand" value={stats.biggestHand ? `${stats.biggestHand.sum}` : "—"} sub={stats.biggestHand ? `A ${stats.biggestHand.ha} / B ${stats.biggestHand.hb}` : ""} />
+              <StatMini label="Biggest swing" value={stats.biggestSwing ? `${stats.biggestSwing.swing}` : "—"} sub={stats.biggestSwing ? `A ${stats.biggestSwing.ha} / B ${stats.biggestSwing.hb}` : ""} />
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Card title="Pool A Standings">{standingsA.length ? standingsA.map((s, i) => <PublicStandRow key={s.teamId} s={s} i={i} />) : <div style={{ color: UI.muted, fontWeight: 900 }}>Not started yet.</div>}</Card>
+        <Card title="Pool B Standings">{standingsB.length ? standingsB.map((s, i) => <PublicStandRow key={s.teamId} s={s} i={i} />) : <div style={{ color: UI.muted, fontWeight: 900 }}>Not started yet.</div>}</Card>
+      </div>
+
+      <Card title="Bracket">
+        <BracketVisual bracketByRound={bracketByRound} teamById={teamById} onScore={() => {}} onClear={() => {}} />
+        <div style={{ marginTop: 10, color: UI.muted, fontWeight: 900, fontSize: 12 }}>
+          (Public view is read-only)
+        </div>
+      </Card>
+
+      <Card title="Schedule (planned)">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
+          {schedule.map((s) => (
+            <div key={s.key} style={{ border: `1px solid ${UI.border}`, borderRadius: 16, padding: 12, background: UI.panel2 }}>
+              <div style={{ fontWeight: 1100 }}>{s.label}</div>
+              <div style={{ color: UI.muted, fontWeight: 900 }}>Tables: {s.tables} • Slot #{s.slotIndex + 1}</div>
+              <div style={{ color: UI.muted, fontWeight: 900, marginTop: 6 }}>
+                {GAME_MINUTES} min play + {BREAK_MINUTES} min break
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function PublicStandRow({ s, i }) {
+  return (
+    <div style={{ border: `1px solid ${UI.border}`, borderRadius: 16, padding: 12, background: i === 0 ? "rgba(96,165,250,0.12)" : UI.panel2, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 1100, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          #{i + 1} {s.name}
+        </div>
+        <div style={{ color: UI.muted, fontWeight: 900, fontSize: 12 }}>Tiebreak: {s.totalGamePoints}</div>
+      </div>
+      <Chip tone="warn">MP {s.matchPoints}</Chip>
+    </div>
+  );
+}
+
+function TableView({
+  tableLink,
+  games,
+  teamById,
+  selectedPool,
+  selectedRound,
+  selectedTable,
+  tableMatch,
+  onPick,
+  onSetTarget,
+  onAddHand,
+  onUpdateHand,
+  onDeleteHand,
+  onClearGame,
+}) {
+  const rounds = [1, 2, 3]; // pool rounds for 4 teams
+  const pools = ["A", "B"];
+  const tables = [1, 2, 3, 4];
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 14 }}>
+      <Card
+        title="Table View (enter your hands only)"
+        right={
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Btn kind="ghost" onClick={() => navigator.clipboard?.writeText(tableLink)}>Copy Table Link</Btn>
+          </div>
+        }
+      >
+        <div style={{ color: UI.muted, fontWeight: 900 }}>
+          Pick your match (pool + round + table). Then enter hands. Totals & winner update instantly.
+        </div>
+
+        <Divider />
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <Field label="Pool">
+            <Select
+              value={selectedPool}
+              onChange={(v) => onPick(v, selectedRound, selectedTable)}
+              options={pools.map((p) => ({ value: p, label: `Pool ${p}` }))}
+              width={140}
+            />
+          </Field>
+
+          <Field label="Round">
+            <Select
+              value={String(selectedRound)}
+              onChange={(v) => onPick(selectedPool, Number(v), selectedTable)}
+              options={rounds.map((r) => ({ value: String(r), label: `Round ${r}` }))}
+              width={140}
+            />
+          </Field>
+
+          <Field label="Table">
+            <Select
+              value={String(selectedTable)}
+              onChange={(v) => onPick(selectedPool, selectedRound, Number(v))}
+              options={tables.map((t) => ({ value: String(t), label: `Table ${t}` }))}
+              width={140}
+            />
+          </Field>
+        </div>
+      </Card>
+
+      {!tableMatch ? (
+        <Card title="No match found">
+          <div style={{ color: UI.muted, fontWeight: 900 }}>
+            Create Pools + Round Robin in Admin first.
+          </div>
+        </Card>
+      ) : (
+        <Card
+          title={`Pool ${tableMatch.pool} • Round ${tableMatch.round} • Table ${tableMatch.table}`}
+          right={
+            <Chip tone={tableMatch.winnerId ? "good" : "warn"}>
+              {tableMatch.winnerId ? `Winner: ${teamById.get(tableMatch.winnerId)?.name ?? "—"}` : "In progress"}
+            </Chip>
+          }
+        >
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <Chip>
+              {teamById.get(tableMatch.teamAId)?.name ?? "—"} vs {teamById.get(tableMatch.teamBId)?.name ?? "—"}
+            </Chip>
+            <Chip tone="warn">MP A +{tableMatch.matchPtsA} / B +{tableMatch.matchPtsB}</Chip>
+            <Btn kind="danger" small onClick={() => onClearGame(tableMatch.id)}>Clear match</Btn>
+          </div>
+
+          <Divider />
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <Field label="Target">
+              <TextInput value={String(tableMatch.tableTarget || DEFAULT_TARGET)} onChange={(v) => onSetTarget(tableMatch.id, v)} width={140} />
+            </Field>
+            <Chip tone={(Number(tableMatch.scoreA) || 0) >= (Number(tableMatch.tableTarget) || DEFAULT_TARGET) ? "good" : "neutral"}>
+              A total: {Number(tableMatch.scoreA) || 0}
+            </Chip>
+            <Chip tone={(Number(tableMatch.scoreB) || 0) >= (Number(tableMatch.tableTarget) || DEFAULT_TARGET) ? "good" : "neutral"}>
+              B total: {Number(tableMatch.scoreB) || 0}
+            </Chip>
+          </div>
+
+          <Divider />
+
+          <HandsEditor
+            target={Number(tableMatch.tableTarget) || DEFAULT_TARGET}
+            totalA={Number(tableMatch.scoreA) || 0}
+            totalB={Number(tableMatch.scoreB) || 0}
+            hands={tableMatch.hands || []}
+            onAdd={(hand) => onAddHand(tableMatch.id, hand)}
+            onUpdate={(handId, patch) => onUpdateHand(tableMatch.id, handId, patch)}
+            onDelete={(handId) => onDeleteHand(tableMatch.id, handId)}
+          />
+        </Card>
+      )}
+
+      <Card title="Reminder">
+        <div style={{ color: UI.muted, fontWeight: 900 }}>
+          Without Supabase, each phone/table has its own data. When you’re ready, we’ll add Supabase so all tables update the same live scoreboard.
+        </div>
+      </Card>
     </div>
   );
 }
