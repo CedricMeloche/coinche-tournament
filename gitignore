@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.vs/
+*.sln
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.DS_Store
+.env
