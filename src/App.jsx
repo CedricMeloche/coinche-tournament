@@ -1,16 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * Coinche Tournament Manager (Simplified Vite version - deploy friendly)
- * - No shadcn imports
- * - 8+ teams: 2 pools RR + bracket (QF/SF/Final + 3rd place)
- * - Add players anytime, randomize OR manually create teams
- * - Team Lock toggle: prevents team changes once locked
- * - Match points: win >= threshold => 2, else 1; loss 0; tiebreak total game points
- * - Fast mode Coinche scoring included (bid/tricks/announces)
+ * Coinche Tournament Manager (Vite friendly)
+ * - Hash routes:
+ *    #/            Admin (full control)
+ *    #/public      Public View (read-only scoreboard/stats)
+ *    #/table?table=1  Table View (only that table's games; can enter score)
+ * - NOTE: Without Supabase, data is per-device (localStorage). Public view won't auto-sync across devices yet.
  */
 
-const LS_KEY = "coinche_tournament_vite_simple_v2";
+const LS_KEY = "coinche_tournament_vite_simple_v4";
 
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
@@ -27,6 +26,31 @@ function safeInt(v) {
   if (v === "" || v === null || v === undefined) return null;
   const n = Number(String(v).replace(/[^0-9\-]/g, ""));
   return Number.isFinite(n) ? n : null;
+}
+function clampNum(n, min = 0, max = 999999) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return min;
+  return Math.max(min, Math.min(max, x));
+}
+function fmt(n) {
+  if (n === null || n === undefined) return "—";
+  if (!Number.isFinite(Number(n))) return "—";
+  return String(n);
+}
+
+/** Hash routing helpers */
+function parseHashRoute() {
+  const raw = window.location.hash || "#/";
+  const withoutHash = raw.startsWith("#") ? raw.slice(1) : raw;
+  const [pathPart, queryPart] = withoutHash.split("?");
+  const path = pathPart || "/";
+  const qs = new URLSearchParams(queryPart || "");
+  const params = Object.fromEntries(qs.entries());
+  return { path, params };
+}
+function setHash(path, params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  window.location.hash = qs ? `#${path}?${qs}` : `#${path}`;
 }
 
 /** Circle method RR scheduler */
@@ -61,9 +85,9 @@ function circleRoundRobin(teamIds) {
   return out;
 }
 
-function computeMatchPoints(scoreWinner, threshold2000, highPts, lowPts) {
+function computeMatchPoints(scoreWinner, threshold, highPts, lowPts) {
   if (scoreWinner === null) return 0;
-  return scoreWinner >= threshold2000 ? highPts : lowPts;
+  return scoreWinner >= threshold ? highPts : lowPts;
 }
 
 function sortStandings(rows) {
@@ -88,14 +112,14 @@ function roundTrickPoints(x) {
 }
 
 function computeFastCoincheScore({
-  bidder, // "A"|"B"
-  bid, // number
-  coincheLevel, // "NONE"|"COINCHE"|"SURCOINCHE"
-  capot, // boolean
-  bidderTrickPoints, // 0..162 raw
-  announceA, // non-belote announces total A
-  announceB, // non-belote announces total B
-  beloteTeam, // "NONE"|"A"|"B"
+  bidder,
+  bid,
+  coincheLevel,
+  capot,
+  bidderTrickPoints,
+  announceA,
+  announceB,
+  beloteTeam,
 }) {
   const BIDDER_IS_A = bidder === "A";
   const bidVal = Number(bid) || 0;
@@ -115,12 +139,10 @@ function computeFastCoincheScore({
 
   const bidderAnn = BIDDER_IS_A ? aAnn : bAnn;
 
-  // Minimum needed: base 81. If bidder has belote: 71. If bid==80 must be 81.
   const bidderHasBelote = (BIDDER_IS_A && beloteTeam === "A") || (!BIDDER_IS_A && beloteTeam === "B");
   const baseMin = bidderHasBelote ? 71 : 81;
   const special80 = bidVal === 80 ? 81 : 0;
 
-  // Announces help (simple fast mode): allow them to reduce requirement.
   const announceHelp = bidderAnn + (bidderHasBelote ? 20 : 0);
   const required = Math.max(baseMin, special80, bidVal - announceHelp);
 
@@ -133,7 +155,6 @@ function computeFastCoincheScore({
   let scoreB = 0;
 
   if (capot) {
-    // winner gets 250 + all announces (incl belote) + bid; loser 0
     const winnerGets = 250 + aAnn + bAnn + belotePts + bidVal;
     if (BIDDER_IS_A) {
       scoreA = winnerGets;
@@ -146,7 +167,6 @@ function computeFastCoincheScore({
   }
 
   if (isCoinche) {
-    // winner gets 160 + (mult*bid) + all announces; loser 0; belote stays with declaring team
     const winnerNonBelote = 160 + mult * bidVal + (aAnn + bAnn);
     if (bidderSucceeded) {
       if (BIDDER_IS_A) {
@@ -168,7 +188,6 @@ function computeFastCoincheScore({
     return { scoreA, scoreB, bidderSucceeded };
   }
 
-  // Normal scoring
   if (bidderSucceeded) {
     if (BIDDER_IS_A) {
       scoreA = tricksBidder + aAnn + beloteA + bidVal;
@@ -178,7 +197,6 @@ function computeFastCoincheScore({
       scoreA = tricksOpp + aAnn + beloteA;
     }
   } else {
-    // fail: bidder gets 0 but keeps belote; opponents get 160 + bid + announces (non-belote); belote stays with declaring team
     const oppGets = 160 + bidVal + (aAnn + bAnn);
     if (BIDDER_IS_A) {
       scoreA = beloteA;
@@ -219,21 +237,29 @@ function Btn({ children, onClick, disabled, kind = "primary" }) {
         background: disabled ? "#e5e7eb" : bg,
         color: disabled ? "#6b7280" : fg,
         cursor: disabled ? "not-allowed" : "pointer",
-        fontWeight: 600,
+        fontWeight: 800,
       }}
     >
       {children}
     </button>
   );
 }
-function Input({ value, onChange, placeholder, width = 220, type = "text" }) {
+function Input({ value, onChange, placeholder, width = 220, type = "text", disabled }) {
   return (
     <input
       type={type}
       value={value}
       placeholder={placeholder}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      style={{ width, padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}
+      style={{
+        width,
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: "1px solid #e5e7eb",
+        background: disabled ? "#f3f4f6" : "#fff",
+        color: disabled ? "#6b7280" : "#111827",
+      }}
     />
   );
 }
@@ -261,9 +287,187 @@ function Select({ value, onChange, options, width = 160, disabled }) {
   );
 }
 
-export default function App() {
-  const [loaded, setLoaded] = useState(false);
+const tdStyle = {
+  padding: "10px 10px",
+  borderBottom: "1px solid #e5e7eb",
+  whiteSpace: "nowrap",
+  fontSize: 14,
+};
 
+function StatCard({ label, value }) {
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+      <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 900 }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 900, marginTop: 4 }}>{value}</div>
+    </div>
+  );
+}
+
+function FunMatchCard({ title, match }) {
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+      <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 900 }}>{title}</div>
+      {match ? (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ fontWeight: 900 }}>
+            {match.aName} {match.sa} — {match.sb} {match.bName}
+          </div>
+          <div style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
+            {match.label} • Winner: <span style={{ fontWeight: 900 }}>{match.winner}</span> • Margin: {match.margin} • Total: {match.total}
+          </div>
+        </div>
+      ) : (
+        <div style={{ marginTop: 6, color: "#6b7280" }}>No completed games yet.</div>
+      )}
+    </div>
+  );
+}
+
+function PodiumCard({ label, value }) {
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 14 }}>
+      <div style={{ color: "#6b7280", fontSize: 12 }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 900 }}>{value ?? "—"}</div>
+    </div>
+  );
+}
+
+function GameCard({ g, teamById, onScore, onClear, onToggleFast, onFastPatch, readOnly }) {
+  const teamA = teamById.get(g.teamAId)?.name ?? "—";
+  const teamB = teamById.get(g.teamBId)?.name ?? "—";
+  const pending = !g.winnerId;
+
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+        <div style={{ fontWeight: 900 }}>
+          Table {g.table} <span style={{ color: "#6b7280", fontWeight: 700 }}>•</span> {teamA} vs {teamB}
+        </div>
+        <div style={{ color: pending ? "#6b7280" : "#065f46", fontWeight: 900 }}>
+          {pending ? "Pending" : `Winner: ${teamById.get(g.winnerId)?.name ?? "—"}`}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+        <Input value={g.scoreA} onChange={(v) => onScore("A", v)} width={90} placeholder="A pts" disabled={readOnly} />
+        <span style={{ color: "#6b7280" }}>vs</span>
+        <Input value={g.scoreB} onChange={(v) => onScore("B", v)} width={90} placeholder="B pts" disabled={readOnly} />
+
+        <div style={{ marginLeft: 10, color: "#6b7280", fontSize: 12 }}>
+          Match pts: A +{g.matchPtsA} / B +{g.matchPtsB}
+        </div>
+
+        {!readOnly ? (
+          <button onClick={onClear} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "#6b7280", fontWeight: 900, cursor: "pointer" }}>
+            Clear
+          </button>
+        ) : null}
+      </div>
+
+      {/* Fast mode scoring */}
+      <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 900 }}>
+          <input type="checkbox" checked={Boolean(g.fast?.enabled)} onChange={(e) => onToggleFast(e.target.checked)} disabled={readOnly} />
+          Fast mode scorer (auto-calculates game points)
+        </label>
+
+        {g.fast?.enabled ? (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10, marginTop: 10 }}>
+            <div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>Bidder</div>
+              <Select
+                value={g.fast.bidder}
+                onChange={(v) => onFastPatch({ bidder: v })}
+                disabled={readOnly}
+                options={[
+                  { value: "A", label: "Team A (left)" },
+                  { value: "B", label: "Team B (right)" },
+                ]}
+              />
+            </div>
+
+            <div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>Bid</div>
+              <Input value={String(g.fast.bid)} onChange={(v) => onFastPatch({ bid: Number(v || 0) })} width={120} disabled={readOnly} />
+            </div>
+
+            <div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>Coinche</div>
+              <Select
+                value={g.fast.coincheLevel}
+                onChange={(v) => onFastPatch({ coincheLevel: v })}
+                disabled={readOnly}
+                options={[
+                  { value: "NONE", label: "None" },
+                  { value: "COINCHE", label: "Coinche (x2)" },
+                  { value: "SURCOINCHE", label: "Surcoinche (x4)" },
+                ]}
+              />
+            </div>
+
+            <div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>Capot</div>
+              <Select
+                value={g.fast.capot ? "YES" : "NO"}
+                onChange={(v) => onFastPatch({ capot: v === "YES" })}
+                disabled={readOnly}
+                options={[
+                  { value: "NO", label: "No" },
+                  { value: "YES", label: "Yes" },
+                ]}
+              />
+            </div>
+
+            <div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>Bidder trick points (0–162)</div>
+              <Input value={String(g.fast.bidderTrickPoints)} onChange={(v) => onFastPatch({ bidderTrickPoints: Number(v || 0) })} width={140} disabled={readOnly} />
+            </div>
+
+            <div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>Announces Team A (non-belote)</div>
+              <Input value={String(g.fast.announceA)} onChange={(v) => onFastPatch({ announceA: Number(v || 0) })} width={140} disabled={readOnly} />
+            </div>
+
+            <div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>Announces Team B (non-belote)</div>
+              <Input value={String(g.fast.announceB)} onChange={(v) => onFastPatch({ announceB: Number(v || 0) })} width={140} disabled={readOnly} />
+            </div>
+
+            <div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>Belote (who has it)</div>
+              <Select
+                value={g.fast.beloteTeam}
+                onChange={(v) => onFastPatch({ beloteTeam: v })}
+                disabled={readOnly}
+                options={[
+                  { value: "NONE", label: "None" },
+                  { value: "A", label: "Team A" },
+                  { value: "B", label: "Team B" },
+                ]}
+              />
+            </div>
+
+            <div style={{ gridColumn: "1/-1", color: "#6b7280", fontSize: 12 }}>
+              Fast mode writes the calculated score into the A/B score boxes above.
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  // ===== routing state =====
+  const [route, setRouteState] = useState(() => parseHashRoute());
+  useEffect(() => {
+    const onHash = () => setRouteState(parseHashRoute());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  // ===== data =====
+  const [loaded, setLoaded] = useState(false);
   const [tournamentName, setTournamentName] = useState("9th Annual Coinche Tournament");
 
   const [players, setPlayers] = useState([]); // {id,name}
@@ -271,24 +475,16 @@ export default function App() {
   const [avoidSameTeams, setAvoidSameTeams] = useState(true);
   const [pairHistory, setPairHistory] = useState([]); // pair keys
 
-  // Manual team builder controls
   const [manualTeamsMode, setManualTeamsMode] = useState(true);
   const [manualP1, setManualP1] = useState("");
   const [manualP2, setManualP2] = useState("");
 
-  // Lock teams toggle
   const [teamsLocked, setTeamsLocked] = useState(false);
 
   const [poolMap, setPoolMap] = useState({ A: [], B: [] });
-
-  // games: stage "POOL" only in this simplified version (8+ main)
-  // fast: { enabled, bidder, bid, coincheLevel, capot, bidderTrickPoints, announceA, announceB, beloteTeam }
-  const [games, setGames] = useState([]);
-
-  // bracket: {id,label,round,idx,teamAId,teamBId,scoreA,scoreB,winnerId,nextMatchId,nextSlot}
+  const [games, setGames] = useState([]); // pool games
   const [bracket, setBracket] = useState([]);
 
-  // scoring settings
   const [winThreshold, setWinThreshold] = useState(2000);
   const [winHighPts, setWinHighPts] = useState(2);
   const [winLowPts, setWinLowPts] = useState(1);
@@ -313,7 +509,6 @@ export default function App() {
         setWinThreshold(data.winThreshold ?? 2000);
         setWinHighPts(data.winHighPts ?? 2);
         setWinLowPts(data.winLowPts ?? 1);
-
         setManualTeamsMode(Boolean(data.manualTeamsMode ?? true));
         setTeamsLocked(Boolean(data.teamsLocked ?? false));
       }
@@ -362,6 +557,7 @@ export default function App() {
     teamsLocked,
   ]);
 
+  // maps
   const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
   const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
   const realTeams = useMemo(() => teams.filter((t) => !t.isBye), [teams]);
@@ -373,7 +569,6 @@ export default function App() {
     setGames([]);
     setBracket([]);
   }
-
   function fullReset() {
     setTournamentName("9th Annual Coinche Tournament");
     setPlayers([]);
@@ -393,18 +588,15 @@ export default function App() {
     setNewPlayerName("");
     setTimeout(() => inputRef.current?.focus?.(), 0);
   }
-
   function removePlayer(id) {
-    // If teams locked, don't allow removing players because it would break teams
     if (teamsLocked) return;
-
     setPlayers((prev) => prev.filter((p) => p.id !== id));
     setTeams([]);
     setPairHistory([]);
     resetTournamentStructure();
   }
 
-  // ===== Team lock + manual builder helpers =====
+  // team helpers
   function usedPlayerIdsFromTeams(ts) {
     const used = new Set();
     ts.forEach((t) => (t.playerIds || []).forEach((pid) => used.add(pid)));
@@ -413,23 +605,19 @@ export default function App() {
   const usedPlayers = useMemo(() => usedPlayerIdsFromTeams(teams), [teams]);
 
   function safeResetAfterTeamChange() {
-    // If locked, we keep schedule intact.
     if (teamsLocked) return;
     resetTournamentStructure();
   }
-
   function clearAllTeams() {
     if (teamsLocked) return;
     setTeams([]);
     safeResetAfterTeamChange();
   }
-
   function removeTeam(teamId) {
     if (teamsLocked) return;
     setTeams((prev) => prev.filter((t) => t.id !== teamId));
     safeResetAfterTeamChange();
   }
-
   function addManualTeam() {
     if (teamsLocked) return;
     if (!manualP1 || !manualP2) return;
@@ -506,7 +694,7 @@ export default function App() {
     safeResetAfterTeamChange();
   }
 
-  // ===== Scheduling: pools RR =====
+  // scheduling: pools
   function createPoolsRoundRobin() {
     if (!tournamentReady) return;
     const teamIds = realTeams.map((t) => t.id);
@@ -514,7 +702,6 @@ export default function App() {
     setPoolMap(pools);
 
     const built = [];
-
     const makePoolGames = (poolName, ids, tableOffset) => {
       const rounds = circleRoundRobin(ids);
       rounds.forEach((pairings, rIdx) => {
@@ -524,7 +711,7 @@ export default function App() {
             stage: "POOL",
             pool: poolName,
             round: rIdx + 1,
-            table: tableOffset + (pIdx + 1), // Pool A tables 1-2, Pool B tables 3-4 (for 8 teams)
+            table: tableOffset + (pIdx + 1), // Pool A: 1-2, Pool B: 3-4 (for 8 teams)
             teamAId: a,
             teamBId: b,
             scoreA: "",
@@ -555,16 +742,12 @@ export default function App() {
     setBracket([]);
   }
 
-  // ===== Game scoring / recompute =====
+  // game scoring
   function recomputeGameOutcome(g) {
     const a = safeInt(g.scoreA);
     const b = safeInt(g.scoreB);
-    if (a === null || b === null) {
-      return { ...g, winnerId: null, matchPtsA: 0, matchPtsB: 0 };
-    }
-    if (a === b) {
-      return { ...g, winnerId: null, matchPtsA: 0, matchPtsB: 0 };
-    }
+    if (a === null || b === null) return { ...g, winnerId: null, matchPtsA: 0, matchPtsB: 0 };
+    if (a === b) return { ...g, winnerId: null, matchPtsA: 0, matchPtsB: 0 };
     const winnerId = a > b ? g.teamAId : g.teamBId;
     const winnerScore = Math.max(a, b);
     const mp = computeMatchPoints(winnerScore, winThreshold, winHighPts, winLowPts);
@@ -575,7 +758,6 @@ export default function App() {
       matchPtsB: winnerId === g.teamBId ? mp : 0,
     };
   }
-
   function setGameScore(gameId, side, value) {
     setGames((prev) =>
       prev.map((g) => {
@@ -585,7 +767,6 @@ export default function App() {
       })
     );
   }
-
   function clearGame(gameId) {
     setGames((prev) =>
       prev.map((g) =>
@@ -593,11 +774,9 @@ export default function App() {
       )
     );
   }
-
   function toggleFast(gameId, enabled) {
     setGames((prev) => prev.map((g) => (g.id === gameId ? { ...g, fast: { ...g.fast, enabled } } : g)));
   }
-
   function updateFast(gameId, patch) {
     setGames((prev) =>
       prev.map((g) => {
@@ -607,7 +786,6 @@ export default function App() {
 
         if (!fast.enabled) return updated;
 
-        // compute and write scoreA/scoreB automatically
         const res = computeFastCoincheScore({
           bidder: fast.bidder,
           bid: Number(fast.bid) || 0,
@@ -621,13 +799,12 @@ export default function App() {
 
         updated.scoreA = String(res.scoreA);
         updated.scoreB = String(res.scoreB);
-
         return recomputeGameOutcome(updated);
       })
     );
   }
 
-  // ===== Standings =====
+  // standings
   function poolStandings(poolName) {
     const ids = poolMap[poolName] || [];
     const rows = ids
@@ -664,7 +841,7 @@ export default function App() {
   const standingsA = useMemo(() => (tournamentReady ? poolStandings("A") : []), [tournamentReady, games, poolMap, teamById]);
   const standingsB = useMemo(() => (tournamentReady ? poolStandings("B") : []), [tournamentReady, games, poolMap, teamById]);
 
-  // ===== Bracket =====
+  // bracket (kept as-is)
   function propagateBracketWinners(ms) {
     const byId = new Map(ms.map((m) => [m.id, { ...m }]));
     for (const m of ms) {
@@ -682,7 +859,6 @@ export default function App() {
     }
     return Array.from(byId.values());
   }
-
   function fillThirdPlace(ms) {
     const sf = ms.filter((x) => x.round === "SF");
     const third = ms.find((x) => x.round === "3P");
@@ -814,7 +990,7 @@ export default function App() {
     });
   }
 
-  // ===== Winner board =====
+  // winner board
   const winnerBoard = useMemo(() => {
     const final = bracket.find((m) => m.round === "F");
     const third = bracket.find((m) => m.round === "3P");
@@ -830,7 +1006,7 @@ export default function App() {
     };
   }, [bracket, teamById]);
 
-  // UI groupings
+  // pool games per pool
   const poolGamesA = useMemo(
     () => games.filter((g) => g.stage === "POOL" && g.pool === "A").sort((x, y) => x.round - y.round || x.table - y.table),
     [games]
@@ -839,16 +1015,284 @@ export default function App() {
     () => games.filter((g) => g.stage === "POOL" && g.pool === "B").sort((x, y) => x.round - y.round || x.table - y.table),
     [games]
   );
-  const bracketSorted = useMemo(() => {
-    const order = { QF: 1, SF: 2, F: 3, "3P": 4 };
-    return [...bracket].sort((a, b) => (order[a.round] ?? 99) - (order[b.round] ?? 99) || (a.idx ?? 0) - (b.idx ?? 0));
-  }, [bracket]);
 
-  const teamActionsDisabled = teamsLocked;
+  // ===== Live scoreboard + stats (pool+bracket for PF/PA/W/L; MP from pool only)
+  const allMatchesForStats = useMemo(() => {
+    const poolMatches = games.map((g) => ({
+      id: g.id,
+      stage: "POOL",
+      label: `Pool ${g.pool} R${g.round} (Table ${g.table})`,
+      teamAId: g.teamAId,
+      teamBId: g.teamBId,
+      scoreA: g.scoreA,
+      scoreB: g.scoreB,
+    }));
+    const bracketMatches = bracket.map((m) => ({
+      id: m.id,
+      stage: "BRACKET",
+      label: `${m.label} (${m.round})`,
+      teamAId: m.teamAId,
+      teamBId: m.teamBId,
+      scoreA: m.scoreA,
+      scoreB: m.scoreB,
+    }));
+    return [...poolMatches, ...bracketMatches];
+  }, [games, bracket]);
 
-  return (
-    <div style={{ minHeight: "100vh", background: "#f3f4f6", padding: 18 }}>
-      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+  const scoreboard = useMemo(() => {
+    const rows = realTeams.map((t) => ({
+      teamId: t.id,
+      name: t.name,
+      pool: poolMap.A.includes(t.id) ? "A" : poolMap.B.includes(t.id) ? "B" : "—",
+      gp: 0,
+      w: 0,
+      l: 0,
+      mp: 0,
+      pf: 0,
+      pa: 0,
+      diff: 0,
+      avgFor: 0,
+      avgAgainst: 0,
+    }));
+    const byId = new Map(rows.map((r) => [r.teamId, r]));
+
+    // MP from pool only
+    games.forEach((g) => {
+      const a = byId.get(g.teamAId);
+      const b = byId.get(g.teamBId);
+      if (!a || !b) return;
+      a.mp += g.matchPtsA ?? 0;
+      b.mp += g.matchPtsB ?? 0;
+    });
+
+    // W/L and PF/PA from all matches with scores
+    allMatchesForStats.forEach((m) => {
+      const a = byId.get(m.teamAId);
+      const b = byId.get(m.teamBId);
+      if (!a || !b) return;
+
+      const sa = safeInt(m.scoreA);
+      const sb = safeInt(m.scoreB);
+      if (sa === null || sb === null) return;
+
+      a.gp += 1;
+      b.gp += 1;
+
+      a.pf += sa;
+      a.pa += sb;
+      b.pf += sb;
+      b.pa += sa;
+
+      if (sa > sb) {
+        a.w += 1;
+        b.l += 1;
+      } else if (sb > sa) {
+        b.w += 1;
+        a.l += 1;
+      }
+    });
+
+    rows.forEach((r) => {
+      r.diff = r.pf - r.pa;
+      r.avgFor = r.gp ? Math.round((r.pf / r.gp) * 10) / 10 : 0;
+      r.avgAgainst = r.gp ? Math.round((r.pa / r.gp) * 10) / 10 : 0;
+    });
+
+    return [...rows].sort((x, y) => {
+      if (y.mp !== x.mp) return y.mp - x.mp;
+      if (y.diff !== x.diff) return y.diff - x.diff;
+      if (y.pf !== x.pf) return y.pf - x.pf;
+      return x.name.localeCompare(y.name);
+    });
+  }, [realTeams, poolMap, games, allMatchesForStats]);
+
+  const liveStats = useMemo(() => {
+    const played = [];
+    allMatchesForStats.forEach((m) => {
+      const aName = teamById.get(m.teamAId)?.name;
+      const bName = teamById.get(m.teamBId)?.name;
+      if (!aName || !bName) return;
+
+      const sa = safeInt(m.scoreA);
+      const sb = safeInt(m.scoreB);
+      if (sa === null || sb === null) return;
+
+      const total = sa + sb;
+      const margin = Math.abs(sa - sb);
+      const winner = sa > sb ? aName : sb > sa ? bName : "Tie";
+      played.push({ ...m, aName, bName, sa, sb, total, margin, winner });
+    });
+
+    const totalGames = played.length;
+    const totalPoints = played.reduce((acc, x) => acc + x.total, 0);
+
+    const biggestBlowout = played.length ? [...played].sort((a, b) => b.margin - a.margin || b.total - a.total)[0] : null;
+    const closestGame = played.length ? [...played].sort((a, b) => a.margin - b.margin || b.total - a.total)[0] : null;
+    const highestScoringGame = played.length ? [...played].sort((a, b) => b.total - a.total || a.margin - b.margin)[0] : null;
+
+    const mostPointsTeam = scoreboard.length ? [...scoreboard].sort((a, b) => b.pf - a.pf)[0] : null;
+    const bestDefenseTeam = scoreboard.length ? [...scoreboard].filter((r) => r.gp > 0).sort((a, b) => a.pa - b.pa)[0] ?? null : null;
+    const bestDiffTeam = scoreboard.length ? [...scoreboard].filter((r) => r.gp > 0).sort((a, b) => b.diff - a.diff)[0] ?? null : null;
+
+    return {
+      totalGames,
+      totalPoints,
+      avgPointsPerGame: totalGames ? Math.round((totalPoints / totalGames) * 10) / 10 : 0,
+      biggestBlowout,
+      closestGame,
+      highestScoringGame,
+      mostPointsTeam,
+      bestDefenseTeam,
+      bestDiffTeam,
+    };
+  }, [allMatchesForStats, teamById, scoreboard]);
+
+  // ===== Table View helpers
+  const tableParam = route.path === "/table" ? clampNum(route.params.table ?? 1, 1, 20) : 1;
+  const tableGames = useMemo(() => games.filter((g) => g.stage === "POOL" && g.table === Number(tableParam)).sort((a, b) => a.round - b.round), [games, tableParam]);
+
+  const defaultRoundForTable = useMemo(() => {
+    // first round that isn't fully scored yet, else last round
+    const firstIncomplete = tableGames.find((g) => safeInt(g.scoreA) === null || safeInt(g.scoreB) === null);
+    return firstIncomplete?.round ?? (tableGames[tableGames.length - 1]?.round ?? 1);
+  }, [tableGames]);
+
+  const [tableRound, setTableRound] = useState(1);
+  useEffect(() => {
+    setTableRound(defaultRoundForTable);
+  }, [defaultRoundForTable, tableParam]);
+
+  const gameForTableRound = useMemo(() => tableGames.find((g) => g.round === Number(tableRound)) ?? null, [tableGames, tableRound]);
+
+  // ===== Links
+  const base = `${window.location.origin}${window.location.pathname}`;
+  const publicUrl = `${base}#/public`;
+  const adminUrl = `${base}#/`;
+  const tableUrl = (n) => `${base}#/table?table=${n}`;
+
+  // ===== Top nav (works for all pages)
+  function TopNav() {
+    const active = route.path;
+    const pill = (label, path, params) => (
+      <button
+        onClick={() => setHash(path, params)}
+        style={{
+          border: "1px solid #e5e7eb",
+          background: active === path ? "#111827" : "#fff",
+          color: active === path ? "#fff" : "#111827",
+          borderRadius: 999,
+          padding: "8px 12px",
+          fontWeight: 900,
+          cursor: "pointer",
+        }}
+      >
+        {label}
+      </button>
+    );
+
+    return (
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        {pill("Admin", "/")}
+        {pill("Public View", "/public")}
+        {pill(`Table View`, "/table", { table: String(tableParam) })}
+        <div style={{ marginLeft: "auto", color: "#6b7280", fontWeight: 800, alignSelf: "center" }}>
+          {route.path === "/table" ? `Table ${tableParam}` : ""}
+        </div>
+      </div>
+    );
+  }
+
+  // ===== Shared Scoreboard section (used by Admin + Public)
+  function ScoreboardSection({ readOnly }) {
+    return (
+      <Section
+        title="Live Scoreboard + Stats"
+        right={<div style={{ color: "#065f46", fontWeight: 900 }}>{readOnly ? "Read-only" : "Auto-updates as you type"}</div>}
+      >
+        {realTeams.length === 0 ? (
+          <div style={{ color: "#6b7280" }}>Create teams to see the scoreboard.</div>
+        ) : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 12 }}>
+              <StatCard label="Games played" value={fmt(liveStats.totalGames)} />
+              <StatCard label="Total points entered" value={fmt(liveStats.totalPoints)} />
+              <StatCard label="Avg points/game" value={fmt(liveStats.avgPointsPerGame)} />
+              <StatCard
+                label="Top offense (PF)"
+                value={liveStats.mostPointsTeam ? `${liveStats.mostPointsTeam.name} (${liveStats.mostPointsTeam.pf})` : "—"}
+              />
+              <StatCard
+                label="Best defense (lowest PA)"
+                value={liveStats.bestDefenseTeam ? `${liveStats.bestDefenseTeam.name} (${liveStats.bestDefenseTeam.pa})` : "—"}
+              />
+              <StatCard label="Best diff" value={liveStats.bestDiffTeam ? `${liveStats.bestDiffTeam.name} (${liveStats.bestDiffTeam.diff})` : "—"} />
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 12 }}>
+              <FunMatchCard title="Biggest blowout" match={liveStats.biggestBlowout} />
+              <FunMatchCard title="Closest game" match={liveStats.closestGame} />
+              <FunMatchCard title="Highest scoring game" match={liveStats.highestScoringGame} />
+            </div>
+
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+                <thead>
+                  <tr>
+                    {["#", "Team", "Pool", "GP", "W", "L", "MP", "PF", "PA", "Diff", "Avg PF", "Avg PA"].map((h) => (
+                      <th
+                        key={h}
+                        style={{
+                          textAlign: "left",
+                          fontSize: 12,
+                          color: "#6b7280",
+                          padding: "10px 10px",
+                          borderBottom: "1px solid #e5e7eb",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {scoreboard.map((r, idx) => (
+                    <tr key={r.teamId} style={{ background: idx % 2 === 0 ? "#fff" : "#fafafa" }}>
+                      <td style={tdStyle}>{idx + 1}</td>
+                      <td style={{ ...tdStyle, fontWeight: 900, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {r.name}
+                      </td>
+                      <td style={tdStyle}>{r.pool}</td>
+                      <td style={tdStyle}>{r.gp}</td>
+                      <td style={tdStyle}>{r.w}</td>
+                      <td style={tdStyle}>{r.l}</td>
+                      <td style={{ ...tdStyle, fontWeight: 900 }}>{r.mp}</td>
+                      <td style={tdStyle}>{r.pf}</td>
+                      <td style={tdStyle}>{r.pa}</td>
+                      <td style={{ ...tdStyle, fontWeight: 900, color: r.diff > 0 ? "#065f46" : r.diff < 0 ? "#b91c1c" : "#111827" }}>{r.diff}</td>
+                      <td style={tdStyle}>{r.avgFor}</td>
+                      <td style={tdStyle}>{r.avgAgainst}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+              Notes: MP = pool match points only. W/L and PF/PA include pool + bracket games where both scores are entered.
+            </div>
+          </>
+        )}
+      </Section>
+    );
+  }
+
+  // ===== Admin page (your original + link launcher)
+  function AdminView() {
+    const teamActionsDisabled = teamsLocked;
+
+    return (
+      <>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginBottom: 12 }}>
           <div>
             <h1 style={{ margin: 0, fontSize: 26 }}>{tournamentName}</h1>
@@ -867,6 +1311,23 @@ export default function App() {
           </div>
         </div>
 
+        <Section title="Quick Links (Projector + Tables)">
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+            <LinkRow label="Admin" url={adminUrl} />
+            <LinkRow label="Public View (TV/Projector)" url={publicUrl} />
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+              {[1, 2, 3, 4].map((n) => (
+                <LinkRow key={n} label={`Table View (Table ${n})`} url={tableUrl(n)} />
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: "#b45309", fontWeight: 900 }}>
+              Heads-up: Until we add Supabase, each device keeps its own scores. Public View won’t auto-update from other phones yet.
+            </div>
+          </div>
+        </Section>
+
+        <ScoreboardSection readOnly={false} />
+
         <Section
           title="Settings"
           right={
@@ -877,11 +1338,7 @@ export default function App() {
               </label>
 
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 900 }}>
-                <input
-                  type="checkbox"
-                  checked={teamsLocked}
-                  onChange={(e) => setTeamsLocked(e.target.checked)}
-                />
+                <input type="checkbox" checked={teamsLocked} onChange={(e) => setTeamsLocked(e.target.checked)} />
                 Lock teams
               </label>
             </div>
@@ -894,31 +1351,22 @@ export default function App() {
             </div>
             <div>
               <div style={{ fontSize: 12, color: "#6b7280" }}>Win threshold</div>
-              <Input value={String(winThreshold)} onChange={(v) => setWinThreshold(Math.max(0, Number(v || 0)))} width={120} />
+              <Input value={String(winThreshold)} onChange={(v) => setWinThreshold(clampNum(v, 0, 999999))} width={120} />
             </div>
             <div>
               <div style={{ fontSize: 12, color: "#6b7280" }}>Win ≥ threshold</div>
-              <Input value={String(winHighPts)} onChange={(v) => setWinHighPts(Math.max(0, Number(v || 0)))} width={120} />
+              <Input value={String(winHighPts)} onChange={(v) => setWinHighPts(clampNum(v, 0, 20))} width={120} />
             </div>
             <div>
               <div style={{ fontSize: 12, color: "#6b7280" }}>Win &lt; threshold</div>
-              <Input value={String(winLowPts)} onChange={(v) => setWinLowPts(Math.max(0, Number(v || 0)))} width={120} />
+              <Input value={String(winLowPts)} onChange={(v) => setWinLowPts(clampNum(v, 0, 20))} width={120} />
             </div>
-          </div>
-          <div style={{ marginTop: 10, color: "#6b7280", fontSize: 12 }}>
-            Tiebreaker = total game points across games.
-            {teamsLocked ? " Teams are locked: team changes are disabled." : ""}
           </div>
         </Section>
 
         <Section title={`Players (${players.length})`}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <Input
-              value={newPlayerName}
-              onChange={setNewPlayerName}
-              placeholder="Add player name"
-              width={260}
-            />
+            <Input value={newPlayerName} onChange={setNewPlayerName} placeholder="Add player name" width={260} disabled={teamActionsDisabled} />
             <Btn onClick={addPlayer} disabled={!newPlayerName.trim() || teamActionsDisabled}>
               Add player
             </Btn>
@@ -928,7 +1376,7 @@ export default function App() {
           </div>
 
           {teamsLocked ? (
-            <div style={{ marginTop: 8, fontSize: 12, color: "#b45309", fontWeight: 800 }}>
+            <div style={{ marginTop: 8, fontSize: 12, color: "#b45309", fontWeight: 900 }}>
               Teams are locked — adding/removing players is disabled (unlock teams to change players).
             </div>
           ) : null}
@@ -936,17 +1384,11 @@ export default function App() {
           <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
             {players.map((p) => (
               <div key={p.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff", display: "flex", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                <div style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
                 <button
                   onClick={() => removePlayer(p.id)}
                   disabled={teamsLocked}
-                  style={{
-                    border: "none",
-                    background: "transparent",
-                    color: teamsLocked ? "#9ca3af" : "#b91c1c",
-                    fontWeight: 700,
-                    cursor: teamsLocked ? "not-allowed" : "pointer",
-                  }}
+                  style={{ border: "none", background: "transparent", color: teamsLocked ? "#9ca3af" : "#b91c1c", fontWeight: 900, cursor: teamsLocked ? "not-allowed" : "pointer" }}
                 >
                   Remove
                 </button>
@@ -958,13 +1400,8 @@ export default function App() {
 
         <Section title={`Teams (${realTeams.length})`} right={<div style={{ color: "#6b7280", fontSize: 12 }}>Need 16 players for 8 teams</div>}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}>
-              <input
-                type="checkbox"
-                checked={manualTeamsMode}
-                onChange={(e) => setManualTeamsMode(e.target.checked)}
-                disabled={teamActionsDisabled}
-              />
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 900 }}>
+              <input type="checkbox" checked={manualTeamsMode} onChange={(e) => setManualTeamsMode(e.target.checked)} disabled={teamActionsDisabled} />
               Manual teams mode
             </label>
 
@@ -972,15 +1409,11 @@ export default function App() {
               Randomize teams
             </Btn>
 
-            <Btn kind="secondary" onClick={clearAllTeams} disabled={teams.length === 0 || teamActionsDisabled}>
+            <Btn kind="secondary" onClick={() => clearAllTeams()} disabled={teams.length === 0 || teamActionsDisabled}>
               Clear teams
             </Btn>
 
-            {teamsLocked ? (
-              <div style={{ fontSize: 12, color: "#b45309", fontWeight: 900 }}>
-                Locked: team changes disabled
-              </div>
-            ) : null}
+            {teamsLocked ? <div style={{ fontSize: 12, color: "#b45309", fontWeight: 900 }}>Locked: team changes disabled</div> : null}
           </div>
 
           {manualTeamsMode ? (
@@ -1024,14 +1457,10 @@ export default function App() {
                   Add Team
                 </Btn>
 
-                {manualP1 && manualP2 && manualP1 === manualP2 ? (
-                  <div style={{ color: "#b91c1c", fontWeight: 900 }}>Pick 2 different players</div>
-                ) : null}
+                {manualP1 && manualP2 && manualP1 === manualP2 ? <div style={{ color: "#b91c1c", fontWeight: 900 }}>Pick 2 different players</div> : null}
               </div>
 
-              <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-                Prevents using the same player in two teams.
-              </div>
+              <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>Prevents using the same player in two teams.</div>
             </div>
           ) : null}
 
@@ -1045,7 +1474,6 @@ export default function App() {
                     <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name}</div>
 
                     <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      {t.isBye ? <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 800 }}>BYE</span> : null}
                       <button
                         onClick={() => removeTeam(t.id)}
                         disabled={teamActionsDisabled}
@@ -1090,7 +1518,6 @@ export default function App() {
             </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-              {/* Pool A */}
               <div>
                 <h3 style={{ marginTop: 0 }}>Pool A</h3>
                 <div style={{ color: "#6b7280", fontSize: 12, marginBottom: 8 }}>
@@ -1115,6 +1542,7 @@ export default function App() {
                               onClear={() => clearGame(g.id)}
                               onToggleFast={(en) => toggleFast(g.id, en)}
                               onFastPatch={(patch) => updateFast(g.id, patch)}
+                              readOnly={false}
                             />
                           ))}
                       </div>
@@ -1138,7 +1566,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Pool B */}
               <div>
                 <h3 style={{ marginTop: 0 }}>Pool B</h3>
                 <div style={{ color: "#6b7280", fontSize: 12, marginBottom: 8 }}>
@@ -1163,6 +1590,7 @@ export default function App() {
                               onClear={() => clearGame(g.id)}
                               onToggleFast={(en) => toggleFast(g.id, en)}
                               onFastPatch={(patch) => updateFast(g.id, patch)}
+                              readOnly={false}
                             />
                           ))}
                       </div>
@@ -1195,36 +1623,41 @@ export default function App() {
           ) : (
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 }}>
-                {bracketSorted.map((m) => (
-                  <div key={m.id} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                      <div style={{ fontWeight: 900 }}>
-                        {m.label} <span style={{ color: "#6b7280", fontWeight: 700 }}>({m.round})</span>
+                {bracket
+                  .slice()
+                  .sort((a, b) => {
+                    const order = { QF: 1, SF: 2, F: 3, "3P": 4 };
+                    return (order[a.round] ?? 99) - (order[b.round] ?? 99) || (a.idx ?? 0) - (b.idx ?? 0);
+                  })
+                  .map((m) => (
+                    <div key={m.id} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                        <div style={{ fontWeight: 900 }}>
+                          {m.label} <span style={{ color: "#6b7280", fontWeight: 700 }}>({m.round})</span>
+                        </div>
+                        <div style={{ color: m.winnerId ? "#065f46" : "#6b7280", fontWeight: 900 }}>
+                          {m.winnerId ? `Winner: ${teamById.get(m.winnerId)?.name ?? "—"}` : "Pending"}
+                        </div>
                       </div>
-                      <div style={{ color: m.winnerId ? "#065f46" : "#6b7280", fontWeight: 900 }}>
-                        {m.winnerId ? `Winner: ${teamById.get(m.winnerId)?.name ?? "—"}` : "Pending"}
+
+                      <div style={{ marginTop: 8 }}>
+                        <div style={{ fontWeight: 800 }}>{teamById.get(m.teamAId)?.name ?? "TBD"}</div>
+                        <div style={{ fontWeight: 800 }}>{teamById.get(m.teamBId)?.name ?? "TBD"}</div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center" }}>
+                        <Input value={m.scoreA} onChange={(v) => setBracketScore(m.id, "A", v)} width={90} placeholder="A pts" />
+                        <span style={{ color: "#6b7280" }}>vs</span>
+                        <Input value={m.scoreB} onChange={(v) => setBracketScore(m.id, "B", v)} width={90} placeholder="B pts" />
+                        <button
+                          onClick={() => clearBracketMatch(m.id)}
+                          style={{ marginLeft: "auto", border: "none", background: "transparent", color: "#6b7280", fontWeight: 900, cursor: "pointer" }}
+                        >
+                          Clear
+                        </button>
                       </div>
                     </div>
-
-                    <div style={{ marginTop: 8 }}>
-                      <div style={{ fontWeight: 800 }}>{teamById.get(m.teamAId)?.name ?? "TBD"}</div>
-                      <div style={{ fontWeight: 800 }}>{teamById.get(m.teamBId)?.name ?? "TBD"}</div>
-                    </div>
-
-                    <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center" }}>
-                      <Input value={m.scoreA} onChange={(v) => setBracketScore(m.id, "A", v)} width={90} placeholder="A pts" />
-                      <span style={{ color: "#6b7280" }}>vs</span>
-                      <Input value={m.scoreB} onChange={(v) => setBracketScore(m.id, "B", v)} width={90} placeholder="B pts" />
-                      <button onClick={() => clearBracketMatch(m.id)} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "#6b7280", fontWeight: 900, cursor: "pointer" }}>
-                        Clear
-                      </button>
-                    </div>
-
-                    <div style={{ marginTop: 8, color: "#6b7280", fontSize: 12 }}>
-                      {m.nextMatchId ? `Winner advances to next match (slot ${m.nextSlot})` : ""}
-                    </div>
-                  </div>
-                ))}
+                  ))}
               </div>
 
               <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
@@ -1235,138 +1668,174 @@ export default function App() {
             </>
           )}
         </Section>
+      </>
+    );
+  }
 
-        <div style={{ color: "#6b7280", fontSize: 12, marginTop: 12 }}>
-          Tip: If you’re mid-tournament, turn ON “Lock teams” so nobody changes teams by mistake.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PodiumCard({ label, value }) {
-  return (
-    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 14 }}>
-      <div style={{ color: "#6b7280", fontSize: 12 }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 900 }}>{value ?? "—"}</div>
-    </div>
-  );
-}
-
-function GameCard({ g, teamById, onScore, onClear, onToggleFast, onFastPatch }) {
-  const teamA = teamById.get(g.teamAId)?.name ?? "—";
-  const teamB = teamById.get(g.teamBId)?.name ?? "—";
-  const pending = !g.winnerId;
-
-  return (
-    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12, marginBottom: 10 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-        <div style={{ fontWeight: 900 }}>
-          Table {g.table} <span style={{ color: "#6b7280", fontWeight: 700 }}>•</span> {teamA} vs {teamB}
-        </div>
-        <div style={{ color: pending ? "#6b7280" : "#065f46", fontWeight: 900 }}>
-          {pending ? "Pending" : `Winner: ${teamById.get(g.winnerId)?.name ?? "—"}`}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
-        <Input value={g.scoreA} onChange={(v) => onScore("A", v)} width={90} placeholder="A pts" />
-        <span style={{ color: "#6b7280" }}>vs</span>
-        <Input value={g.scoreB} onChange={(v) => onScore("B", v)} width={90} placeholder="B pts" />
-
-        <div style={{ marginLeft: 10, color: "#6b7280", fontSize: 12 }}>
-          Match pts: A +{g.matchPtsA} / B +{g.matchPtsB}
+  // ===== Public view (read-only)
+  function PublicView() {
+    return (
+      <>
+        <div style={{ marginBottom: 10 }}>
+          <h1 style={{ margin: 0, fontSize: 26 }}>{tournamentName}</h1>
+          <div style={{ color: "#6b7280", marginTop: 4, fontWeight: 800 }}>Public View (read-only)</div>
         </div>
 
-        <button onClick={onClear} style={{ marginLeft: "auto", border: "none", background: "transparent", color: "#6b7280", fontWeight: 900, cursor: "pointer" }}>
-          Clear
-        </button>
-      </div>
+        <ScoreboardSection readOnly={true} />
 
-      {/* Fast mode scoring */}
-      <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 900 }}>
-          <input type="checkbox" checked={Boolean(g.fast?.enabled)} onChange={(e) => onToggleFast(e.target.checked)} />
-          Fast mode scorer (auto-calculates game points)
-        </label>
-
-        {g.fast?.enabled ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10, marginTop: 10 }}>
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Bidder</div>
-              <Select
-                value={g.fast.bidder}
-                onChange={(v) => onFastPatch({ bidder: v })}
-                options={[
-                  { value: "A", label: "Team A (left)" },
-                  { value: "B", label: "Team B (right)" },
-                ]}
-              />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Bid</div>
-              <Input value={String(g.fast.bid)} onChange={(v) => onFastPatch({ bid: Number(v || 0) })} width={120} />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Coinche</div>
-              <Select
-                value={g.fast.coincheLevel}
-                onChange={(v) => onFastPatch({ coincheLevel: v })}
-                options={[
-                  { value: "NONE", label: "None" },
-                  { value: "COINCHE", label: "Coinche (x2)" },
-                  { value: "SURCOINCHE", label: "Surcoinche (x4)" },
-                ]}
-              />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Capot</div>
-              <Select
-                value={g.fast.capot ? "YES" : "NO"}
-                onChange={(v) => onFastPatch({ capot: v === "YES" })}
-                options={[
-                  { value: "NO", label: "No" },
-                  { value: "YES", label: "Yes" },
-                ]}
-              />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Bidder trick points (0–162)</div>
-              <Input value={String(g.fast.bidderTrickPoints)} onChange={(v) => onFastPatch({ bidderTrickPoints: Number(v || 0) })} width={140} />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Announces Team A (non-belote)</div>
-              <Input value={String(g.fast.announceA)} onChange={(v) => onFastPatch({ announceA: Number(v || 0) })} width={140} />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Announces Team B (non-belote)</div>
-              <Input value={String(g.fast.announceB)} onChange={(v) => onFastPatch({ announceB: Number(v || 0) })} width={140} />
-            </div>
-
-            <div>
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Belote (who has it)</div>
-              <Select
-                value={g.fast.beloteTeam}
-                onChange={(v) => onFastPatch({ beloteTeam: v })}
-                options={[
-                  { value: "NONE", label: "None" },
-                  { value: "A", label: "Team A" },
-                  { value: "B", label: "Team B" },
-                ]}
-              />
-            </div>
-
-            <div style={{ gridColumn: "1/-1", color: "#6b7280", fontSize: 12 }}>
-              Fast mode writes the calculated score into the A/B score boxes above (turn off fast mode to enter scores manually).
-            </div>
+        <Section title="Winners">
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+            <PodiumCard label="Champion" value={winnerBoard.champion} />
+            <PodiumCard label="Runner-up" value={winnerBoard.runnerUp} />
+            <PodiumCard label="3rd Place" value={winnerBoard.third} />
           </div>
-        ) : null}
+        </Section>
+
+        <div style={{ color: "#6b7280", fontSize: 12 }}>
+          Tip: Put this page on a TV/projector. (Live sync across devices requires Supabase.)
+        </div>
+      </>
+    );
+  }
+
+  // ===== Table view (only this table; can enter score)
+  function TableView() {
+    const rounds = Array.from(new Set(tableGames.map((g) => g.round))).sort((a, b) => a - b);
+
+    return (
+      <>
+        <div style={{ marginBottom: 10 }}>
+          <h1 style={{ margin: 0, fontSize: 26 }}>{tournamentName}</h1>
+          <div style={{ color: "#6b7280", marginTop: 4, fontWeight: 900 }}>Table View — Table {tableParam}</div>
+        </div>
+
+        <Section
+          title="Pick your round"
+          right={
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <Btn kind="secondary" onClick={() => setHash("/table", { table: String(tableParam) })}>
+                Refresh
+              </Btn>
+            </div>
+          }
+        >
+          {tableGames.length === 0 ? (
+            <div style={{ color: "#6b7280" }}>
+              No games found for Table {tableParam}. (Create pools first on Admin.)
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <div style={{ fontWeight: 900 }}>Round:</div>
+              <Select
+                value={String(tableRound)}
+                onChange={(v) => setTableRound(Number(v))}
+                options={rounds.map((r) => ({ value: String(r), label: `Round ${r}` }))}
+                width={160}
+              />
+              <div style={{ color: "#6b7280", fontWeight: 800 }}>
+                Auto-picks the next incomplete round when you open this page.
+              </div>
+            </div>
+          )}
+        </Section>
+
+        <Section title={`Your Match (Table ${tableParam})`}>
+          {gameForTableRound ? (
+            <GameCard
+              g={gameForTableRound}
+              teamById={teamById}
+              onScore={(side, v) => setGameScore(gameForTableRound.id, side, v)}
+              onClear={() => clearGame(gameForTableRound.id)}
+              onToggleFast={(en) => toggleFast(gameForTableRound.id, en)}
+              onFastPatch={(patch) => updateFast(gameForTableRound.id, patch)}
+              readOnly={false}
+            />
+          ) : (
+            <div style={{ color: "#6b7280" }}>No match loaded.</div>
+          )}
+        </Section>
+
+        <Section title="Mini scoreboard (read-only)">
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+              <thead>
+                <tr>
+                  {["#", "Team", "Pool", "MP", "W", "L", "PF", "PA", "Diff"].map((h) => (
+                    <th key={h} style={{ textAlign: "left", fontSize: 12, color: "#6b7280", padding: "10px 10px", borderBottom: "1px solid #e5e7eb", whiteSpace: "nowrap" }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {scoreboard.map((r, idx) => (
+                  <tr key={r.teamId} style={{ background: idx % 2 === 0 ? "#fff" : "#fafafa" }}>
+                    <td style={tdStyle}>{idx + 1}</td>
+                    <td style={{ ...tdStyle, fontWeight: 900 }}>{r.name}</td>
+                    <td style={tdStyle}>{r.pool}</td>
+                    <td style={{ ...tdStyle, fontWeight: 900 }}>{r.mp}</td>
+                    <td style={tdStyle}>{r.w}</td>
+                    <td style={tdStyle}>{r.l}</td>
+                    <td style={tdStyle}>{r.pf}</td>
+                    <td style={tdStyle}>{r.pa}</td>
+                    <td style={{ ...tdStyle, fontWeight: 900, color: r.diff > 0 ? "#065f46" : r.diff < 0 ? "#b91c1c" : "#111827" }}>{r.diff}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+            This is read-only; only your match is editable above.
+          </div>
+        </Section>
+
+        <div style={{ color: "#b45309", fontSize: 12, fontWeight: 900 }}>
+          Note: Until we add Supabase, scores entered here won’t automatically appear on other devices.
+        </div>
+      </>
+    );
+  }
+
+  // ===== render page by route
+  const page =
+    route.path === "/public" ? (
+      <PublicView />
+    ) : route.path === "/table" ? (
+      <TableView />
+    ) : (
+      <AdminView />
+    );
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f3f4f6", padding: 18 }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+        <TopNav />
+        {page}
+      </div>
+    </div>
+  );
+}
+
+function LinkRow({ label, url }) {
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(url);
+      alert("Copied link!");
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+      <div style={{ fontWeight: 900 }}>{label}</div>
+      <div style={{ color: "#6b7280", fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 720 }}>
+        {url}
+      </div>
+      <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+        <Btn kind="secondary" onClick={copy}>Copy</Btn>
+        <Btn onClick={() => window.open(url, "_blank")}>Open</Btn>
       </div>
     </div>
   );
