@@ -214,7 +214,7 @@ const styles = {
   display: "flex",
   flexDirection: "column",
   gap: 16,
-}
+},
   topbar: {
     display: "flex",
     justifyContent: "space-between",
