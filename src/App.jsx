@@ -198,13 +198,23 @@ function parseHashRoute() {
 /** ===== Styles (kept same vibe) ===== */
 const styles = {
   page: {
-    minHeight: "100vh",
-    background:
-      "radial-gradient(1200px 600px at 10% 10%, rgba(99,102,241,0.25), transparent 60%), radial-gradient(1200px 600px at 90% 10%, rgba(16,185,129,0.18), transparent 55%), radial-gradient(1200px 600px at 50% 90%, rgba(244,63,94,0.12), transparent 60%), linear-gradient(180deg, #0b1220 0%, #050814 100%)",
-    color: "#e5e7eb",
-    padding: 16,
+  minHeight: "100vh",
+  width: "100vw",
+  boxSizing: "border-box",
+  background:
+    "radial-gradient(1200px 600px at 10% 10%, rgba(99,102,241,0.25), transparent 60%), radial-gradient(1200px 600px at 90% 10%, rgba(16,185,129,0.18), transparent 55%), radial-gradient(1200px 600px at 50% 90%, rgba(244,63,94,0.12), transparent 60%), linear-gradient(180deg, #0b1220 0%, #050814 100%)",
+  color: "#e5e7eb",
+  padding: 8,   // smaller outer padding
+
   },
-  container: { maxWidth: 1200, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 },
+  container: {
+  width: "100%",
+  maxWidth: "100%",
+  margin: "0 auto",
+  display: "flex",
+  flexDirection: "column",
+  gap: 16,
+}
   topbar: {
     display: "flex",
     justifyContent: "space-between",
@@ -263,30 +273,31 @@ const styles = {
     fontWeight: 900,
   },
 
-  input: (w = 240) => ({
-    width: typeof w === "number" ? `${w}px` : w,
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(148,163,184,0.22)",
-    background: "rgba(2,6,23,0.35)",
-    color: "#e5e7eb",
-    outline: "none",
-    boxSizing: "border-box",
-    minWidth: 0,
-    display: "block",
-  }),
-  select: (w = 180) => ({
-    width: typeof w === "number" ? `${w}px` : w,
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(148,163,184,0.22)",
-    background: "rgba(2,6,23,0.35)",
-    color: "#e5e7eb",
-    outline: "none",
-    boxSizing: "border-box",
-    minWidth: 0,
-    display: "block",
-  }),
+input: (w = 240) => ({
+  width: typeof w === "number" ? `${w}px` : w,
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(148,163,184,0.22)",
+  background: "rgba(255,255,255,0.95)",   // lighter background
+  color: "#000",                          // black text
+  outline: "none",
+  boxSizing: "border-box",
+  minWidth: 0,
+  display: "block",
+}),
+
+select: (w = 180) => ({
+  width: typeof w === "number" ? `${w}px` : w,
+  padding: "10px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(148,163,184,0.22)",
+  background: "rgba(255,255,255,0.95)",   // lighter background
+  color: "#000",                          // black text
+  outline: "none",
+  boxSizing: "border-box",
+  minWidth: 0,
+  display: "block",
+}),
 
   grid2: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 },
   grid3: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 },
