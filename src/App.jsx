@@ -583,7 +583,7 @@ export default function App() {
                       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                         <strong>{t.name}</strong>
                         <span style={styles.badge}>{t.playerIds.length} players</span>
-                        {t.locked ? <span style={styles.badge}>Locked</span : <span style={styles.badge}>Unlocked</span>}
+                        {t.locked ? <span style={styles.badge}>Locked</span> : <span style={styles.badge}>Unlocked</span>}
                       </div>
                       <div style={{ marginTop: 6, ...styles.muted }}>
                         {t.playerIds.length === 0
