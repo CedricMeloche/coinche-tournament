@@ -404,9 +404,477 @@ function downloadTextFile(filename, text) {
   a.remove();
   URL.revokeObjectURL(url);
 }
+/** ===== Simulation helpers (realistic tournament) ===== */
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+function chance(p) {
+  return Math.random() < p;
+}
+function clampNum(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+function weightedPick(items) {
+  // items: [{v, w}]
+  const sum = items.reduce((s, x) => s + x.w, 0);
+  let r = Math.random() * sum;
+  for (const it of items) {
+    r -= it.w;
+    if (r <= 0) return it.v;
+  }
+  return items[items.length - 1].v;
+}
 
+// Make bids feel realistic (many 80/90/100/110, fewer 140/160)
+function randomBid() {
+  return weightedPick([
+    { v: 80, w: 22 },
+    { v: 90, w: 18 },
+    { v: 100, w: 18 },
+    { v: 110, w: 14 },
+    { v: 120, w: 10 },
+    { v: 130, w: 7 },
+    { v: 140, w: 5 },
+    { v: 150, w: 3 },
+    { v: 160, w: 3 },
+  ]);
+}
+
+function randomSuit() {
+  return pick(["S", "H", "D", "C"]);
+}
+
+// Announces totals (non-belote) — modest most of the time
+function randomAnnounceTotal() {
+  if (chance(0.65)) return 0;
+  if (chance(0.55)) return 20;
+  if (chance(0.35)) return 50;
+  if (chance(0.20)) return 70;
+  return 100;
+}
+
+// Belote occurs sometimes
+function randomBeloteTeam() {
+  if (!chance(0.25)) return "NONE";
+  return chance(0.5) ? "A" : "B";
+}
+
+// Coinche / surcoinche are rarer
+function randomCoincheLevel() {
+  if (!chance(0.14)) return "NONE";
+  return chance(0.22) ? "SURCOINCHE" : "COINCHE";
+}
+
+// Capot very rare
+function randomCapot() {
+  return chance(0.02);
+}
+
+/**
+ * Generates ONE hand input that tends to finish matches in ~12-20 hands.
+ * It uses YOUR computeFastCoincheHandScore rules to decide success thresholds.
+ */
+function generateHandInputRealistic() {
+  const bidder = chance(0.5) ? "A" : "B";
+  const bid = randomBid();
+  const suit = randomSuit();
+  const coincheLevel = randomCoincheLevel();
+  const capot = randomCapot();
+
+  const beloteTeam = randomBeloteTeam();
+
+  // Non-belote announces: both sides can have some
+  const announceA = randomAnnounceTotal();
+  const announceB = randomAnnounceTotal();
+
+  // We want a healthy mix of made & failed contracts.
+  // More fails at higher bids:
+  const failProb = clampNum(0.18 + (bid - 80) * 0.004, 0.18, 0.50);
+  const shouldFail = capot ? false : chance(failProb);
+
+  // Compute "required" same way your engine does (so simulations match logic)
+  const BIDDER_IS_A = bidder === "A";
+  const bidderHasBelote =
+    (BIDDER_IS_A && beloteTeam === "A") || (!BIDDER_IS_A && beloteTeam === "B");
+
+  const baseMin = bidderHasBelote ? 71 : 81;
+  const special80 = bid === 80 ? 81 : 0;
+
+  const bidderAnn = BIDDER_IS_A ? (announceA || 0) : (announceB || 0);
+  const announceHelp = bidderAnn + (bidderHasBelote ? 20 : 0);
+  const required = Math.max(baseMin, special80, bid - announceHelp);
+
+  // Pick raw trick points near success/fail threshold.
+  // Keep within 0..162.
+  let bidderTrickPoints;
+  if (capot) {
+    bidderTrickPoints = randInt(120, 162); // ignored by capot anyway
+  } else if (!shouldFail) {
+    // success: at least required, with some cushion
+    bidderTrickPoints = clampNum(
+      Math.round(required + randInt(0, 35)),
+      0,
+      162
+    );
+  } else {
+    // fail: below required
+    bidderTrickPoints = clampNum(
+      Math.round(required - randInt(1, 25)),
+      0,
+      162
+    );
+  }
+
+  return {
+    bidder,
+    bid,
+    suit,
+    coincheLevel,
+    capot,
+    bidderTrickPoints,
+    announceA,
+    announceB,
+    beloteTeam,
+  };
+}
+
+/**
+ * Simulate a match with realistic hands until someone reaches TARGET_SCORE,
+ * usually 12-20 hands (not guaranteed, but tuned).
+ */
+function simulateMatchHands({ maxHands = 30 } = {}) {
+  const hands = [];
+  let totalA = 0;
+  let totalB = 0;
+
+  for (let i = 0; i < maxHands; i++) {
+    const h = generateHandInputRealistic();
+
+    const res = computeFastCoincheHandScore({
+      bidder: h.bidder,
+      bid: h.bid,
+      suit: h.suit,
+      coincheLevel: h.coincheLevel,
+      capot: h.capot,
+      bidderTrickPoints: h.bidderTrickPoints,
+      announceA: h.announceA,
+      announceB: h.announceB,
+      beloteTeam: h.beloteTeam,
+    });
+
+    totalA += res.scoreA;
+    totalB += res.scoreB;
+
+    hands.push({
+      id: uid("h"),
+      ts: Date.now() + i,
+      bidder: h.bidder,
+      bid: String(h.bid),
+      suit: h.suit,
+      coincheLevel: h.coincheLevel,
+      capot: h.capot ? "YES" : "NO",
+      bidderTrickPoints: String(h.bidderTrickPoints),
+      announceA: String(h.announceA),
+      announceB: String(h.announceB),
+      beloteTeam: h.beloteTeam,
+      notes: "",
+      _scoreA: res.scoreA,
+      _scoreB: res.scoreB,
+      _bidderSucceeded: res.bidderSucceeded,
+    });
+
+    if (totalA >= TARGET_SCORE || totalB >= TARGET_SCORE) break;
+  }
+
+  return { hands, totalA, totalB, winnerSide: totalA >= TARGET_SCORE ? "A" : totalB >= TARGET_SCORE ? "B" : null };
+}
+
+/**
+ * Build a full tournament state:
+ * - 16 players
+ * - 8 teams
+ * - 2 pools + RR games
+ * - simulate every pool match with realistic hands
+ * - create bracket based on standings
+ * - simulate bracket scores (manual totals) realistically
+ */
+function buildSimulatedTournamentState() {
+  // players
+  const players = Array.from({ length: 16 }).map((_, i) => ({
+    id: uid("p"),
+    name: `P${String(i + 1).padStart(2, "0")}`,
+  }));
+
+  // teams (pair sequentially)
+  const teams = Array.from({ length: 8 }).map((_, i) => {
+    const p1 = players[i * 2]?.id;
+    const p2 = players[i * 2 + 1]?.id;
+    return {
+      id: uid("t"),
+      name: `${players[i * 2].name} / ${players[i * 2 + 1].name}`,
+      playerIds: [p1, p2],
+      locked: true,
+    };
+  });
+
+  // pools
+  const teamIds = teams.map((t) => t.id);
+  const poolMap = buildPoolAssignment(teamIds);
+
+  // build RR games using your own scheduling function
+  const games = [];
+  const makePoolGames = (poolName, ids, tableOffset) => {
+    const rounds = circleRoundRobin(ids);
+    rounds.forEach((pairings, rIdx) => {
+      pairings.forEach(([a, b], pIdx) => {
+        const g = {
+          id: uid(`g_${poolName}`),
+          stage: "POOL",
+          pool: poolName,
+          round: rIdx + 1,
+          table: tableOffset + (pIdx + 1),
+          teamAId: a,
+          teamBId: b,
+          scoreA: "0",
+          scoreB: "0",
+          winnerId: null,
+          matchPtsA: 0,
+          matchPtsB: 0,
+          matchEnded: false,
+          hands: [],
+          handDraft: null,
+        };
+
+        // simulate hands
+        const sim = simulateMatchHands({ maxHands: 30 });
+        g.hands = sim.hands;
+        g.scoreA = String(sim.totalA);
+        g.scoreB = String(sim.totalB);
+        g.matchEnded = sim.winnerSide != null;
+
+        // winner + match points
+        const aScore = safeInt(g.scoreA);
+        const bScore = safeInt(g.scoreB);
+        if (aScore !== null && bScore !== null && aScore !== bScore) {
+          g.winnerId = aScore > bScore ? g.teamAId : g.teamBId;
+          const winnerScore = Math.max(aScore, bScore);
+          const mp = computeMatchPoints(winnerScore, 2000, 2, 1);
+          g.matchPtsA = g.winnerId === g.teamAId ? mp : 0;
+          g.matchPtsB = g.winnerId === g.teamBId ? mp : 0;
+        }
+
+        games.push(g);
+      });
+    });
+  };
+
+  makePoolGames("A", poolMap.A, 0);
+  makePoolGames("B", poolMap.B, 2);
+
+  // helper for standings (pure, based on your rules)
+  const teamById = new Map(teams.map((t) => [t.id, t]));
+  function computePoolStandingsPure(poolName) {
+    const ids = poolMap[poolName] || [];
+    const rows = ids.map((id) => ({
+      teamId: id,
+      name: teamById.get(id)?.name ?? "—",
+      matchPoints: 0,
+      totalGamePoints: 0,
+      gamesPlayed: 0,
+      wins: 0,
+      losses: 0,
+    }));
+    const byId = new Map(rows.map((r) => [r.teamId, r]));
+
+    games
+      .filter((g) => g.stage === "POOL" && g.pool === poolName)
+      .forEach((g) => {
+        const a = byId.get(g.teamAId);
+        const b = byId.get(g.teamBId);
+        if (!a || !b) return;
+
+        const sa = safeInt(g.scoreA);
+        const sb = safeInt(g.scoreB);
+        if (sa !== null && sb !== null) {
+          a.totalGamePoints += sa;
+          b.totalGamePoints += sb;
+          a.gamesPlayed += 1;
+          b.gamesPlayed += 1;
+          if (g.winnerId) {
+            if (g.winnerId === g.teamAId) {
+              a.wins += 1;
+              b.losses += 1;
+            } else {
+              b.wins += 1;
+              a.losses += 1;
+            }
+          }
+        }
+
+        a.matchPoints += g.matchPtsA ?? 0;
+        b.matchPoints += g.matchPtsB ?? 0;
+      });
+
+    return sortStandings(rows);
+  }
+
+  const standingsA = computePoolStandingsPure("A");
+  const standingsB = computePoolStandingsPure("B");
+
+  // bracket from top4 each
+  const aTop = standingsA.slice(0, 4).map((x) => x.teamId);
+  const bTop = standingsB.slice(0, 4).map((x) => x.teamId);
+
+  // Build bracket object same format as your UI uses
+  const qf = [
+    { label: "QF1", A: aTop[0], B: bTop[3], table: 1 },
+    { label: "QF2", A: aTop[1], B: bTop[2], table: 2 },
+    { label: "QF3", A: bTop[0], B: aTop[3], table: 3 },
+    { label: "QF4", A: bTop[1], B: aTop[2], table: 4 },
+  ];
+
+  const sfIds = [uid("m_sf"), uid("m_sf")];
+  const fId = uid("m_f");
+  const thirdId = uid("m_3p");
+
+  let bracket = [];
+
+  qf.forEach((m, idx) => {
+    const nextMatchId = idx < 2 ? sfIds[0] : sfIds[1];
+    const nextSlot = idx % 2 === 0 ? "A" : "B";
+    bracket.push({
+      id: uid("m_qf"),
+      label: m.label,
+      round: "QF",
+      idx,
+      table: m.table,
+      teamAId: m.A,
+      teamBId: m.B,
+      scoreA: "",
+      scoreB: "",
+      winnerId: null,
+      nextMatchId,
+      nextSlot,
+    });
+  });
+
+  bracket.push({
+    id: sfIds[0],
+    label: "SF1",
+    round: "SF",
+    idx: 0,
+    table: 1,
+    teamAId: null,
+    teamBId: null,
+    scoreA: "",
+    scoreB: "",
+    winnerId: null,
+    nextMatchId: fId,
+    nextSlot: "A",
+  });
+  bracket.push({
+    id: sfIds[1],
+    label: "SF2",
+    round: "SF",
+    idx: 1,
+    table: 2,
+    teamAId: null,
+    teamBId: null,
+    scoreA: "",
+    scoreB: "",
+    winnerId: null,
+    nextMatchId: fId,
+    nextSlot: "B",
+  });
+
+  bracket.push({
+    id: fId,
+    label: "Final",
+    round: "F",
+    idx: 0,
+    table: 1,
+    teamAId: null,
+    teamBId: null,
+    scoreA: "",
+    scoreB: "",
+    winnerId: null,
+    nextMatchId: null,
+    nextSlot: null,
+  });
+
+  bracket.push({
+    id: thirdId,
+    label: "3rd Place",
+    round: "3P",
+    idx: 0,
+    table: 2,
+    teamAId: null,
+    teamBId: null,
+    scoreA: "",
+    scoreB: "",
+    winnerId: null,
+    nextMatchId: null,
+    nextSlot: null,
+  });
+
+  // Use your own propagation helpers to advance winners
+  function scoreBracketMatch(m, aPoints, bPoints) {
+    const a = String(aPoints);
+    const b = String(bPoints);
+    const winnerId = aPoints === bPoints ? null : aPoints > bPoints ? m.teamAId : m.teamBId;
+    return { ...m, scoreA: a, scoreB: b, winnerId };
+  }
+
+  // simulate bracket scores realistically (single totals, not hands)
+  function simulateBracketScoreLine() {
+    // typical match ends around 2000–2600 winner, loser 1200–2200
+    const winner = randInt(2000, 2650);
+    const loser = randInt(1200, 2350);
+    return winner === loser ? { w: winner + 10, l: loser } : { w: winner, l: loser };
+  }
+
+  // Play QFs
+  bracket = bracket.map((m) => {
+    if (m.round !== "QF") return m;
+    const { w, l } = simulateBracketScoreLine();
+    // randomize which side wins
+    const aWins = chance(0.5);
+    return scoreBracketMatch(m, aWins ? w : l, aWins ? l : w);
+  });
+
+  bracket = propagateBracketWinners(bracket);
+  bracket = fillThirdPlace(bracket);
+
+  // Play SFs (now teams should be filled)
+  bracket = bracket.map((m) => {
+    if (m.round !== "SF" || !m.teamAId || !m.teamBId) return m;
+    const { w, l } = simulateBracketScoreLine();
+    const aWins = chance(0.5);
+    return scoreBracketMatch(m, aWins ? w : l, aWins ? l : w);
+  });
+
+  bracket = propagateBracketWinners(bracket);
+  bracket = fillThirdPlace(bracket);
+
+  // Final + 3rd
+  bracket = bracket.map((m) => {
+    if ((m.round !== "F" && m.round !== "3P") || !m.teamAId || !m.teamBId) return m;
+    const { w, l } = simulateBracketScoreLine();
+    const aWins = chance(0.5);
+    return scoreBracketMatch(m, aWins ? w : l, aWins ? l : w);
+  });
+
+  bracket = propagateBracketWinners(bracket);
+  bracket = fillThirdPlace(bracket);
+
+  return { players, teams, poolMap, games, bracket };
+}
 export default function App() {
   const [loaded, setLoaded] = useState(false);
+  const [testReport, setTestReport] = useState(null);
 
   const [tournamentName, setTournamentName] = useState("9th Annual Coinche Tournament");
   const [startTime, setStartTime] = useState(DEFAULT_START_TIME);
