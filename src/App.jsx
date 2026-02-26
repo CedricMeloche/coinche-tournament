@@ -1,48 +1,49 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * 9th Annual Coinche Tournament — Vite Single-File App.jsx
- * - 8 teams fixed (2 pools of 4) + bracket (QF/SF/Final + 3rd)
- * - Admin view: manual team picker OR randomize (lock teams supported)
- * - Table view: each table enters ONLY their match
- * - Public view: read-only scoreboard + bracket + timer (projector/TV)
- * - Fast mode hand tracker: add hands, auto-calc, clears fields after add, ends at 2000 immediately
- * - Live scoreboard + stats + funny stats
- * - Export CSV (Excel-friendly) for full tournament data
+ * 9th Annual Coinche Tournament (Vite single-file App.jsx)
+ * ✅ Exactly 8 teams (2 pools of 4) + RR inside pools + bracket (QF/SF/Final + 3rd)
+ * ✅ Admin view + Public view (read-only) + Table view (enter only your table match)
+ * ✅ Live scoreboard + stats + funny stats
+ * ✅ Timer (start/pause/reset) shown on Public + Table
+ * ✅ Fast mode Hand Tracker:
+ *    - add hands with suit dropdown + icons
+ *    - auto calculates hand points and accumulates to match totals
+ *    - ends match immediately at 2000+
+ *    - NEW hand starts blank after add/save
+ *    - past hands editable
+ * ✅ Progress bars to 2000 per team for the current match
+ * ✅ Team builder:
+ *    - randomize teams
+ *    - OR manual pick players for each team
+ *    - lock team toggle (locked teams won't change on randomize)
+ * ✅ Export CSV (Excel-friendly) for all tournament data
  *
- * Routing via hash:
- *  - #/admin
- *  - #/public
- *  - #/table?num=1   (1..4)
+ * Notes:
+ * - Deploy-friendly (no shadcn)
+ * - Uses localStorage
+ * - Route via URL hash:
+ *    #/admin
+ *    #/public
+ *    #/table?code=AB12  (each match has a short "table code")
  */
 
-const LS_KEY = "coinche_tournament_vite_full_v1";
-
-// Tournament timing
-const START_TIME = "10:00"; // shown as label
-const GAME_MIN = 40;
-const BREAK_MIN = 5;
+const LS_KEY = "coinche_tournament_vite_full_v2";
 const TARGET_SCORE = 2000;
 
-// Match points (like your earlier logic)
-const DEFAULT_WIN_THRESHOLD = 2000;
-const DEFAULT_WIN_HIGH_PTS = 2; // win >= threshold
-const DEFAULT_WIN_LOW_PTS = 1; // win < threshold
-
-const SUITS = [
-  { value: "H", label: "Hearts", icon: "♥" },
-  { value: "D", label: "Diamonds", icon: "♦" },
-  { value: "C", label: "Clubs", icon: "♣" },
-  { value: "S", label: "Spades", icon: "♠" },
-];
-const COINCHE_LEVELS = [
-  { value: "NONE", label: "None" },
-  { value: "COINCHE", label: "Coinche (x2)" },
-  { value: "SURCOINCHE", label: "Surcoinche (x4)" },
-];
+// Schedule / timer defaults
+const GAME_MIN = 40;
+const BREAK_MIN = 5;
+const START_TIME = "10:00"; // display only (not auto-start)
 
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+}
+function shortCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let s = "";
+  for (let i = 0; i < 4; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
 }
 function shuffleArray(arr) {
   const a = [...arr];
@@ -58,26 +59,12 @@ function safeInt(v) {
   return Number.isFinite(n) ? n : null;
 }
 function clamp(n, lo, hi) {
-  return Math.max(lo, Math.min(hi, n));
-}
-function pad2(n) {
-  return String(n).padStart(2, "0");
-}
-function parseHash() {
-  const raw = window.location.hash || "#/admin";
-  const [pathPart, queryPart] = raw.replace(/^#/, "").split("?");
-  const path = pathPart || "/admin";
-  const q = new URLSearchParams(queryPart || "");
-  const tableNum = Number(q.get("num") || "");
-  return { path, tableNum: Number.isFinite(tableNum) ? tableNum : null };
-}
-function formatClock(d) {
-  const hh = pad2(d.getHours());
-  const mm = pad2(d.getMinutes());
-  return `${hh}:${mm}`;
+  const x = Number(n);
+  if (!Number.isFinite(x)) return lo;
+  return Math.max(lo, Math.min(hi, x));
 }
 
-/** Circle method RR scheduler (even n) */
+/** Circle method RR scheduler */
 function circleRoundRobin(teamIds) {
   const ids = [...teamIds];
   const hasOdd = ids.length % 2 === 1;
@@ -99,6 +86,7 @@ function circleRoundRobin(teamIds) {
     }
     out.push(pairings);
 
+    // rotate (keep first fixed)
     const fixed = left[0];
     const movedFromLeft = left.pop();
     const movedFromRight = right.shift();
@@ -121,23 +109,31 @@ function sortStandings(rows) {
   });
 }
 
-/** ===== Fast mode Coinche scoring =====
- * This matches your "fast mode" principles you shared earlier:
- * - Trick points rounded to nearest 10 (with +4 trick trick)
- * - Minimum needed base 81; if bidder has belote, 71; if bid=80 must be 81
- * - Announces reduce requirement (fast approximation)
- * - Capot: winner gets 250 + all announces + belote + bid
- * - Coinche/Surcoinche: winner gets 160 + mult*bid + all announces; loser 0; belote stays with declaring team
- * - Normal:
- *    - Success: bidder gets rounded tricks + their announces + belote + bid; opp gets rounded tricks + their announces + belote
- *    - Fail: opp gets 160 + bid + announces; bidder gets 0 but keeps belote if they had it
- */
+function buildPoolAssignmentFor8(teamIdsInOrder) {
+  // exactly 8 teams => 4 and 4
+  return { A: teamIdsInOrder.slice(0, 4), B: teamIdsInOrder.slice(4, 8) };
+}
+
+/** ===== Fast mode scoring helpers ===== */
 function roundTrickPoints(x) {
   if (x == null) return 0;
   const n = clamp(Number(x) || 0, 0, 162);
+  // Approx rounding to nearest 10 (down at 5) using +4 trick approach
   return Math.floor((n + 4) / 10) * 10;
 }
 
+/**
+ * Fast mode compute (kept from your previous)
+ * - bidder trick points (0..162 raw)
+ * - announces A/B (non-belote)
+ * - belote team adds 20 to that team
+ * - capot: winner gets 250 + all announces + belote + bid
+ * - coinche: winner gets 160 + mult*bid + announces ; belote remains with declaring team
+ * - normal:
+ *    - success: bidder gets rounded tricks + bidder announces + bid (+ belote if theirs)
+ *              opp gets rounded opp tricks + opp announces (+ belote if theirs)
+ *    - fail: bidder gets 0 (keeps belote if theirs), opp gets 160 + bid + all announces (+ their belote if theirs)
+ */
 function computeFastCoincheScore({
   bidder, // "A"|"B"
   bid, // number
@@ -145,12 +141,12 @@ function computeFastCoincheScore({
   coincheLevel, // "NONE"|"COINCHE"|"SURCOINCHE"
   capot, // boolean
   bidderTrickPoints, // 0..162 raw
-  announceA, // non-belote announces A
-  announceB, // non-belote announces B
+  announceA, // non-belote announces total A
+  announceB, // non-belote announces total B
   beloteTeam, // "NONE"|"A"|"B"
 }) {
   const BIDDER_IS_A = bidder === "A";
-  const bidVal = Math.max(0, Number(bid) || 0);
+  const bidVal = Number(bid) || 0;
 
   const belotePts = beloteTeam === "NONE" ? 0 : 20;
   const beloteA = beloteTeam === "A" ? 20 : 0;
@@ -162,16 +158,17 @@ function computeFastCoincheScore({
   const tricksBidder = roundTrickPoints(rawBidder);
   const tricksOpp = roundTrickPoints(rawOpp);
 
-  const aAnn = Math.max(0, Number(announceA) || 0);
-  const bAnn = Math.max(0, Number(announceB) || 0);
+  const aAnn = Number(announceA) || 0;
+  const bAnn = Number(announceB) || 0;
 
   const bidderAnn = BIDDER_IS_A ? aAnn : bAnn;
 
-  const bidderHasBelote =
-    (BIDDER_IS_A && beloteTeam === "A") || (!BIDDER_IS_A && beloteTeam === "B");
+  // Minimum needed: base 81. If bidder has belote: 71. If bid==80 must be 81.
+  const bidderHasBelote = (BIDDER_IS_A && beloteTeam === "A") || (!BIDDER_IS_A && beloteTeam === "B");
   const baseMin = bidderHasBelote ? 71 : 81;
   const special80 = bidVal === 80 ? 81 : 0;
 
+  // Announces help (fast mode)
   const announceHelp = bidderAnn + (bidderHasBelote ? 20 : 0);
   const required = Math.max(baseMin, special80, bidVal - announceHelp);
 
@@ -192,7 +189,7 @@ function computeFastCoincheScore({
       scoreB = winnerGets;
       scoreA = 0;
     }
-    return { scoreA, scoreB, bidderSucceeded: true, suit };
+    return { scoreA, scoreB, bidderSucceeded: true };
   }
 
   if (isCoinche) {
@@ -214,9 +211,10 @@ function computeFastCoincheScore({
         scoreB = beloteB;
       }
     }
-    return { scoreA, scoreB, bidderSucceeded, suit };
+    return { scoreA, scoreB, bidderSucceeded };
   }
 
+  // Normal
   if (bidderSucceeded) {
     if (BIDDER_IS_A) {
       scoreA = tricksBidder + aAnn + beloteA + bidVal;
@@ -236,187 +234,273 @@ function computeFastCoincheScore({
     }
   }
 
-  return { scoreA, scoreB, bidderSucceeded, suit };
+  return { scoreA, scoreB, bidderSucceeded };
 }
 
-/** ====== CSV export helpers ====== */
-function csvEscape(s) {
-  const str = String(s ?? "");
-  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
-}
-function downloadTextFile(filename, text) {
-  const blob = new Blob([text], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+/** ===== Routing helpers ===== */
+function parseHashRoute() {
+  const raw = window.location.hash || "#/admin";
+  const [pathPart, queryPart] = raw.replace(/^#/, "").split("?");
+  const path = pathPart || "/admin";
+  const q = new URLSearchParams(queryPart || "");
+  const query = Object.fromEntries(q.entries());
+  return { path, query };
 }
 
-/** ===== Timer logic (start/pause) ===== */
-function computeTimerInfo({
-  startTs,
-  paused,
-  pausedAccumMs,
-  pausedAtTs,
-  nowTs,
-}) {
-  // If never started
-  if (!startTs) {
-    return {
-      currentLabel: "Not started",
-      currentTime: "—",
-      inBreak: false,
-      remainingInGame: GAME_MIN,
-      remainingInBlock: GAME_MIN,
-      elapsedMin: 0,
-    };
-  }
+/** ===== Styles ===== */
+const styles = {
+  page: {
+    minHeight: "100vh",
+    background:
+      "radial-gradient(1200px 600px at 10% 10%, rgba(99,102,241,0.25), transparent 60%), radial-gradient(1200px 600px at 90% 10%, rgba(16,185,129,0.18), transparent 55%), radial-gradient(1200px 600px at 50% 90%, rgba(244,63,94,0.12), transparent 60%), linear-gradient(180deg, #0b1220 0%, #050814 100%)",
+    color: "#e5e7eb",
+    padding: 16,
+  },
+  container: { maxWidth: 1200, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 },
+  topbar: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  title: { margin: 0, fontSize: 28, fontWeight: 950, letterSpacing: "-0.02em" },
+  subtitle: { color: "#94a3b8", marginTop: 6, fontSize: 13 },
+  pillRow: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
+  pill: {
+    border: "1px solid rgba(148,163,184,0.20)",
+    background: "rgba(2,6,23,0.55)",
+    padding: "10px 12px",
+    borderRadius: 16,
+  },
+  section: {
+    background: "rgba(2,6,23,0.55)",
+    border: "1px solid rgba(148,163,184,0.18)",
+    borderRadius: 18,
+    padding: 14,
+    boxShadow: "0 12px 40px rgba(0,0,0,0.25)",
+  },
+  sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 },
+  h2: { margin: 0, fontSize: 16, fontWeight: 900, letterSpacing: "-0.01em" },
+  small: { fontSize: 12, color: "#94a3b8" },
 
-  const effectiveNow = nowTs;
-  let elapsedMs = effectiveNow - startTs - pausedAccumMs;
-  if (paused && pausedAtTs) {
-    // freeze at pause moment
-    elapsedMs = pausedAtTs - startTs - pausedAccumMs;
-  }
-  elapsedMs = Math.max(0, elapsedMs);
+  btnPrimary: {
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(99,102,241,0.35)",
+    background: "linear-gradient(180deg, rgba(99,102,241,0.95), rgba(79,70,229,0.9))",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 900,
+  },
+  btnSecondary: {
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(148,163,184,0.22)",
+    background: "rgba(2,6,23,0.4)",
+    color: "#e5e7eb",
+    cursor: "pointer",
+    fontWeight: 850,
+  },
+  btnDanger: {
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(244,63,94,0.40)",
+    background: "linear-gradient(180deg, rgba(244,63,94,0.95), rgba(190,18,60,0.9))",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 900,
+  },
+  btnGhost: {
+    padding: "8px 10px",
+    borderRadius: 12,
+    border: "1px solid transparent",
+    background: "transparent",
+    color: "#94a3b8",
+    cursor: "pointer",
+    fontWeight: 900,
+  },
+  disabled: { opacity: 0.55, cursor: "not-allowed" },
 
-  const elapsedMin = Math.floor(elapsedMs / 60000);
+  input: (w = 240) => ({
+    width: typeof w === "number" ? `${w}px` : w,
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(148,163,184,0.22)",
+    background: "rgba(2,6,23,0.35)",
+    color: "#e5e7eb",
+    outline: "none",
+    boxSizing: "border-box",
+    minWidth: 0,
+    display: "block",
+  }),
+  select: (w = 180) => ({
+    width: typeof w === "number" ? `${w}px` : w,
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(148,163,184,0.22)",
+    background: "rgba(2,6,23,0.35)",
+    color: "#e5e7eb",
+    outline: "none",
+    boxSizing: "border-box",
+    minWidth: 0,
+    display: "block",
+  }),
 
-  const blockLen = GAME_MIN + BREAK_MIN;
-  const blockIndex = Math.floor(elapsedMin / blockLen); // 0-based block
-  const inBlockMin = elapsedMin % blockLen;
+  grid2: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 },
+  grid3: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 },
+  grid4: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12 },
+  card: {
+    background: "rgba(2,6,23,0.35)",
+    border: "1px solid rgba(148,163,184,0.18)",
+    borderRadius: 18,
+    padding: 12,
+  },
 
-  const inBreak = inBlockMin >= GAME_MIN;
-  const remainingInGame = inBreak ? 0 : Math.max(0, GAME_MIN - inBlockMin);
-  const remainingInBreak = inBreak ? Math.max(0, blockLen - inBlockMin) : BREAK_MIN;
+  row: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
 
-  const currentLabel = inBreak
-    ? `Break (after Round ${blockIndex + 1})`
-    : `Round ${blockIndex + 1}`;
+  progressWrap: {
+    height: 12,
+    borderRadius: 999,
+    background: "rgba(148,163,184,0.16)",
+    overflow: "hidden",
+    border: "1px solid rgba(148,163,184,0.14)",
+  },
+  progressFillA: (pct) => ({
+    height: "100%",
+    width: `${pct}%`,
+    background: "linear-gradient(90deg, rgba(34,197,94,0.95), rgba(16,185,129,0.9))",
+  }),
+  progressFillB: (pct) => ({
+    height: "100%",
+    width: `${pct}%`,
+    background: "linear-gradient(90deg, rgba(99,102,241,0.95), rgba(59,130,246,0.9))",
+  }),
 
-  const remainingInBlock = inBreak ? remainingInBreak : remainingInGame;
+  bracketGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+    gap: 12,
+    alignItems: "start",
+  },
 
-  const currentTime = formatClock(new Date(effectiveNow));
+  handGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+    gap: 12,
+    marginTop: 12,
+    alignItems: "start",
+  },
+  handRow: {
+    border: "1px solid rgba(148,163,184,0.16)",
+    background: "rgba(2,6,23,0.35)",
+    borderRadius: 16,
+    padding: 12,
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 10,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
 
-  return {
-    currentLabel,
-    currentTime,
-    inBreak,
-    remainingInGame,
-    remainingInBlock,
-    elapsedMin,
+  tag: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "6px 10px",
+    borderRadius: 999,
+    background: "rgba(148,163,184,0.12)",
+    border: "1px solid rgba(148,163,184,0.14)",
+    color: "#e2e8f0",
+    fontSize: 12,
+    fontWeight: 800,
+  },
+};
+
+function SuitIcon({ suit }) {
+  const map = {
+    H: { ch: "♥", color: "#fb7185", label: "Hearts" },
+    D: { ch: "♦", color: "#fb7185", label: "Diamonds" },
+    C: { ch: "♣", color: "#34d399", label: "Clubs" },
+    S: { ch: "♠", color: "#60a5fa", label: "Spades" },
   };
+  const s = map[suit] || map.S;
+  return (
+    <span title={s.label} style={{ fontWeight: 1000, color: s.color }}>
+      {s.ch}
+    </span>
+  );
 }
 
-/** ===== Default data builders ===== */
-function defaultFastDraft() {
-  return {
-    bidder: "A",
-    bid: "",
-    suit: "S",
-    coincheLevel: "NONE",
-    capot: false,
-    bidderTrickPoints: "",
-    announceA: "",
-    announceB: "",
-    beloteTeam: "NONE",
-  };
-}
-
-function makeEmptyMatch({ id, stage, label, pool, round, table, teamAId, teamBId }) {
-  return {
-    id,
-    stage, // "POOL" | "BRACKET"
-    label,
-    pool: pool ?? null, // "A" | "B" | null
-    round: round ?? null,
-    table: table ?? null,
-    teamAId,
-    teamBId,
-    hands: [], // each: {idx, draftSnapshot, scoreA, scoreB, createdAt}
-    totalA: 0,
-    totalB: 0,
-    winnerId: null,
-    completed: false,
-    matchPtsA: 0,
-    matchPtsB: 0,
-    fastDraft: defaultFastDraft(),
-  };
+function fmtMMSS(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
 }
 
 /** ===== Main App ===== */
 export default function App() {
-  const [route, setRoute] = useState(parseHash());
+  const [route, setRoute] = useState(() => parseHashRoute());
 
-  // Basic tournament state
+  // Core tournament data
   const [loaded, setLoaded] = useState(false);
   const [tournamentName, setTournamentName] = useState("9th Annual Coinche Tournament");
 
+  // Players and teams
   const [players, setPlayers] = useState([]); // {id,name}
-  const [teams, setTeams] = useState([]); // {id, name, playerIds:[p1,p2], locked:boolean}
+  const [teams, setTeams] = useState([]); // {id,name,playerIds[], locked:boolean}
+  const [avoidSameTeams, setAvoidSameTeams] = useState(true);
+  const [pairHistory, setPairHistory] = useState([]); // ["p1|p2", ...]
 
-  // Pools + schedule
-  const [poolMap, setPoolMap] = useState({ A: [], B: [] }); // arrays of teamIds (length 4 each)
-  const [matches, setMatches] = useState([]); // all matches: pool RR + bracket
-  const [bracket, setBracket] = useState([]); // bracket nodes
+  // Pools & matches
+  const [poolMap, setPoolMap] = useState({ A: [], B: [] }); // {A:[teamId...], B:[teamId...]}
+  const [matches, setMatches] = useState([]); // pool matches + bracket matches as separate structures
+  const [bracket, setBracket] = useState([]); // bracket matches only
 
-  // Scoring settings
-  const [winThreshold, setWinThreshold] = useState(DEFAULT_WIN_THRESHOLD);
-  const [winHighPts, setWinHighPts] = useState(DEFAULT_WIN_HIGH_PTS);
-  const [winLowPts, setWinLowPts] = useState(DEFAULT_WIN_LOW_PTS);
+  // Standings scoring
+  const [winThreshold, setWinThreshold] = useState(2000);
+  const [winHighPts, setWinHighPts] = useState(2);
+  const [winLowPts, setWinLowPts] = useState(1);
 
-  // Timer state (shared)
-  const [timerStartTs, setTimerStartTs] = useState(null); // ms
-  const [timerPaused, setTimerPaused] = useState(true);
-  const [timerPausedAtTs, setTimerPausedAtTs] = useState(null); // ms
-  const [timerPausedAccumMs, setTimerPausedAccumMs] = useState(0);
+  // Timer / schedule state
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [timerSeconds, setTimerSeconds] = useState(GAME_MIN * 60); // countdown
+  const [timerMode, setTimerMode] = useState("GAME"); // "GAME" | "BREAK"
+  const lastTickRef = useRef(null);
 
-  const [nowTick, setNowTick] = useState(Date.now());
-
-  // UI state
+  // UI helpers
   const [newPlayerName, setNewPlayerName] = useState("");
   const inputRef = useRef(null);
 
-  // Listen for hash changes
+  // Hash route listener
   useEffect(() => {
-    const onHash = () => setRoute(parseHash());
+    const onHash = () => setRoute(parseHashRoute());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // Timer tick
-  useEffect(() => {
-    const t = setInterval(() => setNowTick(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  // Load persisted
+  // Load localStorage
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
       if (raw) {
-        const data = JSON.parse(raw);
-        setTournamentName(data.tournamentName ?? "9th Annual Coinche Tournament");
-        setPlayers(data.players ?? []);
-        setTeams(data.teams ?? []);
-        setPoolMap(data.poolMap ?? { A: [], B: [] });
-        setMatches(data.matches ?? []);
-        setBracket(data.bracket ?? []);
-        setWinThreshold(data.winThreshold ?? DEFAULT_WIN_THRESHOLD);
-        setWinHighPts(data.winHighPts ?? DEFAULT_WIN_HIGH_PTS);
-        setWinLowPts(data.winLowPts ?? DEFAULT_WIN_LOW_PTS);
+        const d = JSON.parse(raw);
+        setTournamentName(d.tournamentName ?? "9th Annual Coinche Tournament");
+        setPlayers(d.players ?? []);
+        setTeams(d.teams ?? []);
+        setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
+        setPairHistory(d.pairHistory ?? []);
+        setPoolMap(d.poolMap ?? { A: [], B: [] });
+        setMatches(d.matches ?? []);
+        setBracket(d.bracket ?? []);
+        setWinThreshold(d.winThreshold ?? 2000);
+        setWinHighPts(d.winHighPts ?? 2);
+        setWinLowPts(d.winLowPts ?? 1);
 
-        setTimerStartTs(data.timerStartTs ?? null);
-        setTimerPaused(data.timerPaused ?? true);
-        setTimerPausedAtTs(data.timerPausedAtTs ?? null);
-        setTimerPausedAccumMs(data.timerPausedAccumMs ?? 0);
+        setTimerRunning(Boolean(d.timerRunning ?? false));
+        setTimerSeconds(Number.isFinite(d.timerSeconds) ? d.timerSeconds : GAME_MIN * 60);
+        setTimerMode(d.timerMode ?? "GAME");
       }
     } catch {
       // ignore
@@ -425,7 +509,7 @@ export default function App() {
     }
   }, []);
 
-  // Persist
+  // Persist localStorage
   useEffect(() => {
     if (!loaded) return;
     localStorage.setItem(
@@ -434,16 +518,17 @@ export default function App() {
         tournamentName,
         players,
         teams,
+        avoidSameTeams,
+        pairHistory,
         poolMap,
         matches,
         bracket,
         winThreshold,
         winHighPts,
         winLowPts,
-        timerStartTs,
-        timerPaused,
-        timerPausedAtTs,
-        timerPausedAccumMs,
+        timerRunning,
+        timerSeconds,
+        timerMode,
       })
     );
   }, [
@@ -451,67 +536,111 @@ export default function App() {
     tournamentName,
     players,
     teams,
+    avoidSameTeams,
+    pairHistory,
     poolMap,
     matches,
     bracket,
     winThreshold,
     winHighPts,
     winLowPts,
-    timerStartTs,
-    timerPaused,
-    timerPausedAtTs,
-    timerPausedAccumMs,
+    timerRunning,
+    timerSeconds,
+    timerMode,
   ]);
+
+  // Timer tick (1s)
+  useEffect(() => {
+    if (!timerRunning) {
+      lastTickRef.current = null;
+      return;
+    }
+    const id = setInterval(() => {
+      const now = Date.now();
+      if (!lastTickRef.current) lastTickRef.current = now;
+      const dt = Math.floor((now - lastTickRef.current) / 1000);
+      if (dt <= 0) return;
+      lastTickRef.current = now;
+
+      setTimerSeconds((prev) => {
+        const next = prev - dt;
+        return next <= 0 ? 0 : next;
+      });
+    }, 250);
+    return () => clearInterval(id);
+  }, [timerRunning]);
+
+  // Auto stop when hits 0
+  useEffect(() => {
+    if (!timerRunning) return;
+    if (timerSeconds <= 0) setTimerRunning(false);
+  }, [timerSeconds, timerRunning]);
 
   const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
   const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
 
-  const timerInfo = useMemo(
-    () =>
-      computeTimerInfo({
-        startTs: timerStartTs,
-        paused: timerPaused,
-        pausedAccumMs: timerPausedAccumMs,
-        pausedAtTs: timerPausedAtTs,
-        nowTs: nowTick,
-      }),
-    [timerStartTs, timerPaused, timerPausedAccumMs, timerPausedAtTs, nowTick]
-  );
+  // Team numbering (1..n) based on current teams order
+  const teamNumberById = useMemo(() => {
+    const m = new Map();
+    teams.forEach((t, i) => m.set(t.id, i + 1));
+    return m;
+  }, [teams]);
 
-  // Determine if admin has correct counts
-  const teamCountOk = teams.length === 8;
-  const playersCountOk = players.length >= 16; // recommended (but manual teams allows extras)
-  const poolsReady = poolMap.A.length === 4 && poolMap.B.length === 4;
+  const exactly8Teams = useMemo(() => teams.length === 8, [teams.length]);
 
-  /** ===== Navigation links ===== */
-  const publicLink = "#/public";
-  const adminLink = "#/admin";
-  const tableLink = (n) => `#/table?num=${n}`;
+  /** ===== Reset helpers ===== */
+  function defaultFastDraft() {
+    return {
+      bidder: "A",
+      bid: "",
+      suit: "S",
+      coincheLevel: "NONE",
+      capot: false,
+      bidderTrickPoints: "",
+      announceA: "0",
+      announceB: "0",
+      beloteTeam: "NONE",
+    };
+  }
 
-  /** ===== Core actions ===== */
+  function makeEmptyMatch({ stage, pool = null, round = null, table = null, teamAId, teamBId, label }) {
+    return {
+      id: uid("match"),
+      code: shortCode(),
+      stage, // "POOL" | "BRACKET"
+      pool,
+      round,
+      table,
+      label,
+      teamAId,
+      teamBId,
+      hands: [],
+      totalA: 0,
+      totalB: 0,
+      winnerId: null,
+      completed: false,
+      matchPtsA: 0,
+      matchPtsB: 0,
+      fastDraft: defaultFastDraft(),
+      editingHandIdx: null, // NEW
+    };
+  }
+
+  function resetTournamentStructure() {
+    setPoolMap({ A: [], B: [] });
+    setMatches([]);
+    setBracket([]);
+  }
+
   function fullReset() {
     setTournamentName("9th Annual Coinche Tournament");
     setPlayers([]);
     setTeams([]);
-    setPoolMap({ A: [], B: [] });
-    setMatches([]);
-    setBracket([]);
-    setWinThreshold(DEFAULT_WIN_THRESHOLD);
-    setWinHighPts(DEFAULT_WIN_HIGH_PTS);
-    setWinLowPts(DEFAULT_WIN_LOW_PTS);
-
-    // timer reset
-    setTimerStartTs(null);
-    setTimerPaused(true);
-    setTimerPausedAtTs(null);
-    setTimerPausedAccumMs(0);
-  }
-
-  function resetTournamentOnly() {
-    setPoolMap({ A: [], B: [] });
-    setMatches([]);
-    setBracket([]);
-    // keep players/teams
+    setPairHistory([]);
+    resetTournamentStructure();
+    setTimerRunning(false);
+    setTimerMode("GAME");
+    setTimerSeconds(GAME_MIN * 60);
   }
 
   /** ===== Players ===== */
@@ -524,207 +653,244 @@ export default function App() {
   }
   function removePlayer(id) {
     setPlayers((prev) => prev.filter((p) => p.id !== id));
-    // Teams likely invalid now
+    // Reset teams + tournament because membership changed
     setTeams([]);
-    resetTournamentOnly();
+    setPairHistory([]);
+    resetTournamentStructure();
   }
 
-  /** ===== Teams builder ===== */
-  function ensure8TeamsSkeleton() {
-    // keep existing team ids/names/locks if possible, but ensure 8 entries
+  /** ===== Teams ===== */
+  function ensureEightTeamsSkeleton() {
+    // Create 8 empty teams if not already.
     setTeams((prev) => {
-      const out = [...prev].slice(0, 8).map((t, idx) => ({
-        ...t,
-        name: t.name || `Team ${idx + 1}`,
-        locked: Boolean(t.locked),
-        playerIds: Array.isArray(t.playerIds) ? t.playerIds.slice(0, 2) : [null, null],
-      }));
-
-      while (out.length < 8) {
-        out.push({
+      if (prev.length === 8) return prev;
+      const next = [];
+      for (let i = 0; i < 8; i++) {
+        next.push({
           id: uid("t"),
-          name: `Team ${out.length + 1}`,
+          name: `Team ${i + 1}`,
+          playerIds: [],
           locked: false,
-          playerIds: [null, null],
         });
       }
-      return out;
+      return next;
     });
+    resetTournamentStructure();
   }
 
-  useEffect(() => {
-    // on first load, make sure teams skeleton exists for the 8-team tournament (if empty)
-    if (!loaded) return;
-    if (teams.length === 0) ensure8TeamsSkeleton();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded]);
-
-  function setTeamName(teamId, name) {
-    setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, name } : t)));
+  function toggleTeamLock(teamId, locked) {
+    setTeams((prev) =>
+      prev.map((t) => (t.id === teamId ? { ...t, locked: Boolean(locked) } : t))
+    );
   }
-  function setTeamPlayer(teamId, slotIdx, playerIdOrNull) {
+
+  function setTeamPlayer(teamId, slotIdx, playerIdOrEmpty) {
     setTeams((prev) =>
       prev.map((t) => {
         if (t.id !== teamId) return t;
-        const next = [...t.playerIds];
-        next[slotIdx] = playerIdOrNull || null;
-        return { ...t, playerIds: next };
+        const ids = [...(t.playerIds || [])];
+        // Expand to 2 slots
+        while (ids.length < 2) ids.push("");
+        ids[slotIdx] = playerIdOrEmpty;
+        // Ensure uniqueness inside same team
+        if (slotIdx === 0 && ids[0] && ids[0] === ids[1]) ids[1] = "";
+        if (slotIdx === 1 && ids[1] && ids[0] === ids[1]) ids[0] = "";
+        return { ...t, playerIds: ids.filter(Boolean) };
       })
     );
-  }
-  function toggleTeamLock(teamId) {
-    setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, locked: !t.locked } : t)));
+    resetTournamentStructure();
   }
 
-  function randomizeUnlockedTeams() {
-    // Build list of available players not used in locked teams (unless duplicated)
-    const locked = teams.filter((t) => t.locked);
-    const unlocked = teams.filter((t) => !t.locked);
-
-    // Collect used player ids in locked teams
-    const used = new Set();
-    locked.forEach((t) => (t.playerIds || []).forEach((pid) => pid && used.add(pid)));
-
-    const available = players.map((p) => p.id).filter((id) => !used.has(id));
-    const shuffled = shuffleArray(available);
-
-    // Fill unlocked teams with pairs from shuffled
-    const updates = new Map();
-    let i = 0;
-    unlocked.forEach((t) => {
-      const a = shuffled[i++] || null;
-      const b = shuffled[i++] || null;
-      updates.set(t.id, [a, b]);
-    });
-
-    setTeams((prev) =>
-      prev.map((t) => {
-        if (!updates.has(t.id)) return t;
-        return { ...t, playerIds: updates.get(t.id) };
-      })
-    );
-
-    resetTournamentOnly();
+  function renameTeam(teamId, name) {
+    setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, name } : t)));
   }
 
-  const teamValidation = useMemo(() => {
-    const issues = [];
-    if (teams.length !== 8) issues.push("You must have exactly 8 teams.");
-    teams.forEach((t, idx) => {
-      const [a, b] = t.playerIds || [];
-      if (!a || !b) issues.push(`Team ${idx + 1} (${t.name}) needs 2 players.`);
-      if (a && b && a === b) issues.push(`Team ${idx + 1} (${t.name}) has the same player twice.`);
-    });
+  function buildRandomTeams() {
+    // respects locked teams
+    if (players.length < 2) return;
 
-    // detect duplicates across teams
-    const seen = new Map();
-    teams.forEach((t) => {
-      (t.playerIds || []).forEach((pid) => {
-        if (!pid) return;
-        if (!seen.has(pid)) seen.set(pid, []);
-        seen.get(pid).push(t.name);
-      });
-    });
-    for (const [pid, usedIn] of seen.entries()) {
-      if (usedIn.length > 1) {
-        const nm = playerById.get(pid)?.name || "Player";
-        issues.push(`${nm} is used in multiple teams: ${usedIn.join(", ")}`);
-      }
-    }
-
-    return { ok: issues.length === 0, issues };
-  }, [teams, playerById]);
-
-  /** ===== Pools + Schedule ===== */
-  function createPoolsAndRoundRobin() {
-    if (!teamValidation.ok) return;
-
-    // Split into pools of 4: first 4 => A, last 4 => B (admin can reorder teams)
-    const ids = teams.map((t) => t.id);
-    const A = ids.slice(0, 4);
-    const B = ids.slice(4, 8);
-    setPoolMap({ A, B });
-
-    // Pool RR games: each pool has 4 teams => 3 rounds, 2 matches per round
-    // Tables: Pool A uses tables 1-2; Pool B uses tables 3-4
-    const built = [];
-
-    const makePoolMatches = (poolName, teamIds, tableOffset) => {
-      const rounds = circleRoundRobin(teamIds); // 3 rounds
-      rounds.forEach((pairings, rIdx) => {
-        pairings.forEach(([a, b], pIdx) => {
-          const table = tableOffset + (pIdx + 1);
-          built.push(
-            makeEmptyMatch({
-              id: uid(`m_pool_${poolName}`),
-              stage: "POOL",
-              label: `Pool ${poolName} — R${rIdx + 1}`,
-              pool: poolName,
-              round: rIdx + 1,
-              table,
-              teamAId: a,
-              teamBId: b,
-            })
-          );
+    // Ensure we have 8 team objects
+    let currentTeams = teams;
+    if (currentTeams.length !== 8) {
+      currentTeams = [];
+      for (let i = 0; i < 8; i++) {
+        currentTeams.push({
+          id: uid("t"),
+          name: `Team ${i + 1}`,
+          playerIds: [],
+          locked: false,
         });
-      });
-    };
-
-    makePoolMatches("A", A, 0);
-    makePoolMatches("B", B, 2);
-
-    setMatches(built);
-    setBracket([]);
-  }
-
-  /** ===== Match recompute (totals / winner / match points) ===== */
-  function recomputeMatch(m) {
-    const totalA = m.hands.reduce((s, h) => s + (Number(h.scoreA) || 0), 0);
-    const totalB = m.hands.reduce((s, h) => s + (Number(h.scoreB) || 0), 0);
-
-    let completed = m.completed;
-    let winnerId = m.winnerId;
-
-    // End immediately when someone reaches 2000 (strict)
-    if (!completed) {
-      if (totalA >= TARGET_SCORE || totalB >= TARGET_SCORE) {
-        completed = true;
-        if (totalA === totalB) {
-          // should not happen, but keep winner null until admin resolves
-          winnerId = null;
-        } else {
-          winnerId = totalA > totalB ? m.teamAId : m.teamBId;
-        }
       }
     }
 
-    // match points only when completed (or if manual totals used — but we use hands only)
-    const winnerScore = winnerId ? Math.max(totalA, totalB) : null;
-    const mp = winnerId ? computeMatchPoints(winnerScore, winThreshold, winHighPts, winLowPts) : 0;
+    // collect locked playerIds (flatten)
+    const lockedPlayers = new Set();
+    currentTeams.forEach((t) => {
+      if (!t.locked) return;
+      (t.playerIds || []).forEach((pid) => lockedPlayers.add(pid));
+    });
 
-    const matchPtsA = winnerId === m.teamAId ? mp : 0;
-    const matchPtsB = winnerId === m.teamBId ? mp : 0;
+    // available players not in locked
+    const available = players.map((p) => p.id).filter((pid) => !lockedPlayers.has(pid));
 
-    return { ...m, totalA, totalB, completed, winnerId, matchPtsA, matchPtsB };
+    const tries = avoidSameTeams ? 40 : 1;
+    const historySet = new Set(pairHistory);
+
+    let best = null;
+
+    for (let k = 0; k < tries; k++) {
+      const shuffled = shuffleArray(available);
+      // Build pairs for unlocked teams only (need 2 slots each)
+      const pairs = [];
+      for (let i = 0; i < shuffled.length; i += 2) {
+        const a = shuffled[i];
+        const b = shuffled[i + 1] || null;
+        pairs.push([a, b]);
+      }
+
+      // count repeats only on formed pairs
+      let repeats = 0;
+      for (const [a, b] of pairs) {
+        if (!a || !b) continue;
+        const key = [a, b].sort().join("|");
+        if (historySet.has(key)) repeats++;
+      }
+
+      if (!best || repeats < best.repeats) {
+        best = { pairs, repeats };
+        if (repeats === 0) break;
+      }
+    }
+
+    const finalPairs = best?.pairs ?? [];
+
+    // assign pairs to UNLOCKED teams, filling missing with blanks if needed
+    const nextTeams = currentTeams.map((t) => ({ ...t, playerIds: [...(t.playerIds || [])] }));
+
+    let pairIdx = 0;
+    for (let i = 0; i < nextTeams.length; i++) {
+      if (nextTeams[i].locked) continue;
+      const pair = finalPairs[pairIdx] || [null, null];
+      pairIdx++;
+      nextTeams[i].playerIds = [pair[0], pair[1]].filter(Boolean);
+    }
+
+    // Update team display names to include players (optional)
+    const namedTeams = nextTeams.map((t, i) => {
+      const pnames = (t.playerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean);
+      const base = `Team ${i + 1}`;
+      const label = pnames.length ? `${base} — ${pnames.join(" / ")}` : base;
+      return { ...t, name: t.name?.startsWith("Team ") ? label : t.name || label };
+    });
+
+    // record new pair history (only for new unlocked pairs)
+    const newPairs = [];
+    for (const t of namedTeams) {
+      if ((t.playerIds || []).length === 2) {
+        newPairs.push([...t.playerIds].sort().join("|"));
+      }
+    }
+
+    setTeams(namedTeams);
+    setPairHistory((prev) => Array.from(new Set([...prev, ...newPairs])));
+    resetTournamentStructure();
   }
 
-  function patchMatch(matchId, patch) {
-    setMatches((prev) => prev.map((m) => (m.id === matchId ? recomputeMatch({ ...m, ...patch }) : m)));
+  // Build list of taken players across all teams, for manual picker filtering
+  const usedPlayerIds = useMemo(() => {
+    const s = new Set();
+    teams.forEach((t) => (t.playerIds || []).forEach((pid) => s.add(pid)));
+    return s;
+  }, [teams]);
+
+  /** ===== Matches & scoring ===== */
+  function recomputeMatch(m) {
+    const hands = m.hands || [];
+    let totalA = 0;
+    let totalB = 0;
+    for (const h of hands) {
+      totalA += Number(h.scoreA) || 0;
+      totalB += Number(h.scoreB) || 0;
+    }
+
+    const completed = totalA >= TARGET_SCORE || totalB >= TARGET_SCORE;
+
+    let winnerId = null;
+    if (completed && totalA !== totalB) {
+      winnerId = totalA > totalB ? m.teamAId : m.teamBId;
+    }
+
+    // match points only make sense for POOL matches
+    let matchPtsA = 0;
+    let matchPtsB = 0;
+    if (m.stage === "POOL") {
+      const winnerScore = winnerId ? Math.max(totalA, totalB) : null;
+      const mp = computeMatchPoints(winnerScore, winThreshold, winHighPts, winLowPts);
+      matchPtsA = winnerId === m.teamAId ? mp : 0;
+      matchPtsB = winnerId === m.teamBId ? mp : 0;
+    }
+
+    return {
+      ...m,
+      totalA,
+      totalB,
+      completed,
+      winnerId,
+      matchPtsA,
+      matchPtsB,
+    };
   }
 
-  /** ===== Hand add / reset draft blank after add ===== */
-  function addHand(matchId) {
+  function updateDraft(matchId, patch) {
     setMatches((prev) =>
       prev.map((m) => {
         if (m.id !== matchId) return m;
-        if (m.completed) return m;
+        return { ...m, fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch } };
+      })
+    );
+  }
+
+  function startEditHand(matchId, handIdx) {
+    setMatches((prev) =>
+      prev.map((m) => {
+        if (m.id !== matchId) return m;
+        const hand = (m.hands || []).find((h) => h.idx === handIdx);
+        if (!hand) return m;
+        const d = hand.draftSnapshot || {};
+        return {
+          ...m,
+          editingHandIdx: handIdx,
+          fastDraft: {
+            bidder: d.bidder ?? "A",
+            bid: String(d.bid ?? ""),
+            suit: d.suit ?? "S",
+            coincheLevel: d.coincheLevel ?? "NONE",
+            capot: Boolean(d.capot),
+            bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
+            announceA: String(d.announceA ?? "0"),
+            announceB: String(d.announceB ?? "0"),
+            beloteTeam: d.beloteTeam ?? "NONE",
+          },
+        };
+      })
+    );
+  }
+
+  function cancelEditHand(matchId) {
+    setMatches((prev) =>
+      prev.map((m) => (m.id === matchId ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() } : m))
+    );
+  }
+
+  function addOrSaveHand(matchId) {
+    setMatches((prev) =>
+      prev.map((m) => {
+        if (m.id !== matchId) return m;
 
         const d = m.fastDraft || defaultFastDraft();
 
-        // Basic required fields (bidder, bid, trick points) — allow bid 0 if needed
         const bidVal = safeInt(d.bid);
         const trickVal = safeInt(d.bidderTrickPoints);
-
         if (bidVal === null || trickVal === null) return m;
 
         const res = computeFastCoincheScore({
@@ -739,69 +905,151 @@ export default function App() {
           beloteTeam: d.beloteTeam || "NONE",
         });
 
-        const hand = {
-          idx: m.hands.length + 1,
+        // If editing: replace that hand
+        if (m.editingHandIdx) {
+          const nextHands = (m.hands || []).map((h) => {
+            if (h.idx !== m.editingHandIdx) return h;
+            return {
+              ...h,
+              draftSnapshot: {
+                bidder: d.bidder,
+                bid: bidVal,
+                suit: d.suit || "S",
+                coincheLevel: d.coincheLevel || "NONE",
+                capot: Boolean(d.capot),
+                bidderTrickPoints: trickVal,
+                announceA: safeInt(d.announceA) ?? 0,
+                announceB: safeInt(d.announceB) ?? 0,
+                beloteTeam: d.beloteTeam || "NONE",
+              },
+              scoreA: res.scoreA,
+              scoreB: res.scoreB,
+              bidderSucceeded: res.bidderSucceeded,
+            };
+          });
+
+          const next = recomputeMatch({
+            ...m,
+            hands: nextHands,
+            fastDraft: defaultFastDraft(), // blank after save
+            editingHandIdx: null,
+          });
+          return next;
+        }
+
+        // Normal add: don't add after match ended
+        const current = recomputeMatch(m);
+        if (current.completed) return current;
+
+        const nextHand = {
+          idx: (m.hands?.length || 0) + 1,
           createdAt: Date.now(),
-          draftSnapshot: { ...d, bid: bidVal, bidderTrickPoints: trickVal },
+          draftSnapshot: {
+            bidder: d.bidder,
+            bid: bidVal,
+            suit: d.suit || "S",
+            coincheLevel: d.coincheLevel || "NONE",
+            capot: Boolean(d.capot),
+            bidderTrickPoints: trickVal,
+            announceA: safeInt(d.announceA) ?? 0,
+            announceB: safeInt(d.announceB) ?? 0,
+            beloteTeam: d.beloteTeam || "NONE",
+          },
           scoreA: res.scoreA,
           scoreB: res.scoreB,
           bidderSucceeded: res.bidderSucceeded,
         };
 
-        const next = {
+        const next = recomputeMatch({
           ...m,
-          hands: [...m.hands, hand],
-          // IMPORTANT: reset new hand fields blank
-          fastDraft: defaultFastDraft(),
-        };
+          hands: [...(m.hands || []), nextHand],
+          fastDraft: defaultFastDraft(), // blank after add
+        });
 
-        return recomputeMatch(next);
+        return next;
       })
     );
   }
 
-  function clearHands(matchId) {
-    patchMatch(matchId, { hands: [], totalA: 0, totalB: 0, completed: false, winnerId: null });
-  }
-
-  function updateDraft(matchId, patch) {
+  function clearMatchHands(matchId) {
     setMatches((prev) =>
-      prev.map((m) => {
-        if (m.id !== matchId) return m;
-        return { ...m, fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch } };
-      })
+      prev.map((m) => (m.id === matchId ? recomputeMatch({ ...m, hands: [], editingHandIdx: null, fastDraft: defaultFastDraft() }) : m))
     );
   }
 
-  /** ===== Standings per pool ===== */
-  function poolStandings(poolName) {
-    const ids = poolMap[poolName] || [];
-    const rows = ids
-      .map((id) => {
-        const t = teamById.get(id);
-        return t
-          ? { teamId: t.id, name: t.name, matchPoints: 0, totalGamePoints: 0, gamesPlayed: 0, wins: 0, losses: 0 }
-          : null;
-      })
-      .filter(Boolean);
+  /** ===== Scheduling for exactly 8 teams ===== */
+  function createPoolsRoundRobin8() {
+    if (!exactly8Teams) return;
 
-    const byId = new Map(rows.map((r) => [r.teamId, r]));
-    matches
-      .filter((m) => m.stage === "POOL" && m.pool === poolName)
-      .forEach((m) => {
-        const a = byId.get(m.teamAId);
-        const b = byId.get(m.teamBId);
-        if (!a || !b) return;
+    // Pool assignment based on team order (Team 1-4 in A, 5-8 in B)
+    const ids = teams.map((t) => t.id);
+    const pools = buildPoolAssignmentFor8(ids);
+    setPoolMap(pools);
 
-        a.totalGamePoints += m.totalA || 0;
-        b.totalGamePoints += m.totalB || 0;
-        a.gamesPlayed += 1;
-        b.gamesPlayed += 1;
+    const built = [];
 
-        a.matchPoints += m.matchPtsA || 0;
-        b.matchPoints += m.matchPtsB || 0;
+    // For 4-team pool RR => 3 rounds, 2 matches per round
+    // Tables: for 8 teams you said 4 tables total:
+    // Pool A uses tables 1-2, Pool B uses tables 3-4.
+    const makePoolGames = (poolName, teamIds, tableOffset) => {
+      const rounds = circleRoundRobin(teamIds); // 3 rounds
+      rounds.forEach((pairings, rIdx) => {
+        pairings.forEach(([a, b], pIdx) => {
+          built.push(
+            makeEmptyMatch({
+              stage: "POOL",
+              pool: poolName,
+              round: rIdx + 1,
+              table: tableOffset + (pIdx + 1),
+              teamAId: a,
+              teamBId: b,
+              label: `Pool ${poolName} • Round ${rIdx + 1} • Table ${tableOffset + (pIdx + 1)}`,
+            })
+          );
+        });
+      });
+    };
 
-        if (m.completed && m.winnerId) {
+    makePoolGames("A", pools.A, 0);
+    makePoolGames("B", pools.B, 2);
+
+    // Pre-recompute (clean)
+    const computed = built.map((m) => recomputeMatch(m));
+    setMatches(computed);
+    setBracket([]);
+  }
+
+  /** ===== Standings (Pools) ===== */
+  const poolStandings = useMemo(() => {
+    const computePool = (poolName) => {
+      const ids = poolMap[poolName] || [];
+      const rows = ids
+        .map((id) => {
+          const t = teamById.get(id);
+          return t ? { teamId: t.id, name: t.name, matchPoints: 0, totalGamePoints: 0, gamesPlayed: 0, wins: 0, losses: 0 } : null;
+        })
+        .filter(Boolean);
+
+      const byId = new Map(rows.map((r) => [r.teamId, r]));
+
+      matches
+        .filter((m) => m.stage === "POOL" && m.pool === poolName)
+        .forEach((m) => {
+          const a = byId.get(m.teamAId);
+          const b = byId.get(m.teamBId);
+          if (!a || !b) return;
+
+          a.totalGamePoints += Number(m.totalA) || 0;
+          b.totalGamePoints += Number(m.totalB) || 0;
+
+          if ((m.hands || []).length > 0) {
+            a.gamesPlayed += 1;
+            b.gamesPlayed += 1;
+          }
+
+          a.matchPoints += m.matchPtsA ?? 0;
+          b.matchPoints += m.matchPtsB ?? 0;
+
           if (m.winnerId === m.teamAId) {
             a.wins += 1;
             b.losses += 1;
@@ -809,55 +1057,78 @@ export default function App() {
             b.wins += 1;
             a.losses += 1;
           }
-        }
-      });
+        });
 
-    return sortStandings(rows);
-  }
+      return sortStandings(rows);
+    };
 
-  const standingsA = useMemo(() => (poolsReady ? poolStandings("A") : []), [poolsReady, matches, poolMap, teamById]);
-  const standingsB = useMemo(() => (poolsReady ? poolStandings("B") : []), [poolsReady, matches, poolMap, teamById]);
+    return {
+      A: computePool("A"),
+      B: computePool("B"),
+    };
+  }, [matches, poolMap, teamById]);
 
-  /** ===== Bracket build + propagation ===== */
-  function propagateBracketWinners(nodes) {
-    const byId = new Map(nodes.map((n) => [n.id, { ...n }]));
-    for (const n of nodes) {
-      if (!n.winnerId || !n.nextMatchId) continue;
-      const next = byId.get(n.nextMatchId);
+  /** ===== Bracket build & scoring ===== */
+  function propagateBracketWinners(ms) {
+    const byId = new Map(ms.map((m) => [m.id, { ...m }]));
+    for (const m of ms) {
+      if (!m.winnerId || !m.nextMatchId) continue;
+      const next = byId.get(m.nextMatchId);
       if (!next) continue;
-      const slotKey = n.nextSlot === "A" ? "teamAId" : "teamBId";
-      if (next[slotKey] !== n.winnerId) {
-        next[slotKey] = n.winnerId;
+
+      const slotKey = m.nextSlot === "A" ? "teamAId" : "teamBId";
+      if (next[slotKey] !== m.winnerId) {
+        next[slotKey] = m.winnerId;
+        // Reset downstream hands when bracket participants change
+        next.hands = [];
+        next.totalA = 0;
+        next.totalB = 0;
         next.winnerId = null;
-        byId.set(next.id, next);
+        next.completed = false;
+        next.editingHandIdx = null;
+        next.fastDraft = defaultFastDraft();
       }
+      byId.set(next.id, next);
     }
     return Array.from(byId.values());
   }
 
-  function fillThirdPlace(nodes) {
-    const sf = nodes.filter((x) => x.round === "SF");
-    const third = nodes.find((x) => x.round === "3P");
-    if (!third || sf.length !== 2) return nodes;
-    if (!sf[0].teamAId || !sf[0].teamBId || !sf[0].winnerId) return nodes;
-    if (!sf[1].teamAId || !sf[1].teamBId || !sf[1].winnerId) return nodes;
+  function fillThirdPlace(ms) {
+    const sf = ms.filter((x) => x.roundTag === "SF");
+    const third = ms.find((x) => x.roundTag === "3P");
+    if (!third || sf.length !== 2) return ms;
 
-    const loser1 = sf[0].winnerId === sf[0].teamAId ? sf[0].teamBId : sf[0].teamAId;
-    const loser2 = sf[1].winnerId === sf[1].teamAId ? sf[1].teamBId : sf[1].teamAId;
+    const sf1 = sf[0];
+    const sf2 = sf[1];
+    if (!sf1.teamAId || !sf1.teamBId || !sf1.winnerId) return ms;
+    if (!sf2.teamAId || !sf2.teamBId || !sf2.winnerId) return ms;
 
-    if (third.teamAId === loser1 && third.teamBId === loser2) return nodes;
+    const loser1 = sf1.winnerId === sf1.teamAId ? sf1.teamBId : sf1.teamAId;
+    const loser2 = sf2.winnerId === sf2.teamAId ? sf2.teamBId : sf2.teamAId;
 
-    return nodes.map((n) =>
-      n.id === third.id ? { ...n, teamAId: loser1, teamBId: loser2, winnerId: null } : n
-    );
+    if (third.teamAId === loser1 && third.teamBId === loser2) return ms;
+
+    return ms.map((m) => {
+      if (m.id !== third.id) return m;
+      return recomputeMatch({
+        ...m,
+        teamAId: loser1,
+        teamBId: loser2,
+        hands: [],
+        fastDraft: defaultFastDraft(),
+        editingHandIdx: null,
+      });
+    });
   }
 
   function createBracketFromPools() {
-    if (standingsA.length < 4 || standingsB.length < 4) return;
+    // need top 4 each pool
+    const a = poolStandings.A.slice(0, 4).map((x) => x.teamId);
+    const b = poolStandings.B.slice(0, 4).map((x) => x.teamId);
+    if (a.length < 4 || b.length < 4) return;
 
-    const a = standingsA.slice(0, 4).map((x) => x.teamId);
-    const b = standingsB.slice(0, 4).map((x) => x.teamId);
-
+    // QF pairings:
+    // A1 vs B4, A2 vs B3, B1 vs A4, B2 vs A3
     const qf = [
       { label: "QF1", A: a[0], B: b[3] },
       { label: "QF2", A: a[1], B: b[2] },
@@ -865,184 +1136,220 @@ export default function App() {
       { label: "QF4", A: b[1], B: a[2] },
     ];
 
-    const sfIds = [uid("br_sf"), uid("br_sf")];
-    const fId = uid("br_f");
-    const thirdId = uid("br_3p");
+    const sfIds = [uid("sf"), uid("sf")];
+    const fId = uid("f");
+    const thirdId = uid("3p");
 
-    const nodes = [];
+    const built = [];
 
     qf.forEach((m, idx) => {
       const nextMatchId = idx < 2 ? sfIds[0] : sfIds[1];
       const nextSlot = idx % 2 === 0 ? "A" : "B";
-      nodes.push({
-        id: uid("br_qf"),
-        round: "QF",
+      built.push({
+        ...makeEmptyMatch({
+          stage: "BRACKET",
+          teamAId: m.A,
+          teamBId: m.B,
+          label: m.label,
+          table: idx + 1, // bracket tables 1-4
+        }),
+        roundTag: "QF",
         idx,
-        label: m.label,
-        teamAId: m.A,
-        teamBId: m.B,
-        winnerId: null,
         nextMatchId,
         nextSlot,
       });
     });
 
-    nodes.push({
+    built.push({
+      ...makeEmptyMatch({ stage: "BRACKET", teamAId: null, teamBId: null, label: "SF1", table: 1 }),
       id: sfIds[0],
-      round: "SF",
+      roundTag: "SF",
       idx: 0,
-      label: "SF1",
-      teamAId: null,
-      teamBId: null,
-      winnerId: null,
       nextMatchId: fId,
       nextSlot: "A",
     });
-    nodes.push({
+    built.push({
+      ...makeEmptyMatch({ stage: "BRACKET", teamAId: null, teamBId: null, label: "SF2", table: 2 }),
       id: sfIds[1],
-      round: "SF",
+      roundTag: "SF",
       idx: 1,
-      label: "SF2",
-      teamAId: null,
-      teamBId: null,
-      winnerId: null,
       nextMatchId: fId,
       nextSlot: "B",
     });
 
-    nodes.push({
+    built.push({
+      ...makeEmptyMatch({ stage: "BRACKET", teamAId: null, teamBId: null, label: "Final", table: 1 }),
       id: fId,
-      round: "F",
+      roundTag: "F",
       idx: 0,
-      label: "Final",
-      teamAId: null,
-      teamBId: null,
-      winnerId: null,
       nextMatchId: null,
       nextSlot: null,
     });
 
-    nodes.push({
+    built.push({
+      ...makeEmptyMatch({ stage: "BRACKET", teamAId: null, teamBId: null, label: "3rd Place", table: 2 }),
       id: thirdId,
-      round: "3P",
+      roundTag: "3P",
       idx: 0,
-      label: "3rd Place",
-      teamAId: null,
-      teamBId: null,
-      winnerId: null,
       nextMatchId: null,
       nextSlot: null,
     });
 
-    const seeded = fillThirdPlace(propagateBracketWinners(nodes));
-    setBracket(seeded);
-
-    // Also create bracket matches as "matches" so they get hand tracking too
-    // We'll create these in matches list if not already there
-    setMatches((prev) => {
-      const existingBracketIds = new Set(prev.filter((m) => m.stage === "BRACKET").map((m) => m.id));
-
-      // map bracket node -> match id
-      const built = [];
-      seeded.forEach((n) => {
-        const matchId = `match_${n.id}`;
-        if (existingBracketIds.has(matchId)) return;
-
-        built.push(
-          makeEmptyMatch({
-            id: matchId,
-            stage: "BRACKET",
-            label: n.label,
-            pool: null,
-            round: null,
-            table: null, // bracket tables not fixed
-            teamAId: n.teamAId,
-            teamBId: n.teamBId,
-          })
-        );
-      });
-
-      return [...prev.filter((m) => m.stage !== "BRACKET"), ...built];
-    });
+    // compute winners propagation based on existing bracket (fresh => none)
+    const computed = built.map((m) => recomputeMatch(m));
+    const propagated = fillThirdPlace(propagateBracketWinners(computed));
+    setBracket(propagated);
   }
 
-  function setBracketWinner(nodeId, winnerTeamId) {
-    setBracket((prev) => {
-      const updated = prev.map((n) => (n.id === nodeId ? { ...n, winnerId: winnerTeamId } : n));
-      return fillThirdPlace(propagateBracketWinners(updated));
-    });
-  }
-
-  // Sync bracket node teams into bracket matches list (so hand tracker always uses correct teams)
+  // Keep bracket winnerId in sync: derived from totals when completed
   useEffect(() => {
-    if (bracket.length === 0) return;
-    setMatches((prev) =>
+    if (!bracket.length) return;
+    setBracket((prev) => fillThirdPlace(propagateBracketWinners(prev.map((m) => recomputeMatch(m)))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matches.length]); // light sync trigger
+
+  function updateBracketDraft(matchId, patch) {
+    setBracket((prev) =>
+      prev.map((m) => (m.id === matchId ? { ...m, fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch } } : m))
+    );
+  }
+
+  function startEditBracketHand(matchId, handIdx) {
+    setBracket((prev) =>
       prev.map((m) => {
-        if (m.stage !== "BRACKET") return m;
-        const nodeId = m.id.replace(/^match_/, "");
-        const node = bracket.find((n) => n.id === nodeId);
-        if (!node) return m;
-        if (m.teamAId === node.teamAId && m.teamBId === node.teamBId) return m;
-        // if teams changed, clear hands for safety
-        return recomputeMatch({
+        if (m.id !== matchId) return m;
+        const hand = (m.hands || []).find((h) => h.idx === handIdx);
+        if (!hand) return m;
+        const d = hand.draftSnapshot || {};
+        return {
           ...m,
-          teamAId: node.teamAId,
-          teamBId: node.teamBId,
-          hands: [],
-          fastDraft: defaultFastDraft(),
-          completed: false,
-          winnerId: null,
-        });
+          editingHandIdx: handIdx,
+          fastDraft: {
+            bidder: d.bidder ?? "A",
+            bid: String(d.bid ?? ""),
+            suit: d.suit ?? "S",
+            coincheLevel: d.coincheLevel ?? "NONE",
+            capot: Boolean(d.capot),
+            bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
+            announceA: String(d.announceA ?? "0"),
+            announceB: String(d.announceB ?? "0"),
+            beloteTeam: d.beloteTeam ?? "NONE",
+          },
+        };
       })
     );
-  }, [bracket]);
+  }
 
-  // Auto-advance bracket winner when its match completes (match winner becomes node winner)
-  useEffect(() => {
-    if (bracket.length === 0) return;
-    const byNodeId = new Map(bracket.map((n) => [n.id, n]));
-    const bracketMatches = matches.filter((m) => m.stage === "BRACKET");
-    let changed = false;
+  function cancelEditBracket(matchId) {
+    setBracket((prev) =>
+      prev.map((m) => (m.id === matchId ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() } : m))
+    );
+  }
 
-    bracketMatches.forEach((m) => {
-      const nodeId = m.id.replace(/^match_/, "");
-      const node = byNodeId.get(nodeId);
-      if (!node) return;
-      if (!m.completed || !m.winnerId) return;
-      if (node.winnerId !== m.winnerId) {
-        changed = true;
-      }
-    });
-
-    if (!changed) return;
-
+  function addOrSaveBracketHand(matchId) {
     setBracket((prev) => {
-      let next = [...prev];
-      bracketMatches.forEach((m) => {
-        const nodeId = m.id.replace(/^match_/, "");
-        const idx = next.findIndex((n) => n.id === nodeId);
-        if (idx === -1) return;
-        if (m.completed && m.winnerId && next[idx].winnerId !== m.winnerId) {
-          next[idx] = { ...next[idx], winnerId: m.winnerId };
+      const next = prev.map((m) => {
+        if (m.id !== matchId) return m;
+
+        // Can't play if teams not set
+        if (!m.teamAId || !m.teamBId) return m;
+
+        const d = m.fastDraft || defaultFastDraft();
+        const bidVal = safeInt(d.bid);
+        const trickVal = safeInt(d.bidderTrickPoints);
+        if (bidVal === null || trickVal === null) return m;
+
+        const res = computeFastCoincheScore({
+          bidder: d.bidder,
+          bid: bidVal,
+          suit: d.suit || "S",
+          coincheLevel: d.coincheLevel || "NONE",
+          capot: Boolean(d.capot),
+          bidderTrickPoints: trickVal,
+          announceA: safeInt(d.announceA) ?? 0,
+          announceB: safeInt(d.announceB) ?? 0,
+          beloteTeam: d.beloteTeam || "NONE",
+        });
+
+        // If editing
+        if (m.editingHandIdx) {
+          const hands = (m.hands || []).map((h) => {
+            if (h.idx !== m.editingHandIdx) return h;
+            return {
+              ...h,
+              draftSnapshot: {
+                bidder: d.bidder,
+                bid: bidVal,
+                suit: d.suit || "S",
+                coincheLevel: d.coincheLevel || "NONE",
+                capot: Boolean(d.capot),
+                bidderTrickPoints: trickVal,
+                announceA: safeInt(d.announceA) ?? 0,
+                announceB: safeInt(d.announceB) ?? 0,
+                beloteTeam: d.beloteTeam || "NONE",
+              },
+              scoreA: res.scoreA,
+              scoreB: res.scoreB,
+              bidderSucceeded: res.bidderSucceeded,
+            };
+          });
+
+          return recomputeMatch({
+            ...m,
+            hands,
+            fastDraft: defaultFastDraft(),
+            editingHandIdx: null,
+          });
         }
+
+        const current = recomputeMatch(m);
+        if (current.completed) return current;
+
+        const hand = {
+          idx: (m.hands?.length || 0) + 1,
+          createdAt: Date.now(),
+          draftSnapshot: {
+            bidder: d.bidder,
+            bid: bidVal,
+            suit: d.suit || "S",
+            coincheLevel: d.coincheLevel || "NONE",
+            capot: Boolean(d.capot),
+            bidderTrickPoints: trickVal,
+            announceA: safeInt(d.announceA) ?? 0,
+            announceB: safeInt(d.announceB) ?? 0,
+            beloteTeam: d.beloteTeam || "NONE",
+          },
+          scoreA: res.scoreA,
+          scoreB: res.scoreB,
+          bidderSucceeded: res.bidderSucceeded,
+        };
+
+        return recomputeMatch({
+          ...m,
+          hands: [...(m.hands || []), hand],
+          fastDraft: defaultFastDraft(),
+        });
       });
-      next = fillThirdPlace(propagateBracketWinners(next));
-      return next;
+
+      return fillThirdPlace(propagateBracketWinners(next));
     });
-  }, [matches, bracket.length]);
+  }
+
+  function clearBracketHands(matchId) {
+    setBracket((prev) => fillThirdPlace(propagateBracketWinners(prev.map((m) => (m.id === matchId ? recomputeMatch({ ...m, hands: [], editingHandIdx: null, fastDraft: defaultFastDraft() }) : m)))));
+  }
 
   /** ===== Winner board ===== */
   const winnerBoard = useMemo(() => {
-    const final = bracket.find((n) => n.round === "F");
-    const third = bracket.find((n) => n.round === "3P");
+    const final = bracket.find((m) => m.roundTag === "F");
+    const third = bracket.find((m) => m.roundTag === "3P");
 
     const champId = final?.winnerId ?? null;
-    const runnerId =
-      final?.winnerId && final.teamAId && final.teamBId
-        ? final.winnerId === final.teamAId
-          ? final.teamBId
-          : final.teamAId
-        : null;
+    const runnerId = final?.winnerId
+      ? final.winnerId === final.teamAId
+        ? final.teamBId
+        : final.teamAId
+      : null;
     const thirdId = third?.winnerId ?? null;
 
     return {
@@ -1052,741 +1359,911 @@ export default function App() {
     };
   }, [bracket, teamById]);
 
-  /** ===== Scoreboard summary ===== */
-  const allTeamStats = useMemo(() => {
-    // Aggregate across pool + bracket matches
-    const byTeam = new Map();
-    teams.forEach((t) => {
-      byTeam.set(t.id, {
-        teamId: t.id,
-        name: t.name,
-        matchPoints: 0,
-        wins: 0,
-        losses: 0,
-        totalGamePoints: 0,
-        totalHands: 0,
-        coinches: 0,
-        surcoinches: 0,
-        capots: 0,
-        belotes: 0,
-        biggestSingleHand: 0,
-      });
-    });
+  /** ===== Scoreboard + stats ===== */
+  const allPoolMatches = useMemo(() => matches.filter((m) => m.stage === "POOL"), [matches]);
+  const allBracketMatches = useMemo(() => bracket, [bracket]);
 
-    matches.forEach((m) => {
-      const A = byTeam.get(m.teamAId);
-      const B = byTeam.get(m.teamBId);
-      if (!A || !B) return;
+  const globalStats = useMemo(() => {
+    const completedPool = allPoolMatches.filter((m) => m.completed);
+    const completedBracket = allBracketMatches.filter((m) => m.completed);
 
-      A.totalGamePoints += m.totalA || 0;
-      B.totalGamePoints += m.totalB || 0;
+    const allCompleted = [...completedPool, ...completedBracket];
 
-      A.matchPoints += m.matchPtsA || 0;
-      B.matchPoints += m.matchPtsB || 0;
+    // total hands
+    const totalHands = allCompleted.reduce((acc, m) => acc + (m.hands?.length || 0), 0);
 
-      A.totalHands += m.hands.length;
-      B.totalHands += m.hands.length;
-
-      if (m.completed && m.winnerId) {
-        if (m.winnerId === m.teamAId) {
-          A.wins += 1;
-          B.losses += 1;
-        } else {
-          B.wins += 1;
-          A.losses += 1;
+    // biggest hand swing
+    let biggestHand = { pts: 0, label: "—" };
+    for (const m of allCompleted) {
+      for (const h of m.hands || []) {
+        const swing = Math.abs((h.scoreA || 0) - (h.scoreB || 0));
+        if (swing > biggestHand.pts) {
+          const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+          const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+          biggestHand = { pts: swing, label: `${ta} vs ${tb} (Hand ${h.idx})` };
         }
       }
+    }
 
-      m.hands.forEach((h) => {
+    // fastest match (fewest hands) among completed
+    let fastest = null;
+    for (const m of allCompleted) {
+      const hands = (m.hands || []).length;
+      if (!hands) continue;
+      if (!fastest || hands < fastest.hands) fastest = { match: m, hands };
+    }
+
+    // closest match (smallest abs diff) among completed
+    let closest = null;
+    for (const m of allCompleted) {
+      const diff = Math.abs((m.totalA || 0) - (m.totalB || 0));
+      if (!m.completed) continue;
+      if (diff === 0) continue;
+      if (!closest || diff < closest.diff) closest = { match: m, diff };
+    }
+
+    // Funny stats
+    // - "Coinche King": most coinche/surcoinche called (as recorded in draftSnapshot)
+    // - "Capot Hero": most capots
+    const teamFun = new Map(); // teamId -> {coinches, surcoinches, capots, belotes}
+    const bump = (tid, key, n = 1) => {
+      if (!tid) return;
+      const cur = teamFun.get(tid) || { coinches: 0, surcoinches: 0, capots: 0, belotes: 0 };
+      cur[key] = (cur[key] || 0) + n;
+      teamFun.set(tid, cur);
+    };
+
+    for (const m of allCompleted) {
+      for (const h of m.hands || []) {
         const d = h.draftSnapshot || {};
-        const lvl = d.coincheLevel || "NONE";
-        if (lvl === "COINCHE") (d.bidder === "A" ? A : B).coinches += 1;
-        if (lvl === "SURCOINCHE") (d.bidder === "A" ? A : B).surcoinches += 1;
-        if (d.capot) (d.bidder === "A" ? A : B).capots += 1;
-        if (d.beloteTeam === "A") A.belotes += 1;
-        if (d.beloteTeam === "B") B.belotes += 1;
+        if (d.coincheLevel === "COINCHE") bump(d.bidder === "A" ? m.teamAId : m.teamBId, "coinches");
+        if (d.coincheLevel === "SURCOINCHE") bump(d.bidder === "A" ? m.teamAId : m.teamBId, "surcoinches");
+        if (d.capot) bump(d.bidder === "A" ? m.teamAId : m.teamBId, "capots");
+        if (d.beloteTeam === "A") bump(m.teamAId, "belotes");
+        if (d.beloteTeam === "B") bump(m.teamBId, "belotes");
+      }
+    }
 
-        const ha = Number(h.scoreA) || 0;
-        const hb = Number(h.scoreB) || 0;
-        A.biggestSingleHand = Math.max(A.biggestSingleHand, ha);
-        B.biggestSingleHand = Math.max(B.biggestSingleHand, hb);
-      });
+    const funLeaders = (key) => {
+      let best = null;
+      for (const [tid, obj] of teamFun.entries()) {
+        const v = obj[key] || 0;
+        if (!best || v > best.v) best = { tid, v };
+      }
+      if (!best || best.v === 0) return { name: "—", v: 0 };
+      return { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
+    };
+
+    const coincheKing = funLeaders("coinches");
+    const surcoincheBoss = funLeaders("surcoinches");
+    const capotHero = funLeaders("capots");
+    const beloteMagnet = funLeaders("belotes");
+
+    return {
+      completedPoolGames: completedPool.length,
+      completedBracketGames: completedBracket.length,
+      totalHands,
+      biggestHand,
+      fastest,
+      closest,
+      funny: { coincheKing, surcoincheBoss, capotHero, beloteMagnet },
+    };
+  }, [allPoolMatches, allBracketMatches, teamById]);
+
+  // Scoreboard rows (aggregate across pool matches)
+  const scoreboardRows = useMemo(() => {
+    // Build per-team stats from pool matches only (match points)
+    const rows = teams.map((t) => ({
+      teamId: t.id,
+      name: t.name,
+      pool: poolMap.A.includes(t.id) ? "A" : poolMap.B.includes(t.id) ? "B" : "—",
+      matchPoints: 0,
+      wins: 0,
+      losses: 0,
+      totalGamePoints: 0,
+      gamesPlayed: 0,
+    }));
+
+    const byId = new Map(rows.map((r) => [r.teamId, r]));
+
+    allPoolMatches.forEach((m) => {
+      const ra = byId.get(m.teamAId);
+      const rb = byId.get(m.teamBId);
+      if (!ra || !rb) return;
+
+      ra.totalGamePoints += Number(m.totalA) || 0;
+      rb.totalGamePoints += Number(m.totalB) || 0;
+
+      if ((m.hands || []).length > 0) {
+        ra.gamesPlayed += 1;
+        rb.gamesPlayed += 1;
+      }
+
+      ra.matchPoints += m.matchPtsA ?? 0;
+      rb.matchPoints += m.matchPtsB ?? 0;
+
+      if (m.winnerId === m.teamAId) {
+        ra.wins += 1;
+        rb.losses += 1;
+      } else if (m.winnerId === m.teamBId) {
+        rb.wins += 1;
+        ra.losses += 1;
+      }
     });
 
-    return Array.from(byTeam.values()).sort((a, b) => {
+    return [...rows].sort((a, b) => {
       if (b.matchPoints !== a.matchPoints) return b.matchPoints - a.matchPoints;
       if (b.totalGamePoints !== a.totalGamePoints) return b.totalGamePoints - a.totalGamePoints;
       return a.name.localeCompare(b.name);
     });
-  }, [teams, matches]);
+  }, [teams, allPoolMatches, poolMap]);
 
-  const funnyStats = useMemo(() => {
-    const best = (key) => {
-      let top = null;
-      allTeamStats.forEach((t) => {
-        if (!top || (t[key] || 0) > (top[key] || 0)) top = t;
-      });
-      return top;
-    };
-
-    const coincheKing = best("coinches");
-    const surcoincheBoss = best("surcoinches");
-    const capotMachine = best("capots");
-    const beloteMagnet = best("belotes");
-    const bigHand = best("biggestSingleHand");
-
-    return [
-      { label: "Coinche King", value: coincheKing ? `${coincheKing.name} (${coincheKing.coinches})` : "—" },
-      { label: "Surcoinche Boss", value: surcoincheBoss ? `${surcoincheBoss.name} (${surcoincheBoss.surcoinches})` : "—" },
-      { label: "Capot Machine", value: capotMachine ? `${capotMachine.name} (${capotMachine.capots})` : "—" },
-      { label: "Belote Magnet", value: beloteMagnet ? `${beloteMagnet.name} (${beloteMagnet.belotes})` : "—" },
-      { label: "Biggest Single Hand", value: bigHand ? `${bigHand.name} (${bigHand.biggestSingleHand})` : "—" },
-    ];
-  }, [allTeamStats]);
-
-  /** ===== Table view match picker ===== */
-  function getTableCurrentMatch(tableNum) {
-    // Pool phase tables fixed (1-4). We show the first unfinished match for that table, else last match.
-    const poolMatches = matches
-      .filter((m) => m.stage === "POOL" && m.table === tableNum)
-      .sort((a, b) => (a.round || 0) - (b.round || 0));
-
-    if (poolMatches.length === 0) return null;
-
-    const pending = poolMatches.find((m) => !m.completed);
-    return pending || poolMatches[poolMatches.length - 1];
-  }
+  /** ===== Public & Table links ===== */
+  const publicLink = useMemo(() => `${window.location.origin}${window.location.pathname}#/public`, []);
+  const tableLinks = useMemo(() => {
+    // one link per pool match + bracket match (so tables can enter)
+    const list = [];
+    matches.forEach((m) => list.push({ label: m.label, code: m.code, href: `${window.location.origin}${window.location.pathname}#/table?code=${m.code}` }));
+    bracket.forEach((m) => list.push({ label: m.label, code: m.code, href: `${window.location.origin}${window.location.pathname}#/table?code=${m.code}` }));
+    return list;
+  }, [matches, bracket]);
 
   /** ===== Export CSV ===== */
   function exportCSV() {
-    const lines = [];
+    // Flatten tournament to CSV rows
+    const rows = [];
+    const pushRow = (obj) => rows.push(obj);
 
-    // Header meta
-    lines.push(["Tournament", tournamentName].map(csvEscape).join(","));
-    lines.push(["ExportedAt", new Date().toISOString()].map(csvEscape).join(","));
-    lines.push([]);
+    // meta
+    pushRow({ TYPE: "META", tournamentName, date: new Date().toISOString() });
 
-    // Players
-    lines.push(["PLAYERS"].join(","));
-    lines.push(["player_id", "name"].map(csvEscape).join(","));
-    players.forEach((p) => lines.push([p.id, p.name].map(csvEscape).join(",")));
-    lines.push([]);
-
-    // Teams
-    lines.push(["TEAMS"].join(","));
-    lines.push(["team_id", "team_name", "player1", "player2", "locked"].map(csvEscape).join(","));
-    teams.forEach((t) => {
-      const p1 = playerById.get(t.playerIds?.[0])?.name || "";
-      const p2 = playerById.get(t.playerIds?.[1])?.name || "";
-      lines.push([t.id, t.name, p1, p2, t.locked ? "YES" : "NO"].map(csvEscape).join(","));
+    // teams
+    teams.forEach((t, idx) => {
+      const pnames = (t.playerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean).join(" / ");
+      pushRow({ TYPE: "TEAM", teamNumber: idx + 1, teamId: t.id, teamName: t.name, players: pnames, locked: t.locked ? "YES" : "NO" });
     });
-    lines.push([]);
 
-    // Matches summary
-    lines.push(["MATCHES"].join(","));
-    lines.push(
-      ["match_id", "stage", "label", "pool", "round", "table", "teamA", "teamB", "totalA", "totalB", "winner", "hands", "matchPtsA", "matchPtsB"]
-        .map(csvEscape)
-        .join(",")
-    );
-
-    matches.forEach((m) => {
-      const ta = teamById.get(m.teamAId)?.name || "";
-      const tb = teamById.get(m.teamBId)?.name || "";
-      const winner = m.winnerId ? teamById.get(m.winnerId)?.name || "" : "";
-      lines.push(
-        [
-          m.id,
-          m.stage,
-          m.label,
-          m.pool || "",
-          m.round || "",
-          m.table || "",
-          ta,
-          tb,
-          m.totalA || 0,
-          m.totalB || 0,
-          winner,
-          m.hands.length,
-          m.matchPtsA || 0,
-          m.matchPtsB || 0,
-        ]
-          .map(csvEscape)
-          .join(",")
-      );
-    });
-    lines.push([]);
-
-    // Hands (detailed)
-    lines.push(["HANDS"].join(","));
-    lines.push(
-      [
-        "match_id",
-        "hand_idx",
-        "createdAt",
-        "bidder",
-        "bid",
-        "suit",
-        "coincheLevel",
-        "capot",
-        "bidderTrickPoints",
-        "announceA",
-        "announceB",
-        "beloteTeam",
-        "scoreA",
-        "scoreB",
-      ]
-        .map(csvEscape)
-        .join(",")
-    );
-
-    matches.forEach((m) => {
-      m.hands.forEach((h) => {
-        const d = h.draftSnapshot || {};
-        lines.push(
-          [
-            m.id,
-            h.idx,
-            new Date(h.createdAt).toISOString(),
-            d.bidder || "",
-            d.bid ?? "",
-            d.suit || "",
-            d.coincheLevel || "",
-            d.capot ? "YES" : "NO",
-            d.bidderTrickPoints ?? "",
-            d.announceA ?? "",
-            d.announceB ?? "",
-            d.beloteTeam || "",
-            h.scoreA ?? 0,
-            h.scoreB ?? 0,
-          ]
-            .map(csvEscape)
-            .join(",")
-        );
+    // pool matches + hands
+    const addMatchRows = (m, phase) => {
+      const ta = teamById.get(m.teamAId)?.name ?? "";
+      const tb = teamById.get(m.teamBId)?.name ?? "";
+      pushRow({
+        TYPE: "MATCH",
+        phase,
+        matchId: m.id,
+        code: m.code,
+        label: m.label,
+        pool: m.pool || "",
+        round: m.round || "",
+        table: m.table || "",
+        teamA: ta,
+        teamB: tb,
+        totalA: m.totalA ?? 0,
+        totalB: m.totalB ?? 0,
+        winner: m.winnerId ? (teamById.get(m.winnerId)?.name ?? "") : "",
+        completed: m.completed ? "YES" : "NO",
       });
-    });
 
-    downloadTextFile(`${tournamentName.replace(/\s+/g, "_")}_export.csv`, lines.join("\n"));
+      (m.hands || []).forEach((h) => {
+        const d = h.draftSnapshot || {};
+        pushRow({
+          TYPE: "HAND",
+          phase,
+          matchId: m.id,
+          code: m.code,
+          handIdx: h.idx,
+          scoreA: h.scoreA,
+          scoreB: h.scoreB,
+          bidder: d.bidder,
+          bid: d.bid,
+          suit: d.suit,
+          coincheLevel: d.coincheLevel,
+          capot: d.capot ? "YES" : "NO",
+          bidderTrickPoints: d.bidderTrickPoints,
+          announceA: d.announceA,
+          announceB: d.announceB,
+          beloteTeam: d.beloteTeam,
+          bidderSucceeded: h.bidderSucceeded ? "YES" : "NO",
+        });
+      });
+    };
+
+    matches.forEach((m) => addMatchRows(m, "POOL"));
+    bracket.forEach((m) => addMatchRows(m, `BRACKET_${m.roundTag || ""}`));
+
+    // Convert to CSV
+    const cols = Array.from(
+      rows.reduce((set, r) => {
+        Object.keys(r).forEach((k) => set.add(k));
+        return set;
+      }, new Set())
+    );
+
+    const esc = (v) => {
+      const s = String(v ?? "");
+      if (s.includes('"') || s.includes(",") || s.includes("\n")) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+
+    const csv = [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "coinche_tournament_export.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
   }
 
-  /** ===== Timer controls ===== */
-  function timerStartOrResume() {
-    const now = Date.now();
-    if (!timerStartTs) {
-      setTimerStartTs(now);
-      setTimerPaused(false);
-      setTimerPausedAtTs(null);
-      setTimerPausedAccumMs(0);
-      return;
-    }
-    // resume
-    if (timerPaused && timerPausedAtTs) {
-      setTimerPaused(false);
-      setTimerPausedAccumMs((prev) => prev + (now - timerPausedAtTs));
-      setTimerPausedAtTs(null);
-    } else {
-      setTimerPaused(false);
-    }
-  }
+  /** ===== Schedule display (not auto start) ===== */
+  const schedule = useMemo(() => {
+    // Pool RR with 3 rounds => 3 game slots, then QF/SF/F/3P slots (optional)
+    // We'll display suggested times starting at 10:00 with 40 + 5 breaks.
+    const slots = [];
 
-  function timerPause() {
-    if (!timerStartTs) return;
-    if (timerPaused) return;
-    const now = Date.now();
-    setTimerPaused(true);
-    setTimerPausedAtTs(now);
-  }
+    const addSlot = (title, idx) => {
+      // idx 0 => start at 10:00
+      const totalMinutes = idx * (GAME_MIN + BREAK_MIN);
+      const [hh, mm] = START_TIME.split(":").map((x) => Number(x));
+      const start = new Date();
+      start.setHours(hh, mm, 0, 0);
+      start.setMinutes(start.getMinutes() + totalMinutes);
+      const end = new Date(start.getTime() + GAME_MIN * 60000);
 
-  function timerReset() {
-    setTimerStartTs(null);
-    setTimerPaused(true);
-    setTimerPausedAtTs(null);
-    setTimerPausedAccumMs(0);
-  }
+      const fmt = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      slots.push({ title, start: fmt(start), end: fmt(end) });
+    };
 
-  /** ===== Views ===== */
-  const nav = (
-    <div style={styles.nav}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={styles.brandDot} />
-        <div style={{ fontWeight: 900, letterSpacing: 0.2 }}>{tournamentName}</div>
-        <span style={styles.chip}>Target: {TARGET_SCORE}</span>
-        <span style={styles.chip}>Start: {START_TIME}</span>
-      </div>
+    addSlot("Pool Round 1", 0);
+    addSlot("Pool Round 2", 1);
+    addSlot("Pool Round 3", 2);
+    addSlot("Quarterfinals (QF)", 3);
+    addSlot("Semifinals (SF)", 4);
+    addSlot("Final + 3rd Place", 5);
 
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <a href={adminLink} style={styles.navLink}>Admin</a>
-        <a href={publicLink} style={styles.navLink}>Public View</a>
-        <a href={tableLink(1)} style={styles.navLink}>Table 1</a>
-        <a href={tableLink(2)} style={styles.navLink}>Table 2</a>
-        <a href={tableLink(3)} style={styles.navLink}>Table 3</a>
-        <a href={tableLink(4)} style={styles.navLink}>Table 4</a>
-      </div>
+    return slots;
+  }, []);
+
+  /** ===== Route rendering ===== */
+  const { path, query } = route;
+
+  // Helpers: find match by table code for Table View
+  const tableMatch = useMemo(() => {
+    const code = (query.code || "").toUpperCase();
+    if (!code) return null;
+    const m1 = matches.find((m) => (m.code || "").toUpperCase() === code);
+    if (m1) return { kind: "POOL", match: m1 };
+    const m2 = bracket.find((m) => (m.code || "").toUpperCase() === code);
+    if (m2) return { kind: "BRACKET", match: m2 };
+    return null;
+  }, [query.code, matches, bracket]);
+
+  // ===== Nav links =====
+  const NavPills = ({ showAdmin = true }) => (
+    <div style={styles.pillRow}>
+      {showAdmin ? (
+        <a href="#/admin" style={{ ...styles.tag, textDecoration: "none" }}>
+          Admin
+        </a>
+      ) : null}
+      <a href="#/public" style={{ ...styles.tag, textDecoration: "none" }}>
+        Public View
+      </a>
+      <span style={styles.tag}>
+        Timer: {timerMode === "GAME" ? "Game" : "Break"} • {fmtMMSS(timerSeconds)} {timerRunning ? "▶" : "⏸"}
+      </span>
     </div>
   );
 
-  // Choose view
-  if (route.path === "/public") {
+  /** ===== Public View ===== */
+  if (path === "/public") {
     return (
       <div style={styles.page}>
-        {nav}
         <div style={styles.container}>
-          <TimerBanner timerRunning={!timerPaused && !!timerStartTs} timerInfo={timerInfo} startTime={START_TIME} />
+          <div style={styles.topbar}>
+            <div>
+              <h1 style={styles.title}>{tournamentName}</h1>
+              <div style={styles.subtitle}>
+                Public scoreboard • Live updates • {exactly8Teams ? "8 teams" : "Set up 8 teams in Admin"}
+              </div>
+            </div>
+            <NavPills showAdmin={true} />
+          </div>
+
+          <PublicTimerPanel
+            timerMode={timerMode}
+            timerRunning={timerRunning}
+            timerSeconds={timerSeconds}
+            onStart={() => setTimerRunning(true)}
+            onPause={() => setTimerRunning(false)}
+            onResetGame={() => {
+              setTimerRunning(false);
+              setTimerMode("GAME");
+              setTimerSeconds(GAME_MIN * 60);
+            }}
+            onStartBreak={() => {
+              setTimerRunning(false);
+              setTimerMode("BREAK");
+              setTimerSeconds(BREAK_MIN * 60);
+            }}
+          />
 
           <div style={styles.grid2}>
-            <Card title="Winner Board">
-              <div style={styles.podiumGrid}>
+            <Section title="Schedule (display only)">
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {schedule.map((s, i) => (
+                  <div key={i} style={{ ...styles.card, display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 900 }}>{s.title}</div>
+                    <div style={{ color: "#94a3b8", fontSize: 13 }}>
+                      {s.start} – {s.end} (40 min + 5 min pause)
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Section>
+
+            <Section title="Winner Board">
+              <div style={styles.grid3}>
                 <PodiumCard label="Champion" value={winnerBoard.champion} />
                 <PodiumCard label="Runner-up" value={winnerBoard.runnerUp} />
                 <PodiumCard label="3rd Place" value={winnerBoard.third} />
               </div>
-            </Card>
-
-            <Card title="Public Links (share)">
-              <div style={styles.kv}>
-                <div style={styles.kRow}><div style={styles.k}>Public View</div><div style={styles.v}><code style={styles.code}>{window.location.origin + window.location.pathname + "#/public"}</code></div></div>
-                <div style={styles.kRow}><div style={styles.k}>Table 1</div><div style={styles.v}><code style={styles.code}>{window.location.origin + window.location.pathname + "#/table?num=1"}</code></div></div>
-                <div style={styles.kRow}><div style={styles.k}>Table 2</div><div style={styles.v}><code style={styles.code}>{window.location.origin + window.location.pathname + "#/table?num=2"}</code></div></div>
-                <div style={styles.kRow}><div style={styles.k}>Table 3</div><div style={styles.v}><code style={styles.code}>{window.location.origin + window.location.pathname + "#/table?num=3"}</code></div></div>
-                <div style={styles.kRow}><div style={styles.k}>Table 4</div><div style={styles.v}><code style={styles.code}>{window.location.origin + window.location.pathname + "#/table?num=4"}</code></div></div>
+              <div style={{ marginTop: 10, color: "#94a3b8", fontSize: 12 }}>
+                Winner board updates when bracket matches finish.
               </div>
-              <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 10 }}>
-                Public view is read-only. Tables should enter scores using their Table View.
-              </div>
-            </Card>
+            </Section>
           </div>
+
+          <Section title="Live Scoreboard (Pool games)">
+            <ScoreboardTable rows={scoreboardRows} />
+          </Section>
 
           <div style={styles.grid2}>
-            <Card title="Scoreboard (All Teams)">
-              <ScoreboardList rows={allTeamStats} />
-            </Card>
-
-            <Card title="Stats + Funny Stats">
-              <div style={styles.statGrid}>
-                <StatTile label="Teams" value={teams.length} />
-                <StatTile label="Players" value={players.length} />
-                <StatTile label="Matches" value={matches.length} />
-                <StatTile label="Hands Logged" value={matches.reduce((s, m) => s + m.hands.length, 0)} />
+            <Section title="Important Stats">
+              <div style={styles.grid3}>
+                <StatCard label="Completed Pool Games" value={globalStats.completedPoolGames} />
+                <StatCard label="Completed Bracket Games" value={globalStats.completedBracketGames} />
+                <StatCard label="Total Hands Played" value={globalStats.totalHands} />
+                <StatCard label="Biggest Hand Swing" value={`${globalStats.biggestHand.pts}`} sub={globalStats.biggestHand.label} />
+                <StatCard
+                  label="Fastest Finished Match"
+                  value={globalStats.fastest ? `${globalStats.fastest.hands} hands` : "—"}
+                  sub={
+                    globalStats.fastest
+                      ? `${teamById.get(globalStats.fastest.match.teamAId)?.name ?? ""} vs ${teamById.get(globalStats.fastest.match.teamBId)?.name ?? ""}`
+                      : ""
+                  }
+                />
+                <StatCard
+                  label="Closest Finished Match"
+                  value={globalStats.closest ? `${globalStats.closest.diff} pts` : "—"}
+                  sub={
+                    globalStats.closest
+                      ? `${teamById.get(globalStats.closest.match.teamAId)?.name ?? ""} vs ${teamById.get(globalStats.closest.match.teamBId)?.name ?? ""}`
+                      : ""
+                  }
+                />
               </div>
+            </Section>
 
-              <div style={{ height: 12 }} />
-
-              <div style={styles.funnyGrid}>
-                {funnyStats.map((s) => (
-                  <div key={s.label} style={styles.funnyCard}>
-                    <div style={{ color: "#94a3b8", fontSize: 12 }}>{s.label}</div>
-                    <div style={{ fontWeight: 900, marginTop: 4 }}>{s.value}</div>
-                  </div>
-                ))}
+            <Section title="Funny Stats">
+              <div style={styles.grid3}>
+                <StatCard label="Coinche King" value={globalStats.funny.coincheKing.name} sub={`${globalStats.funny.coincheKing.v} coinches`} />
+                <StatCard label="Surcoinche Boss" value={globalStats.funny.surcoincheBoss.name} sub={`${globalStats.funny.surcoincheBoss.v} surcoinches`} />
+                <StatCard label="Capot Hero" value={globalStats.funny.capotHero.name} sub={`${globalStats.funny.capotHero.v} capots`} />
+                <StatCard label="Belote Magnet" value={globalStats.funny.beloteMagnet.name} sub={`${globalStats.funny.beloteMagnet.v} belotes`} />
               </div>
-            </Card>
+            </Section>
           </div>
 
-          <div style={styles.grid2}>
-            <Card title="Pool A Standings">
-              {standingsA.length === 0 ? (
-                <div style={styles.muted}>Pools not created yet (Admin → Create pools).</div>
-              ) : (
-                <StandingsList rows={standingsA} />
-              )}
-            </Card>
-
-            <Card title="Pool B Standings">
-              {standingsB.length === 0 ? (
-                <div style={styles.muted}>Pools not created yet (Admin → Create pools).</div>
-              ) : (
-                <StandingsList rows={standingsB} />
-              )}
-            </Card>
-          </div>
-
-          <Card title="Bracket (Visual)">
+          <Section title="Bracket (visual cards)">
             {bracket.length === 0 ? (
-              <div style={styles.muted}>Bracket not created yet (Admin → Create bracket).</div>
+              <div style={styles.small}>Bracket not created yet. Ask Admin to click “Create bracket”.</div>
             ) : (
-              <BracketVisual bracket={bracket} teamById={teamById} />
+              <VisualBracket bracket={bracket} teamById={teamById} onOpenTable={(code) => (window.location.hash = `#/table?code=${code}`)} />
             )}
-          </Card>
+          </Section>
+
+          <Section title="Table Entry Links (for teams)">
+            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
+              Each table can use their own link to enter hands/scores. (Admin can share these.)
+            </div>
+            <div style={styles.grid3}>
+              {tableLinks.map((t) => (
+                <div key={t.code} style={styles.card}>
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>{t.label}</div>
+                  <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>Code: {t.code}</div>
+                  <a href={t.href} style={{ ...styles.btnSecondary, display: "inline-block", textDecoration: "none" }}>
+                    Open Table View
+                  </a>
+                </div>
+              ))}
+            </div>
+          </Section>
         </div>
       </div>
     );
   }
 
-  if (route.path === "/table") {
-    const tableNum = route.tableNum;
-    const valid = tableNum && tableNum >= 1 && tableNum <= 4;
-
-    const match = valid ? getTableCurrentMatch(tableNum) : null;
-
+  /** ===== Table View ===== */
+  if (path === "/table") {
     return (
       <div style={styles.page}>
-        {nav}
         <div style={styles.container}>
-          <TimerBanner timerRunning={!timerPaused && !!timerStartTs} timerInfo={timerInfo} startTime={START_TIME} />
-
-          <Card title={`Table View ${valid ? `— Table ${tableNum}` : ""}`}>
-            {!valid ? (
-              <div style={styles.muted}>
-                Invalid table number. Use: <code style={styles.code}>#/table?num=1</code> (1..4)
-              </div>
-            ) : !match ? (
-              <div style={styles.muted}>No match found for this table yet. Admin must Create pools first.</div>
-            ) : (
-              <TableMatchPanel
-                match={match}
-                teamById={teamById}
-                onDraftPatch={(patch) => updateDraft(match.id, patch)}
-                onAddHand={() => addHand(match.id)}
-                onClearHands={() => clearHands(match.id)}
-              />
-            )}
-          </Card>
-
-          <div style={styles.grid2}>
-            <Card title="Live Scoreboard (Read-only)">
-              <ScoreboardList rows={allTeamStats} />
-            </Card>
-
-            <Card title="Pool Standings Snapshot">
-              {poolsReady ? (
-                <div style={styles.grid2}>
-                  <div>
-                    <div style={styles.subTitle}>Pool A</div>
-                    <StandingsList rows={standingsA} />
-                  </div>
-                  <div>
-                    <div style={styles.subTitle}>Pool B</div>
-                    <StandingsList rows={standingsB} />
-                  </div>
-                </div>
-              ) : (
-                <div style={styles.muted}>Pools not created yet.</div>
-              )}
-            </Card>
+          <div style={styles.topbar}>
+            <div>
+              <h1 style={styles.title}>{tournamentName}</h1>
+              <div style={styles.subtitle}>Table View • Enter hands for your match only</div>
+            </div>
+            <NavPills showAdmin={true} />
           </div>
+
+          <PublicTimerPanel
+            timerMode={timerMode}
+            timerRunning={timerRunning}
+            timerSeconds={timerSeconds}
+            onStart={() => setTimerRunning(true)}
+            onPause={() => setTimerRunning(false)}
+            onResetGame={() => {
+              setTimerRunning(false);
+              setTimerMode("GAME");
+              setTimerSeconds(GAME_MIN * 60);
+            }}
+            onStartBreak={() => {
+              setTimerRunning(false);
+              setTimerMode("BREAK");
+              setTimerSeconds(BREAK_MIN * 60);
+            }}
+          />
+
+          {!tableMatch ? (
+            <Section title="No match found">
+              <div style={styles.small}>
+                This table link is missing or incorrect. Ask the organizer for the correct code.
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                  Go to Public View
+                </a>
+              </div>
+            </Section>
+          ) : (
+            <Section title={`Your Match • Code ${tableMatch.match.code}`}>
+              <TableMatchPanel
+                match={tableMatch.match}
+                kind={tableMatch.kind}
+                teamById={teamById}
+                teamNumberById={teamNumberById}
+                onDraftPatch={(patch) => {
+                  if (tableMatch.kind === "POOL") updateDraft(tableMatch.match.id, patch);
+                  else updateBracketDraft(tableMatch.match.id, patch);
+                }}
+                onAddHand={() => {
+                  if (tableMatch.kind === "POOL") addOrSaveHand(tableMatch.match.id);
+                  else addOrSaveBracketHand(tableMatch.match.id);
+                }}
+                onClearHands={() => {
+                  if (tableMatch.kind === "POOL") clearMatchHands(tableMatch.match.id);
+                  else clearBracketHands(tableMatch.match.id);
+                }}
+                onStartEditHand={(handIdx) => {
+                  if (tableMatch.kind === "POOL") startEditHand(tableMatch.match.id, handIdx);
+                  else startEditBracketHand(tableMatch.match.id, handIdx);
+                }}
+                onCancelEdit={() => {
+                  if (tableMatch.kind === "POOL") cancelEditHand(tableMatch.match.id);
+                  else cancelEditBracket(tableMatch.match.id);
+                }}
+              />
+            </Section>
+          )}
+
+          <Section title="Live Scoreboard (read-only)">
+            <ScoreboardTable rows={scoreboardRows} />
+          </Section>
+
+          <Section title="Public View Link">
+            <a href={publicLink} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+              Open Public View
+            </a>
+          </Section>
         </div>
       </div>
     );
   }
 
-  // Admin default
+  /** ===== Admin View ===== */
   return (
     <div style={styles.page}>
-      {nav}
       <div style={styles.container}>
-        <div style={styles.hero}>
+        <div style={styles.topbar}>
           <div>
-            <div style={{ fontSize: 28, fontWeight: 950, letterSpacing: 0.2 }}>{tournamentName}</div>
-            <div style={{ color: "#94a3b8", marginTop: 6 }}>
-              Admin controls — teams, schedule, timer, export
+            <h1 style={styles.title}>{tournamentName}</h1>
+            <div style={styles.subtitle}>
+              Admin • Setup teams • Create schedule • Share Public/Table links • Export CSV
             </div>
           </div>
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <button style={styles.btnSecondary} onClick={resetTournamentOnly} disabled={matches.length === 0 && bracket.length === 0}>
-              Reset Tournament
-            </button>
-            <button style={styles.btnDanger} onClick={fullReset}>
-              Full Reset
-            </button>
-          </div>
+          <NavPills showAdmin={false} />
         </div>
 
-        <Card title="Timer Controls">
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <button style={styles.btnPrimary} onClick={timerStartOrResume}>
-              {timerStartTs ? (timerPaused ? "Resume Timer" : "Timer Running") : "Start Timer"}
-            </button>
-            <button style={styles.btnSecondary} onClick={timerPause} disabled={!timerStartTs || timerPaused}>
-              Pause
-            </button>
-            <button style={styles.btnSecondary} onClick={timerReset}>
-              Reset Timer
-            </button>
-            <span style={styles.chip}>Now: {timerInfo.currentTime}</span>
-            <span style={styles.chip}>
-              {timerInfo.currentLabel} — {timerInfo.remainingInBlock} min left
-            </span>
-          </div>
-          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 8 }}>
-            The timer shows on Public View and Table Views. (Cross-device syncing can be added later with Supabase.)
-          </div>
-        </Card>
-
-        <Card title="Settings">
-          <div style={styles.responsiveRow}>
-            <div style={{ flex: "1 1 320px" }}>
-              <div style={styles.label}>Tournament name</div>
-              <input
-                style={styles.input("100%")}
-                value={tournamentName}
-                onChange={(e) => setTournamentName(e.target.value)}
-              />
-            </div>
-
-            <div style={{ flex: "1 1 140px" }}>
-              <div style={styles.label}>Win threshold</div>
-              <input
-                style={styles.input("100%")}
-                inputMode="numeric"
-                value={String(winThreshold)}
-                onChange={(e) => setWinThreshold(Math.max(0, Number(e.target.value || 0)))}
-              />
-            </div>
-
-            <div style={{ flex: "1 1 140px" }}>
-              <div style={styles.label}>Win ≥ threshold</div>
-              <input
-                style={styles.input("100%")}
-                inputMode="numeric"
-                value={String(winHighPts)}
-                onChange={(e) => setWinHighPts(Math.max(0, Number(e.target.value || 0)))}
-              />
-            </div>
-
-            <div style={{ flex: "1 1 140px" }}>
-              <div style={styles.label}>Win &lt; threshold</div>
-              <input
-                style={styles.input("100%")}
-                inputMode="numeric"
-                value={String(winLowPts)}
-                onChange={(e) => setWinLowPts(Math.max(0, Number(e.target.value || 0)))}
-              />
-            </div>
-
-            <div style={{ flex: "0 0 auto", alignSelf: "end" }}>
+        <Section
+          title="Quick Links"
+          right={
+            <div style={styles.row}>
+              <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                Public View
+              </a>
               <button style={styles.btnSecondary} onClick={exportCSV}>
                 Export CSV (Excel)
               </button>
-            </div>
-          </div>
-          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 8 }}>
-            Tiebreaker = total game points across matches.
-          </div>
-        </Card>
-
-        <div style={styles.grid2}>
-          <Card title={`Players (${players.length})`}>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <input
-                ref={inputRef}
-                style={styles.input(280)}
-                value={newPlayerName}
-                onChange={(e) => setNewPlayerName(e.target.value)}
-                placeholder="Add player name"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") addPlayer();
+              <button
+                style={styles.btnSecondary}
+                onClick={() => {
+                  navigator.clipboard?.writeText(publicLink);
+                  alert("Public link copied!");
                 }}
-              />
-              <button style={styles.btnPrimary} onClick={addPlayer} disabled={!newPlayerName.trim()}>
-                Add Player
+              >
+                Copy Public Link
               </button>
             </div>
+          }
+        >
+          <div style={styles.small}>
+            Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span>
+          </div>
+        </Section>
 
-            <div style={{ height: 12 }} />
+        <Section
+          title="Timer Controls (shown on Public + Table)"
+          right={<span style={styles.tag}>Game: {GAME_MIN} min • Break: {BREAK_MIN} min</span>}
+        >
+          <PublicTimerPanel
+            timerMode={timerMode}
+            timerRunning={timerRunning}
+            timerSeconds={timerSeconds}
+            onStart={() => setTimerRunning(true)}
+            onPause={() => setTimerRunning(false)}
+            onResetGame={() => {
+              setTimerRunning(false);
+              setTimerMode("GAME");
+              setTimerSeconds(GAME_MIN * 60);
+            }}
+            onStartBreak={() => {
+              setTimerRunning(false);
+              setTimerMode("BREAK");
+              setTimerSeconds(BREAK_MIN * 60);
+            }}
+          />
+        </Section>
 
-            <div style={styles.gridCards}>
-              {players.map((p) => (
-                <div key={p.id} style={styles.cardRow}>
-                  <div style={{ fontWeight: 800, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {p.name}
-                  </div>
-                  <button style={styles.linkDanger} onClick={() => removePlayer(p.id)}>Remove</button>
-                </div>
-              ))}
-              {players.length === 0 ? <div style={styles.muted}>Add players to begin (recommended 16 for 8 teams).</div> : null}
-            </div>
-          </Card>
-
-          <Card title={`Teams (8) — manual selection + lock`}>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button style={styles.btnSecondary} onClick={ensure8TeamsSkeleton}>
-                Reset Team Slots (8)
+        <Section
+          title="Settings"
+          right={
+            <div style={styles.row}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
+                <input type="checkbox" checked={avoidSameTeams} onChange={(e) => setAvoidSameTeams(e.target.checked)} />
+                Avoid repeating pairs
+              </label>
+              <button style={styles.btnSecondary} onClick={resetTournamentStructure} disabled={!matches.length && !bracket.length}>
+                Reset Tournament (keep teams)
               </button>
-              <button style={styles.btnPrimary} onClick={randomizeUnlockedTeams} disabled={players.length < 2}>
-                Randomize Unlocked Teams
+              <button style={styles.btnDanger} onClick={fullReset}>
+                Full Reset
               </button>
             </div>
-
-            <div style={{ height: 12 }} />
-
-            {!teamValidation.ok ? (
-              <div style={styles.warnBox}>
-                <div style={{ fontWeight: 900, marginBottom: 6 }}>Fix these before scheduling:</div>
-                <ul style={{ margin: 0, paddingLeft: 18 }}>
-                  {teamValidation.issues.slice(0, 6).map((x, i) => (
-                    <li key={i}>{x}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <div style={styles.okBox}>Teams look valid ✅</div>
-            )}
-
-            <div style={{ height: 12 }} />
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-              {teams.map((t, idx) => (
-                <div key={t.id} style={styles.teamCard}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                    <div style={{ fontWeight: 950 }}>{`#${idx + 1}`}</div>
-                    <label style={{ display: "flex", gap: 8, alignItems: "center", color: "#e2e8f0", fontWeight: 800 }}>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(t.locked)}
-                        onChange={() => toggleTeamLock(t.id)}
-                      />
-                      Lock
-                    </label>
-                  </div>
-
-                  <div style={{ height: 10 }} />
-
-                  <div style={styles.label}>Team name</div>
-                  <input
-                    style={styles.input("100%")}
-                    value={t.name}
-                    onChange={(e) => setTeamName(t.id, e.target.value)}
-                  />
-
-                  <div style={{ height: 10 }} />
-
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
-                    <div>
-                      <div style={styles.label}>Player 1</div>
-                      <select
-                        style={styles.select("100%")}
-                        value={t.playerIds?.[0] || ""}
-                        onChange={(e) => setTeamPlayer(t.id, 0, e.target.value || null)}
-                      >
-                        <option value="">— select —</option>
-                        {players.map((p) => (
-                          <option key={p.id} value={p.id}>{p.name}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <div style={styles.label}>Player 2</div>
-                      <select
-                        style={styles.select("100%")}
-                        value={t.playerIds?.[1] || ""}
-                        onChange={(e) => setTeamPlayer(t.id, 1, e.target.value || null)}
-                      >
-                        <option value="">— select —</option>
-                        {players.map((p) => (
-                          <option key={p.id} value={p.id}>{p.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div style={{ height: 8 }} />
-                  <div style={{ color: "#94a3b8", fontSize: 12 }}>
-                    {t.playerIds?.map((pid) => playerById.get(pid)?.name).filter(Boolean).join(" • ") || "No players selected"}
-                  </div>
-                </div>
-              ))}
+          }
+        >
+          <div style={styles.grid4}>
+            <div style={styles.card}>
+              <div style={styles.small}>Tournament name</div>
+              <input style={styles.input("100%")} value={tournamentName} onChange={(e) => setTournamentName(e.target.value)} />
             </div>
-          </Card>
-        </div>
 
-        <Card title="Schedule (8 teams) — Pools + Bracket">
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <button
-              style={styles.btnPrimary}
-              onClick={createPoolsAndRoundRobin}
-              disabled={!teamValidation.ok}
-            >
-              Create Pools + Round Robin (Tables 1–4)
-            </button>
+            <div style={styles.card}>
+              <div style={styles.small}>Win threshold</div>
+              <input style={styles.input(140)} value={String(winThreshold)} onChange={(e) => setWinThreshold(Math.max(0, Number(e.target.value || 0)))} />
+              <div style={styles.small}>Win ≥ threshold gives {winHighPts} pts</div>
+            </div>
 
-            <button
-              style={styles.btnSecondary}
-              onClick={createBracketFromPools}
-              disabled={standingsA.length < 4 || standingsB.length < 4}
-            >
-              Create Bracket (Top 4 each)
-            </button>
+            <div style={styles.card}>
+              <div style={styles.small}>Win ≥ threshold</div>
+              <input style={styles.input(140)} value={String(winHighPts)} onChange={(e) => setWinHighPts(Math.max(0, Number(e.target.value || 0)))} />
+              <div style={styles.small}>Match points for big win</div>
+            </div>
 
-            <span style={styles.chip}>Tables: 4</span>
-            <span style={styles.chip}>Game: {GAME_MIN} min</span>
-            <span style={styles.chip}>Break: {BREAK_MIN} min</span>
+            <div style={styles.card}>
+              <div style={styles.small}>Win &lt; threshold</div>
+              <input style={styles.input(140)} value={String(winLowPts)} onChange={(e) => setWinLowPts(Math.max(0, Number(e.target.value || 0)))} />
+              <div style={styles.small}>Match points for small win</div>
+            </div>
           </div>
 
-          <div style={{ height: 12 }} />
+          <div style={{ marginTop: 10, ...styles.small }}>
+            Tiebreaker for standings = total game points.
+          </div>
+        </Section>
 
-          {!poolsReady ? (
-            <div style={styles.muted}>
-              Pools not created yet. Click “Create Pools + Round Robin”.
+        <Section title={`Players (${players.length})`}>
+          <div style={styles.row}>
+            <input
+              ref={inputRef}
+              style={styles.input(320)}
+              value={newPlayerName}
+              onChange={(e) => setNewPlayerName(e.target.value)}
+              placeholder="Add player name"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addPlayer();
+              }}
+            />
+            <button style={styles.btnPrimary} onClick={addPlayer} disabled={!newPlayerName.trim()}>
+              Add Player
+            </button>
+            <button style={styles.btnSecondary} onClick={ensureEightTeamsSkeleton}>
+              Create 8 Team Slots
+            </button>
+            <button style={styles.btnSecondary} onClick={buildRandomTeams} disabled={players.length < 2}>
+              Randomize Teams (respects locks)
+            </button>
+          </div>
+
+          <div style={{ marginTop: 12, ...styles.grid4 }}>
+            {players.map((p) => (
+              <div key={p.id} style={styles.card}>
+                <div style={{ fontWeight: 950, display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                  <button style={{ ...styles.btnGhost, padding: 0 }} onClick={() => removePlayer(p.id)}>
+                    Remove
+                  </button>
+                </div>
+                <div style={styles.small}>ID: {p.id.slice(-6)}</div>
+              </div>
+            ))}
+            {players.length === 0 ? <div style={styles.small}>Add players to get started (16 players recommended for 8 teams).</div> : null}
+          </div>
+        </Section>
+
+        <Section
+          title={`Teams (${teams.length}/8)`}
+          right={
+            <span style={styles.tag}>
+              Exactly 8 teams required • {teams.length === 8 ? "Ready" : "Not ready"}
+            </span>
+          }
+        >
+          {teams.length !== 8 ? (
+            <div style={styles.small}>
+              Click <b>Create 8 Team Slots</b> then assign players manually or randomize.
             </div>
           ) : (
-            <div style={styles.grid2}>
-              <div>
-                <div style={styles.subTitle}>Pool A teams</div>
-                <div style={styles.mutedSmall}>{poolMap.A.map((id) => teamById.get(id)?.name).filter(Boolean).join(" • ")}</div>
-                <div style={{ height: 10 }} />
-                <StandingsList rows={standingsA} />
+            <>
+              <div style={{ ...styles.small, marginBottom: 10 }}>
+                Manual assignment: pick players for each team (prevents overlap). Use <b>Lock</b> to keep a team fixed when randomizing.
               </div>
-              <div>
-                <div style={styles.subTitle}>Pool B teams</div>
-                <div style={styles.mutedSmall}>{poolMap.B.map((id) => teamById.get(id)?.name).filter(Boolean).join(" • ")}</div>
-                <div style={{ height: 10 }} />
-                <StandingsList rows={standingsB} />
+
+              <div style={styles.grid2}>
+                {teams.map((t, idx) => (
+                  <div key={t.id} style={styles.card}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 950 }}>
+                        Team #{idx + 1}
+                      </div>
+                      <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900, color: t.locked ? "#34d399" : "#94a3b8" }}>
+                        <input type="checkbox" checked={!!t.locked} onChange={(e) => toggleTeamLock(t.id, e.target.checked)} />
+                        Lock
+                      </label>
+                    </div>
+
+                    <div style={{ marginTop: 10 }}>
+                      <div style={styles.small}>Team name</div>
+                      <input
+                        style={styles.input("100%")}
+                        value={t.name}
+                        onChange={(e) => renameTeam(t.id, e.target.value)}
+                        placeholder={`Team ${idx + 1}`}
+                      />
+                    </div>
+
+                    <div style={{ marginTop: 10, ...styles.grid2 }}>
+                      <div>
+                        <div style={styles.small}>Player 1</div>
+                        <select
+                          style={styles.select("100%")}
+                          value={t.playerIds?.[0] || ""}
+                          onChange={(e) => setTeamPlayer(t.id, 0, e.target.value)}
+                        >
+                          <option value="">— Select —</option>
+                          {players.map((p) => {
+                            const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
+                            return (
+                              <option key={p.id} value={p.id} disabled={taken}>
+                                {p.name}{taken ? " (used)" : ""}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      <div>
+                        <div style={styles.small}>Player 2</div>
+                        <select
+                          style={styles.select("100%")}
+                          value={t.playerIds?.[1] || ""}
+                          onChange={(e) => setTeamPlayer(t.id, 1, e.target.value)}
+                        >
+                          <option value="">— Select —</option>
+                          {players.map((p) => {
+                            const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
+                            return (
+                              <option key={p.id} value={p.id} disabled={taken}>
+                                {p.name}{taken ? " (used)" : ""}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 10, ...styles.small }}>
+                      Members: {(t.playerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean).join(" / ") || "—"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </Section>
+
+        <Section
+          title="Tournament Builder (8 teams)"
+          right={
+            <div style={styles.row}>
+              <button style={styles.btnPrimary} onClick={createPoolsRoundRobin8} disabled={!exactly8Teams}>
+                Create Pools + Round Robin
+              </button>
+              <button style={styles.btnSecondary} onClick={createBracketFromPools} disabled={poolStandings.A.length < 4 || poolStandings.B.length < 4}>
+                Create Bracket
+              </button>
+            </div>
+          }
+        >
+          <div style={styles.grid2}>
+            <div style={styles.card}>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Pool A (Teams 1–4)</div>
+              <div style={styles.small}>
+                {(poolMap.A || []).map((id) => teamById.get(id)?.name).filter(Boolean).join(" • ") || "Not created yet"}
+              </div>
+              <div style={{ marginTop: 10, fontWeight: 900 }}>Standings</div>
+              <StandingsList rows={poolStandings.A} />
+            </div>
+
+            <div style={styles.card}>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Pool B (Teams 5–8)</div>
+              <div style={styles.small}>
+                {(poolMap.B || []).map((id) => teamById.get(id)?.name).filter(Boolean).join(" • ") || "Not created yet"}
+              </div>
+              <div style={{ marginTop: 10, fontWeight: 900 }}>Standings</div>
+              <StandingsList rows={poolStandings.B} />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12, ...styles.small }}>
+            Tables for pool play: Pool A uses Tables 1–2, Pool B uses Tables 3–4.
+          </div>
+        </Section>
+
+        <Section title="Pool Matches (Admin can also edit)">
+          {!matches.length ? (
+            <div style={styles.small}>No matches yet. Click “Create Pools + Round Robin”.</div>
+          ) : (
+            <PoolMatchesAdmin
+              matches={matches}
+              teamById={teamById}
+              teamNumberById={teamNumberById}
+              onDraftPatch={updateDraft}
+              onAddHand={addOrSaveHand}
+              onClearHands={clearMatchHands}
+              onStartEditHand={startEditHand}
+              onCancelEdit={cancelEditHand}
+            />
+          )}
+        </Section>
+
+        <Section title="Bracket (Admin can also edit)">
+          {!bracket.length ? (
+            <div style={styles.small}>No bracket yet. Click “Create Bracket”.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <VisualBracket bracket={bracket} teamById={teamById} onOpenTable={(code) => (window.location.hash = `#/table?code=${code}`)} />
+
+              <div style={styles.grid2}>
+                {bracket
+                  .slice()
+                  .sort((a, b) => {
+                    const ord = { QF: 1, SF: 2, F: 3, "3P": 4 };
+                    return (ord[a.roundTag] || 99) - (ord[b.roundTag] || 99) || (a.idx || 0) - (b.idx || 0);
+                  })
+                  .map((m) => (
+                    <div key={m.id} style={styles.card}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+                        <div style={{ fontWeight: 950 }}>{m.label} <span style={styles.small}>({m.roundTag})</span></div>
+                        <div style={{ color: m.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
+                          {m.completed ? `Winner: ${teamById.get(m.winnerId)?.name ?? "—"}` : "In progress"}
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 10 }}>
+                        <TableMatchPanel
+                          match={m}
+                          kind="BRACKET"
+                          teamById={teamById}
+                          teamNumberById={teamNumberById}
+                          onDraftPatch={(patch) => updateBracketDraft(m.id, patch)}
+                          onAddHand={() => addOrSaveBracketHand(m.id)}
+                          onClearHands={() => clearBracketHands(m.id)}
+                          onStartEditHand={(handIdx) => startEditBracketHand(m.id, handIdx)}
+                          onCancelEdit={() => cancelEditBracket(m.id)}
+                        />
+                      </div>
+                    </div>
+                  ))}
+              </div>
+
+              <div style={styles.grid3}>
+                <PodiumCard label="Champion" value={winnerBoard.champion} />
+                <PodiumCard label="Runner-up" value={winnerBoard.runnerUp} />
+                <PodiumCard label="3rd Place" value={winnerBoard.third} />
               </div>
             </div>
           )}
+        </Section>
 
-          <div style={{ height: 12 }} />
-
+        <Section title="Scoreboard + Stats (Live)">
           <div style={styles.grid2}>
-            <CardMini title="Pool Matches (Tables 1–4)">
-              {matches.filter((m) => m.stage === "POOL").length === 0 ? (
-                <div style={styles.muted}>No pool matches yet.</div>
-              ) : (
-                <MatchListCompact
-                  matches={matches.filter((m) => m.stage === "POOL").sort((a, b) => (a.round || 0) - (b.round || 0) || (a.table || 0) - (b.table || 0))}
-                  teamById={teamById}
-                />
-              )}
-            </CardMini>
-
-            <CardMini title="Bracket (Visual)">
-              {bracket.length === 0 ? (
-                <div style={styles.muted}>No bracket yet.</div>
-              ) : (
-                <BracketVisual bracket={bracket} teamById={teamById} />
-              )}
-            </CardMini>
+            <div style={styles.card}>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Live Scoreboard (Pool)</div>
+              <ScoreboardTable rows={scoreboardRows} />
+            </div>
+            <div style={styles.card}>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Stats</div>
+              <div style={styles.grid3}>
+                <StatCard label="Completed Pool Games" value={globalStats.completedPoolGames} />
+                <StatCard label="Completed Bracket Games" value={globalStats.completedBracketGames} />
+                <StatCard label="Total Hands Played" value={globalStats.totalHands} />
+                <StatCard label="Coinche King" value={globalStats.funny.coincheKing.name} sub={`${globalStats.funny.coincheKing.v} coinches`} />
+                <StatCard label="Capot Hero" value={globalStats.funny.capotHero.name} sub={`${globalStats.funny.capotHero.v} capots`} />
+                <StatCard label="Biggest Hand Swing" value={`${globalStats.biggestHand.pts}`} sub={globalStats.biggestHand.label} />
+              </div>
+            </div>
           </div>
-        </Card>
+        </Section>
 
-        <div style={styles.grid2}>
-          <Card title="Live Scoreboard + Stats">
-            <ScoreboardList rows={allTeamStats} />
-            <div style={{ height: 12 }} />
-            <div style={styles.statGrid}>
-              <StatTile label="Hands Logged" value={matches.reduce((s, m) => s + m.hands.length, 0)} />
-              <StatTile label="Matches Completed" value={matches.filter((m) => m.completed).length} />
-              <StatTile label="Bracket Ready" value={bracket.length ? "YES" : "NO"} />
-              <StatTile label="Teams Valid" value={teamValidation.ok ? "YES" : "NO"} />
-            </div>
-          </Card>
-
-          <Card title="Funny Stats">
-            <div style={styles.funnyGrid}>
-              {funnyStats.map((s) => (
-                <div key={s.label} style={styles.funnyCard}>
-                  <div style={{ color: "#94a3b8", fontSize: 12 }}>{s.label}</div>
-                  <div style={{ fontWeight: 950, marginTop: 4 }}>{s.value}</div>
+        <Section title="Table Links (share to each table)">
+          <div style={styles.small}>
+            Each match has a unique code + link. Teams should open their match link to enter hands.
+          </div>
+          <div style={{ marginTop: 10, ...styles.grid3 }}>
+            {tableLinks.map((t) => (
+              <div key={t.code} style={styles.card}>
+                <div style={{ fontWeight: 950, marginBottom: 6 }}>{t.label}</div>
+                <div style={styles.small}>Code: {t.code}</div>
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <a href={t.href} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                    Open
+                  </a>
+                  <button
+                    style={styles.btnSecondary}
+                    onClick={() => {
+                      navigator.clipboard?.writeText(t.href);
+                      alert(`Copied link for ${t.label}`);
+                    }}
+                  >
+                    Copy Link
+                  </button>
                 </div>
-              ))}
-            </div>
-            <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 10 }}>
-              These update live as tables add hands.
-            </div>
-          </Card>
-        </div>
+              </div>
+            ))}
+          </div>
+        </Section>
       </div>
     </div>
   );
@@ -1794,785 +2271,516 @@ export default function App() {
 
 /** ===== Components ===== */
 
-function Card({ title, children, right }) {
+function Section({ title, right, children }) {
   return (
-    <div style={styles.card}>
-      <div style={styles.cardHeader}>
-        <div style={{ fontWeight: 950 }}>{title}</div>
-        {right ? <div>{right}</div> : null}
+    <div style={styles.section}>
+      <div style={styles.sectionHeader}>
+        <h2 style={styles.h2}>{title}</h2>
+        <div>{right}</div>
       </div>
-      <div>{children}</div>
-    </div>
-  );
-}
-
-function CardMini({ title, children }) {
-  return (
-    <div style={styles.cardMini}>
-      <div style={{ fontWeight: 950, marginBottom: 10 }}>{title}</div>
       {children}
-    </div>
-  );
-}
-
-function TimerBanner({ timerRunning, timerInfo, startTime }) {
-  const label = timerRunning ? "LIVE" : "PAUSED";
-  const statusColor = timerRunning ? "rgba(34,197,94,0.12)" : "rgba(148,163,184,0.10)";
-  return (
-    <div style={{ ...styles.card, padding: 14, background: statusColor }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <span style={styles.chip}>⏱ Timer: {label}</span>
-          <span style={styles.chip}>Start: {startTime}</span>
-          <span style={styles.chip}>
-            Now: <b style={{ marginLeft: 6 }}>{timerInfo.currentLabel}</b>{" "}
-            <span style={{ opacity: 0.85 }}>({timerInfo.currentTime})</span>
-          </span>
-        </div>
-
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {timerInfo.inBreak ? (
-            <span style={styles.chip}>Break — <b style={{ marginLeft: 6 }}>{timerInfo.remainingInBlock} min</b> left</span>
-          ) : (
-            <span style={styles.chip}>Game — <b style={{ marginLeft: 6 }}>{timerInfo.remainingInBlock} min</b> left</span>
-          )}
-        </div>
-      </div>
-
-      <div style={{ marginTop: 8, color: "#cbd5e1", fontSize: 12 }}>
-        Round length = {GAME_MIN} min game + {BREAK_MIN} min break.
-      </div>
     </div>
   );
 }
 
 function PodiumCard({ label, value }) {
   return (
-    <div style={styles.podiumCard}>
-      <div style={{ color: "#94a3b8", fontSize: 12 }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 950, marginTop: 6 }}>{value ?? "—"}</div>
+    <div style={styles.card}>
+      <div style={styles.small}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 950 }}>{value ?? "—"}</div>
     </div>
   );
 }
 
-function StatTile({ label, value }) {
+function StatCard({ label, value, sub }) {
   return (
-    <div style={styles.statTile}>
-      <div style={{ color: "#94a3b8", fontSize: 12 }}>{label}</div>
-      <div style={{ fontWeight: 950, marginTop: 6, fontSize: 18 }}>{value}</div>
+    <div style={styles.card}>
+      <div style={styles.small}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 950 }}>{value ?? "—"}</div>
+      {sub ? <div style={{ marginTop: 6, ...styles.small }}>{sub}</div> : null}
     </div>
   );
 }
 
-function ScoreboardList({ rows }) {
+function ScoreboardTable({ rows }) {
   return (
-    <div style={{ display: "grid", gap: 10 }}>
-      {rows.map((r, idx) => (
-        <div key={r.teamId} style={styles.scoreRow}>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
-            <div style={styles.rankBadge}>#{idx + 1}</div>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</div>
-              <div style={{ color: "#94a3b8", fontSize: 12 }}>
-                W {r.wins} • L {r.losses} • Total pts {r.totalGamePoints}
-              </div>
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <span style={styles.chip}>Match Pts: {r.matchPoints}</span>
-            <span style={styles.chip}>Hands: {r.totalHands}</span>
-          </div>
-        </div>
-      ))}
-      {rows.length === 0 ? <div style={styles.muted}>No teams yet.</div> : null}
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+        <thead>
+          <tr>
+            {["Rank", "Team", "Pool", "Pts", "W", "L", "Game Pts"].map((h) => (
+              <th key={h} style={{ textAlign: "left", padding: "10px 10px", fontSize: 12, color: "#94a3b8", borderBottom: "1px solid rgba(148,163,184,0.18)" }}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={r.teamId}>
+              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 950 }}>#{i + 1}</td>
+              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.name}</td>
+              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", color: "#94a3b8", fontWeight: 900 }}>{r.pool}</td>
+              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 950 }}>{r.matchPoints}</td>
+              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.wins}</td>
+              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.losses}</td>
+              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.totalGamePoints}</td>
+            </tr>
+          ))}
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={7} style={{ padding: 12, color: "#94a3b8" }}>
+                No data yet.
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
     </div>
   );
 }
 
 function StandingsList({ rows }) {
+  if (!rows.length) return <div style={styles.small}>No standings yet.</div>;
   return (
-    <div style={{ display: "grid", gap: 10 }}>
-      {rows.map((r, idx) => (
-        <div key={r.teamId} style={styles.standRow}>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
-            <div style={styles.rankBadge}>#{idx + 1}</div>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</div>
-              <div style={{ color: "#94a3b8", fontSize: 12 }}>Tiebreak: {r.totalGamePoints}</div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+      {rows.map((s, idx) => (
+        <div key={s.teamId} style={{ ...styles.card, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 950, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              #{idx + 1} {s.name}
             </div>
+            <div style={styles.small}>Tiebreak: {s.totalGamePoints} pts</div>
           </div>
-          <div style={{ fontWeight: 950 }}>Pts: {r.matchPoints}</div>
+          <div style={{ fontWeight: 950 }}>Pts: {s.matchPoints}</div>
         </div>
       ))}
     </div>
   );
 }
 
-function MatchListCompact({ matches, teamById }) {
+function PublicTimerPanel({ timerMode, timerRunning, timerSeconds, onStart, onPause, onResetGame, onStartBreak }) {
   return (
-    <div style={{ display: "grid", gap: 10 }}>
-      {matches.map((m) => {
-        const ta = teamById.get(m.teamAId)?.name || "—";
-        const tb = teamById.get(m.teamBId)?.name || "—";
-        const status = m.completed ? `Final ${m.totalA}–${m.totalB}` : `${m.totalA}–${m.totalB}`;
-        return (
-          <div key={m.id} style={styles.matchCompact}>
-            <div style={{ fontWeight: 950 }}>
-              Table {m.table} • R{m.round} • {ta} vs {tb}
-            </div>
-            <div style={{ color: m.completed ? "#34d399" : "#94a3b8", fontWeight: 900 }}>{status}</div>
-          </div>
-        );
-      })}
-    </div>
+    <Section
+      title="Tournament Timer"
+      right={
+        <span style={styles.tag}>
+          {timerMode === "GAME" ? "Game" : "Break"} • {fmtMMSS(timerSeconds)} {timerRunning ? "▶" : "⏸"}
+        </span>
+      }
+    >
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <button style={styles.btnPrimary} onClick={onStart} disabled={timerRunning || timerSeconds <= 0}>
+          Start
+        </button>
+        <button style={styles.btnSecondary} onClick={onPause} disabled={!timerRunning}>
+          Pause
+        </button>
+        <button style={styles.btnSecondary} onClick={onResetGame}>
+          Reset Game ({GAME_MIN}m)
+        </button>
+        <button style={styles.btnSecondary} onClick={onStartBreak}>
+          Start Break ({BREAK_MIN}m)
+        </button>
+      </div>
+      <div style={{ marginTop: 10, color: "#94a3b8", fontSize: 12 }}>
+        Start time is {START_TIME}. Games are {GAME_MIN} minutes with {BREAK_MIN} minutes pause. (Timer does not auto-start.)
+      </div>
+    </Section>
   );
 }
 
-function BracketVisual({ bracket, teamById }) {
-  // order nodes
-  const order = { QF: 1, SF: 2, F: 3, "3P": 4 };
-  const nodes = [...bracket].sort(
-    (a, b) => (order[a.round] ?? 99) - (order[b.round] ?? 99) || (a.idx ?? 0) - (b.idx ?? 0)
-  );
-
-  const qf = nodes.filter((n) => n.round === "QF");
-  const sf = nodes.filter((n) => n.round === "SF");
-  const fin = nodes.filter((n) => n.round === "F");
-  const third = nodes.filter((n) => n.round === "3P");
-
-  const Box = ({ node }) => {
-    const a = node.teamAId ? teamById.get(node.teamAId)?.name : "TBD";
-    const b = node.teamBId ? teamById.get(node.teamBId)?.name : "TBD";
-    const w = node.winnerId ? teamById.get(node.winnerId)?.name : null;
-
-    return (
-      <div style={styles.brBox}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-          <div style={{ fontWeight: 950 }}>{node.label}</div>
-          <div style={{ color: w ? "#34d399" : "#94a3b8", fontWeight: 900, fontSize: 12 }}>
-            {w ? `Winner: ${w}` : "Pending"}
-          </div>
-        </div>
-        <div style={{ height: 8 }} />
-        <div style={styles.brTeam}>{a}</div>
-        <div style={styles.brTeam}>{b}</div>
-      </div>
-    );
+function PoolMatchesAdmin({ matches, teamById, teamNumberById, onDraftPatch, onAddHand, onClearHands, onStartEditHand, onCancelEdit }) {
+  const byPool = {
+    A: matches.filter((m) => m.pool === "A").sort((a, b) => (a.round || 0) - (b.round || 0) || (a.table || 0) - (b.table || 0)),
+    B: matches.filter((m) => m.pool === "B").sort((a, b) => (a.round || 0) - (b.round || 0) || (a.table || 0) - (b.table || 0)),
   };
 
+  const roundsA = Array.from(new Set(byPool.A.map((m) => m.round))).sort((a, b) => a - b);
+  const roundsB = Array.from(new Set(byPool.B.map((m) => m.round))).sort((a, b) => a - b);
+
   return (
-    <div style={styles.bracketWrap}>
-      <div style={styles.brCol}>
-        <div style={styles.brColTitle}>Quarter Finals</div>
-        {qf.map((n) => <Box key={n.id} node={n} />)}
+    <div style={styles.grid2}>
+      <div style={styles.card}>
+        <div style={{ fontWeight: 950 }}>Pool A Matches</div>
+        {roundsA.length === 0 ? <div style={styles.small}>No matches</div> : null}
+        {roundsA.map((r) => (
+          <div key={`A${r}`} style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Round {r}</div>
+            {byPool.A.filter((m) => m.round === r).map((m) => (
+              <div key={m.id} style={{ marginBottom: 12 }}>
+                <TableMatchPanel
+                  match={m}
+                  kind="POOL"
+                  teamById={teamById}
+                  teamNumberById={teamNumberById}
+                  onDraftPatch={(patch) => onDraftPatch(m.id, patch)}
+                  onAddHand={() => onAddHand(m.id)}
+                  onClearHands={() => onClearHands(m.id)}
+                  onStartEditHand={(handIdx) => onStartEditHand(m.id, handIdx)}
+                  onCancelEdit={() => onCancelEdit(m.id)}
+                />
+                <div style={{ marginTop: 8, ...styles.small }}>
+                  Table link code: <b style={{ color: "#e5e7eb" }}>{m.code}</b>
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
       </div>
 
-      <div style={styles.brCol}>
-        <div style={styles.brColTitle}>Semi Finals</div>
-        {sf.map((n) => <Box key={n.id} node={n} />)}
-      </div>
-
-      <div style={styles.brCol}>
-        <div style={styles.brColTitle}>Final</div>
-        {fin.map((n) => <Box key={n.id} node={n} />)}
-        <div style={{ height: 12 }} />
-        <div style={styles.brColTitle}>3rd Place</div>
-        {third.map((n) => <Box key={n.id} node={n} />)}
+      <div style={styles.card}>
+        <div style={{ fontWeight: 950 }}>Pool B Matches</div>
+        {roundsB.length === 0 ? <div style={styles.small}>No matches</div> : null}
+        {roundsB.map((r) => (
+          <div key={`B${r}`} style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Round {r}</div>
+            {byPool.B.filter((m) => m.round === r).map((m) => (
+              <div key={m.id} style={{ marginBottom: 12 }}>
+                <TableMatchPanel
+                  match={m}
+                  kind="POOL"
+                  teamById={teamById}
+                  teamNumberById={teamNumberById}
+                  onDraftPatch={(patch) => onDraftPatch(m.id, patch)}
+                  onAddHand={() => onAddHand(m.id)}
+                  onClearHands={() => onClearHands(m.id)}
+                  onStartEditHand={(handIdx) => onStartEditHand(m.id, handIdx)}
+                  onCancelEdit={() => onCancelEdit(m.id)}
+                />
+                <div style={{ marginTop: 8, ...styles.small }}>
+                  Table link code: <b style={{ color: "#e5e7eb" }}>{m.code}</b>
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-function TableMatchPanel({ match, teamById, onDraftPatch, onAddHand, onClearHands }) {
-  const ta = teamById.get(match.teamAId)?.name || "—";
-  const tb = teamById.get(match.teamBId)?.name || "—";
+function VisualBracket({ bracket, teamById, onOpenTable }) {
+  // display by rounds
+  const qf = bracket.filter((m) => m.roundTag === "QF").sort((a, b) => (a.idx || 0) - (b.idx || 0));
+  const sf = bracket.filter((m) => m.roundTag === "SF").sort((a, b) => (a.idx || 0) - (b.idx || 0));
+  const f = bracket.find((m) => m.roundTag === "F");
+  const p3 = bracket.find((m) => m.roundTag === "3P");
 
-  const progressA = Math.min(100, Math.floor(((match.totalA || 0) / TARGET_SCORE) * 100));
-  const progressB = Math.min(100, Math.floor(((match.totalB || 0) / TARGET_SCORE) * 100));
+  const MatchMini = ({ m }) => (
+    <div style={styles.card}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 950 }}>
+          {m.label} <span style={styles.small}>Code {m.code}</span>
+        </div>
+        <button style={styles.btnSecondary} onClick={() => onOpenTable(m.code)}>
+          Open Table
+        </button>
+      </div>
 
-  const d = match.fastDraft || defaultFastDraft();
+      <div style={{ marginTop: 10 }}>
+        <div style={{ fontWeight: 900 }}>{teamById.get(m.teamAId)?.name ?? "TBD"}</div>
+        <div style={{ fontWeight: 900 }}>{teamById.get(m.teamBId)?.name ?? "TBD"}</div>
+      </div>
 
-  const suitObj = SUITS.find((s) => s.value === (d.suit || "S")) || SUITS[3];
+      <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={styles.tag}>Score: {m.totalA} – {m.totalB}</span>
+        <span style={{ ...styles.tag, background: m.completed ? "rgba(34,197,94,0.12)" : "rgba(148,163,184,0.12)" }}>
+          {m.completed ? `Winner: ${teamById.get(m.winnerId)?.name ?? "—"}` : "In progress"}
+        </span>
+      </div>
+    </div>
+  );
 
   return (
-    <div>
-      <div style={styles.matchHeader}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 950, fontSize: 18, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {match.label} • Table {match.table} • Round {match.round}
-          </div>
-          <div style={{ color: "#94a3b8", marginTop: 4 }}>
-            {ta} vs {tb}
+    <div style={styles.bracketGrid}>
+      <div>
+        <div style={{ fontWeight: 950, marginBottom: 10 }}>Quarterfinals</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {qf.map((m) => <MatchMini key={m.id} m={m} />)}
+        </div>
+      </div>
+
+      <div>
+        <div style={{ fontWeight: 950, marginBottom: 10 }}>Semifinals</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {sf.map((m) => <MatchMini key={m.id} m={m} />)}
+        </div>
+      </div>
+
+      <div>
+        <div style={{ fontWeight: 950, marginBottom: 10 }}>Final</div>
+        {f ? <MatchMini m={f} /> : <div style={styles.small}>—</div>}
+
+        <div style={{ fontWeight: 950, margin: "16px 0 10px" }}>3rd Place</div>
+        {p3 ? <MatchMini m={p3} /> : <div style={styles.small}>—</div>}
+      </div>
+    </div>
+  );
+}
+
+function TableMatchPanel({
+  match,
+  kind, // "POOL"|"BRACKET"
+  teamById,
+  teamNumberById,
+  onDraftPatch,
+  onAddHand,
+  onClearHands,
+  onStartEditHand,
+  onCancelEdit,
+}) {
+  const ta = teamById.get(match.teamAId)?.name ?? "TBD";
+  const tb = teamById.get(match.teamBId)?.name ?? "TBD";
+
+  const numA = match.teamAId ? teamNumberById?.get(match.teamAId) ?? "?" : "?";
+  const numB = match.teamBId ? teamNumberById?.get(match.teamBId) ?? "?" : "?";
+
+  const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
+  const pctB = Math.min(100, Math.round(((match.totalB || 0) / TARGET_SCORE) * 100));
+
+  const d = match.fastDraft || {
+    bidder: "A",
+    bid: "",
+    suit: "S",
+    coincheLevel: "NONE",
+    capot: false,
+    bidderTrickPoints: "",
+    announceA: "0",
+    announceB: "0",
+    beloteTeam: "NONE",
+  };
+
+  const canPlay = !!match.teamAId && !!match.teamBId;
+
+  return (
+    <div style={{ ...styles.card, borderRadius: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+        <div style={{ fontWeight: 950 }}>
+          {match.label}
+          {match.table ? <span style={styles.small}> • Table {match.table}</span> : null}
+          {match.pool ? <span style={styles.small}> • Pool {match.pool}</span> : null}
+        </div>
+        <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
+          {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10, ...styles.grid2 }}>
+        <div style={styles.card}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>{`Team #${numA}: ${ta}`}</div>
+          <div style={styles.small}>Total: <b style={{ color: "#e5e7eb" }}>{match.totalA}</b> / {TARGET_SCORE}</div>
+          <div style={{ marginTop: 8, ...styles.progressWrap }}>
+            <div style={styles.progressFillA(pctA)} />
           </div>
         </div>
 
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontWeight: 950, color: match.completed ? "#34d399" : "#e2e8f0" }}>
-            {match.completed ? "MATCH COMPLETE" : "IN PROGRESS"}
-          </div>
-          <div style={{ color: "#94a3b8", fontSize: 12 }}>
-            Hands: {match.hands.length}
+        <div style={styles.card}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>{`Team #${numB}: ${tb}`}</div>
+          <div style={styles.small}>Total: <b style={{ color: "#e5e7eb" }}>{match.totalB}</b> / {TARGET_SCORE}</div>
+          <div style={{ marginTop: 8, ...styles.progressWrap }}>
+            <div style={styles.progressFillB(pctB)} />
           </div>
         </div>
       </div>
 
-      <div style={{ height: 12 }} />
-
-      {/* Progress bars side-by-side */}
-      <div style={styles.progressGrid}>
-        <div style={styles.progressCard}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-            <div style={{ fontWeight: 950 }}>{ta}</div>
-            <div style={{ fontWeight: 950 }}>{match.totalA}</div>
-          </div>
-          <div style={styles.progressOuter}>
-            <div style={{ ...styles.progressInner, width: `${progressA}%` }} />
-          </div>
-          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 6 }}>
-            {progressA}% to {TARGET_SCORE}
-          </div>
-        </div>
-
-        <div style={styles.progressCard}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-            <div style={{ fontWeight: 950 }}>{tb}</div>
-            <div style={{ fontWeight: 950 }}>{match.totalB}</div>
-          </div>
-          <div style={styles.progressOuter}>
-            <div style={{ ...styles.progressInner, width: `${progressB}%` }} />
-          </div>
-          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 6 }}>
-            {progressB}% to {TARGET_SCORE}
-          </div>
-        </div>
+      <div style={{ marginTop: 10, ...styles.small }}>
+        End immediately at <b style={{ color: "#e5e7eb" }}>{TARGET_SCORE}</b>. Add hands until one team reaches 2000+.
       </div>
 
-      <div style={{ height: 14 }} />
-
-      <div style={styles.handSectionTitle}>Hand Tracker (Fast Mode) — auto-calculates points</div>
-
-      <div style={styles.handGrid}>
-        <div>
-          <div style={styles.label}>Bidder</div>
-          <select
-            style={styles.select("100%")}
-            value={d.bidder}
-            onChange={(e) => onDraftPatch({ bidder: e.target.value })}
-            disabled={match.completed}
-          >
-            <option value="A">Team A (left)</option>
-            <option value="B">Team B (right)</option>
-          </select>
+      {/* Hand Tracker form */}
+      <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+          <div style={{ fontWeight: 950 }}>Hand Tracker</div>
+          {match.editingHandIdx ? (
+            <span style={styles.tag}>Editing Hand {match.editingHandIdx}</span>
+          ) : (
+            <span style={styles.tag}>New Hand</span>
+          )}
         </div>
 
-        <div>
-          <div style={styles.label}>Bid + Suit</div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ flex: "1 1 120px" }}>
-              <input
-                style={styles.input("100%")}
-                inputMode="numeric"
-                placeholder="80.."
-                value={d.bid}
-                onChange={(e) => onDraftPatch({ bid: e.target.value })}
-                disabled={match.completed}
-              />
-            </div>
-            <div style={{ flex: "1 1 180px" }}>
-              <select
-                style={styles.select("100%")}
-                value={d.suit || "S"}
-                onChange={(e) => onDraftPatch({ suit: e.target.value })}
-                disabled={match.completed}
-              >
-                {SUITS.map((s) => (
-                  <option key={s.value} value={s.value}>
-                    {s.icon} {s.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+        <div style={styles.handGrid}>
+          <div>
+            <div style={styles.small}>Bidder</div>
+            <select
+              style={styles.select("100%")}
+              value={d.bidder}
+              onChange={(e) => onDraftPatch({ bidder: e.target.value })}
+              disabled={!canPlay}
+            >
+              <option value="A">{`Team #${numA} — ${ta}`}</option>
+              <option value="B">{`Team #${numB} — ${tb}`}</option>
+            </select>
           </div>
-          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 6 }}>
-            Selected suit: <b>{suitObj.icon} {suitObj.label}</b>
-          </div>
-        </div>
 
-        <div>
-          <div style={styles.label}>Coinche</div>
-          <select
-            style={styles.select("100%")}
-            value={d.coincheLevel || "NONE"}
-            onChange={(e) => onDraftPatch({ coincheLevel: e.target.value })}
-            disabled={match.completed}
-          >
-            {COINCHE_LEVELS.map((x) => (
-              <option key={x.value} value={x.value}>{x.label}</option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <div style={styles.label}>Capot</div>
-          <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10, color: "#e2e8f0", fontWeight: 900 }}>
+          <div>
+            <div style={styles.small}>Bid</div>
             <input
-              type="checkbox"
-              checked={Boolean(d.capot)}
-              onChange={(e) => onDraftPatch({ capot: e.target.checked })}
-              disabled={match.completed}
+              style={styles.input("100%")}
+              value={d.bid}
+              onChange={(e) => onDraftPatch({ bid: e.target.value })}
+              placeholder="80, 90, 110..."
+              inputMode="numeric"
+              disabled={!canPlay}
             />
-            Capot (250)
-          </label>
+          </div>
+
+          <div>
+            <div style={styles.small}>Suit</div>
+            <select
+              style={styles.select("100%")}
+              value={d.suit || "S"}
+              onChange={(e) => onDraftPatch({ suit: e.target.value })}
+              disabled={!canPlay}
+            >
+              <option value="H">♥ Hearts</option>
+              <option value="D">♦ Diamonds</option>
+              <option value="C">♣ Clubs</option>
+              <option value="S">♠ Spades</option>
+            </select>
+          </div>
+
+          <div>
+            <div style={styles.small}>Coinche</div>
+            <select
+              style={styles.select("100%")}
+              value={d.coincheLevel}
+              onChange={(e) => onDraftPatch({ coincheLevel: e.target.value })}
+              disabled={!canPlay}
+            >
+              <option value="NONE">None</option>
+              <option value="COINCHE">Coinche (x2)</option>
+              <option value="SURCOINCHE">Surcoinche (x4)</option>
+            </select>
+          </div>
+
+          <div>
+            <div style={styles.small}>Capot</div>
+            <select
+              style={styles.select("100%")}
+              value={d.capot ? "YES" : "NO"}
+              onChange={(e) => onDraftPatch({ capot: e.target.value === "YES" })}
+              disabled={!canPlay}
+            >
+              <option value="NO">No</option>
+              <option value="YES">Yes</option>
+            </select>
+          </div>
+
+          <div>
+            <div style={styles.small}>Bidder trick points (0–162)</div>
+            <input
+              style={styles.input("100%")}
+              value={d.bidderTrickPoints}
+              onChange={(e) => onDraftPatch({ bidderTrickPoints: e.target.value })}
+              placeholder="ex: 81"
+              inputMode="numeric"
+              disabled={!canPlay}
+            />
+          </div>
+
+          <div>
+            <div style={styles.small}>Announces Team A (non-belote)</div>
+            <input
+              style={styles.input("100%")}
+              value={d.announceA}
+              onChange={(e) => onDraftPatch({ announceA: e.target.value })}
+              inputMode="numeric"
+              disabled={!canPlay}
+            />
+          </div>
+
+          <div>
+            <div style={styles.small}>Announces Team B (non-belote)</div>
+            <input
+              style={styles.input("100%")}
+              value={d.announceB}
+              onChange={(e) => onDraftPatch({ announceB: e.target.value })}
+              inputMode="numeric"
+              disabled={!canPlay}
+            />
+          </div>
+
+          <div>
+            <div style={styles.small}>Belote</div>
+            <select
+              style={styles.select("100%")}
+              value={d.beloteTeam}
+              onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })}
+              disabled={!canPlay}
+            >
+              <option value="NONE">None</option>
+              <option value="A">{`Team #${numA}`}</option>
+              <option value="B">{`Team #${numB}`}</option>
+            </select>
+          </div>
         </div>
 
-        <div>
-          <div style={styles.label}>Bidder trick points (0–162)</div>
-          <input
-            style={styles.input("100%")}
-            inputMode="numeric"
-            placeholder="81"
-            value={d.bidderTrickPoints}
-            onChange={(e) => onDraftPatch({ bidderTrickPoints: e.target.value })}
-            disabled={match.completed}
-          />
-        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
+          <button style={{ ...styles.btnPrimary, ...(canPlay ? {} : styles.disabled) }} onClick={onAddHand} disabled={!canPlay}>
+            {match.editingHandIdx ? `Save Changes (Hand ${match.editingHandIdx})` : "Add Hand"}
+          </button>
 
-        <div>
-          <div style={styles.label}>Announces Team A (non-belote)</div>
-          <input
-            style={styles.input("100%")}
-            inputMode="numeric"
-            placeholder="0"
-            value={d.announceA}
-            onChange={(e) => onDraftPatch({ announceA: e.target.value })}
-            disabled={match.completed}
-          />
-        </div>
+          {match.editingHandIdx ? (
+            <button style={styles.btnSecondary} onClick={onCancelEdit}>
+              Cancel Edit
+            </button>
+          ) : null}
 
-        <div>
-          <div style={styles.label}>Announces Team B (non-belote)</div>
-          <input
-            style={styles.input("100%")}
-            inputMode="numeric"
-            placeholder="0"
-            value={d.announceB}
-            onChange={(e) => onDraftPatch({ announceB: e.target.value })}
-            disabled={match.completed}
-          />
-        </div>
+          <button style={styles.btnSecondary} onClick={onClearHands}>
+            Clear Match Hands
+          </button>
 
-        <div>
-          <div style={styles.label}>Belote (who has it)</div>
-          <select
-            style={styles.select("100%")}
-            value={d.beloteTeam || "NONE"}
-            onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })}
-            disabled={match.completed}
-          >
-            <option value="NONE">None</option>
-            <option value="A">Team A</option>
-            <option value="B">Team B</option>
-          </select>
+          <span style={{ ...styles.small, marginLeft: "auto" }}>
+            Suit: <SuitIcon suit={d.suit || "S"} />{" "}
+            {d.suit === "H" ? "Hearts" : d.suit === "D" ? "Diamonds" : d.suit === "C" ? "Clubs" : "Spades"}
+          </span>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
-        <button style={styles.btnPrimary} onClick={onAddHand} disabled={match.completed}>
-          Add Hand
-        </button>
-        <button style={styles.btnSecondary} onClick={onClearHands}>
-          Clear Match Hands
-        </button>
+      {/* Hands list */}
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontWeight: 950, marginBottom: 10 }}>Hands Played</div>
+        {(match.hands || []).length === 0 ? (
+          <div style={styles.small}>No hands yet.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {(match.hands || []).map((h) => {
+              const ds = h.draftSnapshot || {};
+              return (
+                <div key={h.idx} style={styles.handRow}>
+                  <div style={{ minWidth: 180 }}>
+                    <div style={{ fontWeight: 950 }}>Hand {h.idx}</div>
+                    <div style={styles.small}>
+                      Bid {ds.bid} <SuitIcon suit={ds.suit || "S"} /> • Bidder {ds.bidder} • {ds.coincheLevel}
+                      {ds.capot ? " • Capot" : ""} • Tricks {ds.bidderTrickPoints}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={styles.tag}>
+                      +{h.scoreA} / +{h.scoreB}
+                    </span>
+                    <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>
+                      Edit
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      {match.completed ? (
-        <div style={{ marginTop: 12, ...styles.okBox }}>
-          Winner declared — match ended immediately at {TARGET_SCORE}.
+      {kind === "POOL" ? (
+        <div style={{ marginTop: 12, ...styles.small }}>
+          Pool match points are calculated automatically when a winner is declared.
         </div>
-      ) : null}
-
-      <div style={{ height: 14 }} />
-
-      <div style={styles.subTitle}>Hands Played</div>
-      {match.hands.length === 0 ? (
-        <div style={styles.muted}>No hands logged yet.</div>
       ) : (
-        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-          {match.hands.slice().reverse().map((h) => {
-            const d = h.draftSnapshot || {};
-            const suit = SUITS.find((s) => s.value === d.suit)?.icon || "";
-            return (
-              <div key={h.idx} style={styles.handRow}>
-                <div style={{ fontWeight: 950 }}>Hand {h.idx}</div>
-                <div style={{ color: "#94a3b8", fontSize: 12 }}>
-                  Bidder {d.bidder} • Bid {d.bid} {suit} • {d.coincheLevel} • Tricks {d.bidderTrickPoints} • Belote {d.beloteTeam}
-                </div>
-                <div style={{ fontWeight: 950 }}>
-                  +{h.scoreA} / +{h.scoreB}
-                </div>
-              </div>
-            );
-          })}
+        <div style={{ marginTop: 12, ...styles.small }}>
+          Bracket winners advance automatically when a match is finished.
         </div>
       )}
     </div>
   );
 }
-
-/** ===== Styles ===== */
-const styles = {
-  page: {
-    minHeight: "100vh",
-    background: "radial-gradient(1200px 600px at 15% 0%, rgba(59,130,246,0.25), rgba(15,23,42,0)) , linear-gradient(180deg, #0b1220 0%, #050914 100%)",
-    color: "#e5e7eb",
-  },
-  container: {
-    maxWidth: 1200,
-    margin: "0 auto",
-    padding: "16px 16px 60px",
-  },
-  nav: {
-    position: "sticky",
-    top: 0,
-    zIndex: 20,
-    backdropFilter: "blur(10px)",
-    background: "rgba(2,6,23,0.65)",
-    borderBottom: "1px solid rgba(148,163,184,0.15)",
-    padding: "12px 16px",
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    flexWrap: "wrap",
-    alignItems: "center",
-  },
-  brandDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 999,
-    background: "linear-gradient(135deg, #60a5fa 0%, #34d399 100%)",
-    boxShadow: "0 0 0 6px rgba(96,165,250,0.12)",
-  },
-  navLink: {
-    color: "#e2e8f0",
-    textDecoration: "none",
-    fontWeight: 900,
-    padding: "8px 10px",
-    borderRadius: 12,
-    border: "1px solid rgba(148,163,184,0.18)",
-    background: "rgba(2,6,23,0.35)",
-  },
-  hero: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "end",
-    gap: 12,
-    flexWrap: "wrap",
-    marginBottom: 14,
-  },
-  card: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.40)",
-    borderRadius: 18,
-    padding: 16,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
-    marginBottom: 14,
-  },
-  cardHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "baseline",
-    gap: 10,
-    marginBottom: 12,
-  },
-  cardMini: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 18,
-    padding: 14,
-  },
-  grid2: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
-    gap: 14,
-  },
-  gridCards: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 10,
-  },
-  responsiveRow: {
-    display: "flex",
-    gap: 12,
-    flexWrap: "wrap",
-    alignItems: "end",
-  },
-  label: {
-    color: "#94a3b8",
-    fontSize: 12,
-    fontWeight: 800,
-    marginBottom: 6,
-  },
-  input: (w = 240) => ({
-    width: typeof w === "number" ? `${w}px` : w,
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(148,163,184,0.22)",
-    background: "rgba(2,6,23,0.35)",
-    color: "#e5e7eb",
-    outline: "none",
-  }),
-  select: (w = 180) => ({
-    width: typeof w === "number" ? `${w}px` : w,
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(148,163,184,0.22)",
-    background: "rgba(2,6,23,0.35)",
-    color: "#e5e7eb",
-    outline: "none",
-  }),
-  btnPrimary: {
-    border: "1px solid rgba(59,130,246,0.35)",
-    background: "linear-gradient(135deg, rgba(59,130,246,0.95), rgba(34,197,94,0.85))",
-    color: "#071018",
-    fontWeight: 950,
-    padding: "10px 12px",
-    borderRadius: 14,
-    cursor: "pointer",
-  },
-  btnSecondary: {
-    border: "1px solid rgba(148,163,184,0.18)",
-    background: "rgba(2,6,23,0.35)",
-    color: "#e2e8f0",
-    fontWeight: 900,
-    padding: "10px 12px",
-    borderRadius: 14,
-    cursor: "pointer",
-  },
-  btnDanger: {
-    border: "1px solid rgba(239,68,68,0.35)",
-    background: "rgba(239,68,68,0.16)",
-    color: "#fecaca",
-    fontWeight: 950,
-    padding: "10px 12px",
-    borderRadius: 14,
-    cursor: "pointer",
-  },
-  chip: {
-    border: "1px solid rgba(148,163,184,0.20)",
-    background: "rgba(2,6,23,0.30)",
-    padding: "6px 10px",
-    borderRadius: 999,
-    color: "#e2e8f0",
-    fontWeight: 800,
-    fontSize: 12,
-  },
-  code: {
-    padding: "2px 6px",
-    borderRadius: 8,
-    background: "rgba(148,163,184,0.12)",
-    border: "1px solid rgba(148,163,184,0.14)",
-    color: "#e2e8f0",
-  },
-  muted: { color: "#94a3b8" },
-  mutedSmall: { color: "#94a3b8", fontSize: 12 },
-  subTitle: { fontWeight: 950, marginBottom: 6 },
-  podiumGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 },
-  podiumCard: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 18,
-    padding: 14,
-  },
-  statGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-    gap: 10,
-  },
-  statTile: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 18,
-    padding: 12,
-  },
-  funnyGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 10,
-  },
-  funnyCard: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 18,
-    padding: 12,
-  },
-  scoreRow: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 18,
-    padding: 12,
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    alignItems: "center",
-    flexWrap: "wrap",
-  },
-  standRow: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 18,
-    padding: 12,
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    alignItems: "center",
-  },
-  rankBadge: {
-    width: 44,
-    height: 34,
-    borderRadius: 12,
-    display: "grid",
-    placeItems: "center",
-    background: "rgba(59,130,246,0.16)",
-    border: "1px solid rgba(59,130,246,0.22)",
-    fontWeight: 950,
-  },
-  cardRow: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 16,
-    padding: 12,
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 10,
-    alignItems: "center",
-  },
-  linkDanger: {
-    border: "none",
-    background: "transparent",
-    color: "#fca5a5",
-    fontWeight: 950,
-    cursor: "pointer",
-  },
-  warnBox: {
-    border: "1px solid rgba(251,191,36,0.26)",
-    background: "rgba(251,191,36,0.10)",
-    borderRadius: 16,
-    padding: 12,
-    color: "#fde68a",
-  },
-  okBox: {
-    border: "1px solid rgba(34,197,94,0.22)",
-    background: "rgba(34,197,94,0.10)",
-    borderRadius: 16,
-    padding: 12,
-    color: "#bbf7d0",
-    fontWeight: 800,
-  },
-  teamCard: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 18,
-    padding: 12,
-  },
-  matchCompact: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 16,
-    padding: 12,
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 10,
-    alignItems: "center",
-    flexWrap: "wrap",
-  },
-  bracketWrap: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-    gap: 12,
-  },
-  brCol: {
-    border: "1px solid rgba(148,163,184,0.14)",
-    background: "rgba(2,6,23,0.30)",
-    borderRadius: 18,
-    padding: 12,
-  },
-  brColTitle: { fontWeight: 950, marginBottom: 10, color: "#e2e8f0" },
-  brBox: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 10,
-  },
-  brTeam: {
-    padding: "8px 10px",
-    borderRadius: 14,
-    border: "1px solid rgba(148,163,184,0.14)",
-    background: "rgba(2,6,23,0.25)",
-    fontWeight: 900,
-    marginBottom: 8,
-  },
-  matchHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    flexWrap: "wrap",
-    alignItems: "center",
-    paddingBottom: 10,
-    borderBottom: "1px solid rgba(148,163,184,0.14)",
-  },
-  progressGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-    gap: 12,
-  },
-  progressCard: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 18,
-    padding: 12,
-  },
-  progressOuter: {
-    marginTop: 10,
-    height: 14,
-    borderRadius: 999,
-    border: "1px solid rgba(148,163,184,0.14)",
-    background: "rgba(2,6,23,0.25)",
-    overflow: "hidden",
-  },
-  progressInner: {
-    height: "100%",
-    borderRadius: 999,
-    background: "linear-gradient(90deg, rgba(59,130,246,0.95), rgba(34,197,94,0.85))",
-  },
-  handSectionTitle: { fontWeight: 950, fontSize: 16 },
-  handGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-    gap: 12,
-    marginTop: 12,
-  },
-  handRow: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 16,
-    padding: 12,
-    display: "grid",
-    gridTemplateColumns: "110px 1fr 120px",
-    gap: 10,
-    alignItems: "center",
-  },
-  kv: { display: "grid", gap: 10 },
-  kRow: {
-    border: "1px solid rgba(148,163,184,0.14)",
-    background: "rgba(2,6,23,0.30)",
-    borderRadius: 16,
-    padding: 10,
-    display: "grid",
-    gridTemplateColumns: "120px 1fr",
-    gap: 10,
-    alignItems: "center",
-  },
-  k: { color: "#94a3b8", fontWeight: 900, fontSize: 12 },
-  v: { minWidth: 0, overflow: "hidden" },
-};
