@@ -1,25 +1,33 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * Coinche Table Manager (Vite single-file)
- * What it DOES:
- * - Unlimited Players
- * - Unlimited Teams (build from players; typical Coinche teams are 2 players but you can choose any size)
- * - Unlimited Tables (assign teams to tables)
- * - Per-table Hand Tracker (same spirit: suit dropdown + quick entry)
- * - Scoreboard (team totals), basic stats + “funny stats”
- * - Export CSV (Excel-friendly)
- * - LocalStorage persistence
+ * Coinche Table Manager (Admin + Table View) — Vite single-file
  *
- * What it DOES NOT do (by design):
- * - No pools/brackets/round-robin scheduling
- * - No timer/schedule automation
+ * ✅ Admin View (default):
+ * - Add unlimited Players
+ * - Create unlimited Teams (any size)
+ * - Create unlimited Tables
+ * - Assign Teams to Tables
+ * - See GLOBAL scoreboard + stats
+ * - See ALL hands (and delete any)
+ * - Generate “Table Links” for each table (players use these)
+ *
+ * ✅ Table View (per table):
+ * - Open via URL:  /?table=<TABLE_ID>
+ * - Only shows THAT table
+ * - Players enter hands and scores ONLY for that table
+ * - Table-only scoreboard + stats + recent hands (delete only within table)
+ *
+ * ❌ No pools/brackets/scheduling/timers
+ *
+ * Persistence: localStorage
  */
 
-const LS_KEY = "coinche_table_manager_v1";
+const LS_KEY = "coinche_table_manager_admin_table_v2";
 
 /** --- Helpers --- **/
-const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(2, 6);
+const uid = () =>
+  Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(2, 6);
 
 function clampInt(v, fallback = 0) {
   const n = parseInt(String(v), 10);
@@ -46,6 +54,12 @@ function downloadText(filename, text) {
   URL.revokeObjectURL(url);
 }
 
+function csvEscape(s) {
+  const str = String(s ?? "");
+  if (/[,"\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
+  return str;
+}
+
 const SUITS = [
   { key: "S", label: "♠ Spades" },
   { key: "H", label: "♥ Hearts" },
@@ -57,14 +71,24 @@ const DEFAULT_STATE = {
   players: [],
   teams: [],
   tables: [],
-  hands: [], // each hand belongs to a table + teams
+  hands: [],
   settings: {
-    teamSize: 2,
+    adminName: "Admin",
   },
 };
 
-/** --- Core App --- **/
+/** --- URL view resolver --- **/
+function getViewFromURL() {
+  const sp = new URLSearchParams(window.location.search);
+  const tableId = sp.get("table");
+  if (tableId) return { mode: "table", tableId };
+  return { mode: "admin", tableId: null };
+}
+
 export default function App() {
+  const initialView = useMemo(getViewFromURL, []);
+  const [view, setView] = useState(initialView); // { mode: 'admin'|'table', tableId }
+
   const [state, setState] = useState(DEFAULT_STATE);
 
   // Load
@@ -73,7 +97,6 @@ export default function App() {
       const raw = localStorage.getItem(LS_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        // small guard
         if (parsed && typeof parsed === "object") setState({ ...DEFAULT_STATE, ...parsed });
       }
     } catch {
@@ -90,29 +113,26 @@ export default function App() {
     }
   }, [state]);
 
-  const playersById = useMemo(() => {
-    const m = new Map();
-    for (const p of state.players) m.set(p.id, p);
-    return m;
-  }, [state.players]);
+  // If URL changes (rare), re-evaluate view
+  useEffect(() => {
+    const onPop = () => setView(getViewFromURL());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
-  const teamsById = useMemo(() => {
-    const m = new Map();
-    for (const t of state.teams) m.set(t.id, t);
-    return m;
-  }, [state.teams]);
+  const playersById = useMemo(() => new Map(state.players.map((p) => [p.id, p])), [state.players]);
+  const teamsById = useMemo(() => new Map(state.teams.map((t) => [t.id, t])), [state.teams]);
+  const tablesById = useMemo(() => new Map(state.tables.map((tb) => [tb.id, tb])), [state.tables]);
 
-  const tablesById = useMemo(() => {
-    const m = new Map();
-    for (const tb of state.tables) m.set(tb.id, tb);
-    return m;
-  }, [state.tables]);
+  const activeTable = useMemo(() => {
+    if (view.mode !== "table") return null;
+    return tablesById.get(view.tableId) || null;
+  }, [view, tablesById]);
 
-  /** --- Derived: Scoreboard + Stats --- **/
-  const scoreboard = useMemo(() => {
-    // totals per team
+  /** --- Scoreboard computation --- **/
+  function computeScoreboard(hands, teams) {
     const base = {};
-    for (const t of state.teams) {
+    for (const t of teams) {
       base[t.id] = {
         teamId: t.id,
         name: t.name,
@@ -128,7 +148,7 @@ export default function App() {
       };
     }
 
-    for (const h of state.hands) {
+    for (const h of hands) {
       const a = base[h.teamAId];
       const b = base[h.teamBId];
       if (!a || !b) continue;
@@ -140,10 +160,10 @@ export default function App() {
       a.pointsAgainst += bPts;
       b.pointsFor += bPts;
       b.pointsAgainst += aPts;
+
       a.hands += 1;
       b.hands += 1;
 
-      // win/loss (ties possible)
       if (aPts > bPts) {
         a.wins += 1;
         b.losses += 1;
@@ -152,69 +172,68 @@ export default function App() {
         a.losses += 1;
       }
 
-      // “funny stats”
       if (h.coinche) {
-        a.coinches += h.coincheTeam === "A" ? 1 : 0;
-        b.coinches += h.coincheTeam === "B" ? 1 : 0;
+        if (h.coincheTeam === "A") a.coinches += 1;
+        if (h.coincheTeam === "B") b.coinches += 1;
       }
       if (h.capot) {
-        a.capots += h.capotTeam === "A" ? 1 : 0;
-        b.capots += h.capotTeam === "B" ? 1 : 0;
+        if (h.capotTeam === "A") a.capots += 1;
+        if (h.capotTeam === "B") b.capots += 1;
       }
       if (h.belote) {
-        a.belotes += h.beloteTeam === "A" ? 1 : 0;
-        b.belotes += h.beloteTeam === "B" ? 1 : 0;
+        if (h.beloteTeam === "A") a.belotes += 1;
+        if (h.beloteTeam === "B") b.belotes += 1;
       }
     }
 
-    const arr = Object.values(base).map((x) => ({
-      ...x,
-      net: x.pointsFor - x.pointsAgainst,
-    }));
-
+    const arr = Object.values(base).map((x) => ({ ...x, net: x.pointsFor - x.pointsAgainst }));
     arr.sort((x, y) => {
-      if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor; // common “scoreboard” feel
+      if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
       if (y.net !== x.net) return y.net - x.net;
       return (x.name || "").localeCompare(y.name || "");
     });
-
     return arr;
-  }, [state.teams, state.hands]);
+  }
 
-  const funnyStats = useMemo(() => {
-    const s = scoreboard;
-    const bestNet = [...s].sort((a, b) => b.net - a.net)[0];
-    const mostWins = [...s].sort((a, b) => b.wins - a.wins)[0];
-    const mostCoinches = [...s].sort((a, b) => b.coinches - a.coinches)[0];
-    const mostBelotes = [...s].sort((a, b) => b.belotes - a.belotes)[0];
-    const mostCapots = [...s].sort((a, b) => b.capots - a.capots)[0];
+  const globalScoreboard = useMemo(
+    () => computeScoreboard(state.hands, state.teams),
+    [state.hands, state.teams]
+  );
 
-    return [
-      bestNet && { label: "Best Net Points", value: `${bestNet.name} (${bestNet.net})` },
-      mostWins && { label: "Most Wins", value: `${mostWins.name} (${mostWins.wins})` },
-      mostCoinches && { label: "Most Coinches", value: `${mostCoinches.name} (${mostCoinches.coinches})` },
-      mostBelotes && { label: "Most Belotes", value: `${mostBelotes.name} (${mostBelotes.belotes})` },
-      mostCapots && { label: "Most Capots", value: `${mostCapots.name} (${mostCapots.capots})` },
-    ].filter(Boolean);
-  }, [scoreboard]);
+  const globalFunnyStats = useMemo(() => buildFunnyStats(globalScoreboard), [globalScoreboard]);
 
-  /** --- Actions: Players --- **/
+  /** --- Table-specific derived --- **/
+  const tableHands = useMemo(() => {
+    if (view.mode !== "table" || !activeTable) return [];
+    return state.hands.filter((h) => h.tableId === activeTable.id);
+  }, [view, activeTable, state.hands]);
+
+  const tableTeams = useMemo(() => {
+    if (view.mode !== "table" || !activeTable) return [];
+    const ids = activeTable.teamIds || [];
+    return ids.map((id) => teamsById.get(id)).filter(Boolean);
+  }, [view, activeTable, teamsById]);
+
+  const tableScoreboard = useMemo(() => {
+    if (view.mode !== "table" || !activeTable) return [];
+    return computeScoreboard(tableHands, tableTeams);
+  }, [view, activeTable, tableHands, tableTeams]);
+
+  const tableFunnyStats = useMemo(() => buildFunnyStats(tableScoreboard), [tableScoreboard]);
+
+  /** --- Actions: Players (Admin only) --- **/
   const [newPlayerName, setNewPlayerName] = useState("");
 
   function addPlayer() {
     const name = newPlayerName.trim();
     if (!name) return;
-    setState((s) => ({
-      ...s,
-      players: [...s.players, { id: uid(), name }],
-    }));
+    setState((s) => ({ ...s, players: [...s.players, { id: uid(), name }] }));
     setNewPlayerName("");
   }
 
   function removePlayer(playerId) {
     setState((s) => {
       const players = s.players.filter((p) => p.id !== playerId);
-      // Also remove from teams
       const teams = s.teams.map((t) => ({
         ...t,
         playerIds: t.playerIds.filter((id) => id !== playerId),
@@ -223,9 +242,9 @@ export default function App() {
     });
   }
 
-  /** --- Actions: Teams --- **/
+  /** --- Actions: Teams (Admin only) --- **/
   const [newTeamName, setNewTeamName] = useState("");
-  const [teamDraft, setTeamDraft] = useState([]); // array of playerIds selected
+  const [teamDraft, setTeamDraft] = useState([]);
 
   function toggleDraftPlayer(pid) {
     setTeamDraft((d) => (d.includes(pid) ? d.filter((x) => x !== pid) : [...d, pid]));
@@ -271,17 +290,13 @@ export default function App() {
   }
 
   function randomizeUnlockedTeams() {
-    // Shuffle player assignments only for unlocked teams, keeping team sizes the same.
     setState((s) => {
       const unlocked = s.teams.filter((t) => !t.locked);
       if (unlocked.length === 0) return s;
 
-      const locked = s.teams.filter((t) => t.locked);
-
-      const unlockedSizes = unlocked.map((t) => t.playerIds.length);
+      const sizes = unlocked.map((t) => t.playerIds.length);
       const poolPlayers = unlocked.flatMap((t) => t.playerIds);
 
-      // Fisher-Yates shuffle
       const arr = [...poolPlayers];
       for (let i = arr.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -291,17 +306,13 @@ export default function App() {
       const rebuilt = [];
       let idx = 0;
       for (let i = 0; i < unlocked.length; i++) {
-        const size = unlockedSizes[i];
-        const slice = arr.slice(idx, idx + size);
+        const size = sizes[i];
+        rebuilt.push({ ...unlocked[i], playerIds: arr.slice(idx, idx + size) });
         idx += size;
-        rebuilt.push({ ...unlocked[i], playerIds: slice });
       }
 
-      // Keep original order
       const map = new Map(rebuilt.map((t) => [t.id, t]));
-      const teams = s.teams.map((t) => map.get(t.id) || t);
-
-      return { ...s, teams };
+      return { ...s, teams: s.teams.map((t) => map.get(t.id) || t) };
     });
   }
 
@@ -332,23 +343,16 @@ export default function App() {
     }));
   }
 
-  /** --- Actions: Hands --- **/
-  // Per-table entry UI uses local draft, then commits to state.hands
+  /** --- Hands --- **/
   function addHand(hand) {
-    setState((s) => ({
-      ...s,
-      hands: [hand, ...s.hands], // newest first
-    }));
+    setState((s) => ({ ...s, hands: [hand, ...s.hands] }));
   }
 
   function deleteHand(handId) {
-    setState((s) => ({
-      ...s,
-      hands: s.hands.filter((h) => h.id !== handId),
-    }));
+    setState((s) => ({ ...s, hands: s.hands.filter((h) => h.id !== handId) }));
   }
 
-  /** --- Export CSV --- **/
+  /** --- Export CSV (Admin) --- **/
   function exportCSV() {
     const lines = [];
     const header = [
@@ -397,21 +401,11 @@ export default function App() {
       lines.push(row.join(","));
     }
 
-    lines.push(""); // spacing
-    lines.push("SCOREBOARD");
+    lines.push("");
+    lines.push("GLOBAL_SCOREBOARD");
     lines.push(["team", "points_for", "points_against", "net", "hands", "wins", "losses"].join(","));
-    for (const s of scoreboard) {
-      lines.push(
-        [
-          csvEscape(s.name),
-          s.pointsFor,
-          s.pointsAgainst,
-          s.net,
-          s.hands,
-          s.wins,
-          s.losses,
-        ].join(",")
-      );
+    for (const s of globalScoreboard) {
+      lines.push([csvEscape(s.name), s.pointsFor, s.pointsAgainst, s.net, s.hands, s.wins, s.losses].join(","));
     }
 
     downloadText(`coinche_tables_${new Date().toISOString().slice(0, 10)}.csv`, lines.join("\n"));
@@ -422,13 +416,85 @@ export default function App() {
     setState(DEFAULT_STATE);
   }
 
-  /** --- UI --- **/
+  /** --- Render: Admin vs Table --- **/
+  if (view.mode === "table") {
+    return (
+      <div style={styles.page}>
+        <TableHeader
+          table={activeTable}
+          onGoAdmin={() => {
+            // Go to admin by clearing query params
+            window.history.pushState({}, "", window.location.pathname);
+            setView({ mode: "admin", tableId: null });
+          }}
+        />
+
+        {!activeTable ? (
+          <Card title="Table not found">
+            <div style={styles.muted}>
+              This table link doesn’t match an existing table in this browser’s storage.
+            </div>
+            <div style={{ marginTop: 10, ...styles.muted }}>
+              If you’re on a different device, you need to open the same deployed app instance that has the tournament
+              data (Admin created tables/teams).
+            </div>
+          </Card>
+        ) : (
+          <>
+            <div style={styles.grid}>
+              <Card title="This Table Scoreboard">
+                <ScoreboardTable scoreboard={tableScoreboard} />
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 6 }}>Funny stats</div>
+                  {tableFunnyStats.length === 0 ? (
+                    <div style={styles.muted}>Play a few hands to see stats.</div>
+                  ) : (
+                    <ul style={styles.list}>
+                      {tableFunnyStats.map((x, idx) => (
+                        <li key={idx} style={styles.listItem}>
+                          <span>{x.label}</span>
+                          <strong>{x.value}</strong>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </Card>
+
+              <Card title="Hand Entry (This Table)">
+                <HandEntry
+                  table={activeTable}
+                  teamsById={teamsById}
+                  addHand={addHand}
+                  disabledReason={getHandEntryDisabledReason(activeTable, teamsById)}
+                />
+              </Card>
+
+              <Card title="Recent Hands (This Table)">
+                <HandsList
+                  hands={tableHands}
+                  tablesById={tablesById}
+                  teamsById={teamsById}
+                  onDeleteHand={deleteHand}
+                  limit={80}
+                />
+              </Card>
+            </div>
+
+            <Footer />
+          </>
+        )}
+      </div>
+    );
+  }
+
+  // ADMIN VIEW
   return (
     <div style={styles.page}>
-      <Header onExport={exportCSV} onReset={resetAll} />
+      <AdminHeader onExport={exportCSV} onReset={resetAll} />
 
       <div style={styles.grid}>
-        <Card title="Players">
+        <Card title="Players (Admin)">
           <div style={styles.row}>
             <input
               style={styles.input}
@@ -460,7 +526,7 @@ export default function App() {
           </div>
         </Card>
 
-        <Card title="Teams">
+        <Card title="Teams (Admin)">
           <div style={styles.rowBetween}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <span style={styles.badge}>Teams: {state.teams.length}</span>
@@ -472,7 +538,7 @@ export default function App() {
           </div>
 
           <div style={{ marginTop: 12, padding: 10, border: "1px solid #ddd", borderRadius: 10 }}>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>Create a team</div>
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>Create a team</div>
 
             <div style={styles.row}>
               <input
@@ -487,7 +553,7 @@ export default function App() {
             </div>
 
             <div style={{ marginTop: 8, ...styles.muted }}>
-              Select players, then click Create. (You can make any team size.)
+              Select players, then click Create. (Any team size.)
             </div>
 
             <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -497,10 +563,7 @@ export default function App() {
                   <button
                     key={p.id}
                     onClick={() => toggleDraftPlayer(p.id)}
-                    style={{
-                      ...styles.pill,
-                      ...(active ? styles.pillActive : {}),
-                    }}
+                    style={{ ...styles.pill, ...(active ? styles.pillActive : {}) }}
                   >
                     {p.name}
                   </button>
@@ -520,7 +583,7 @@ export default function App() {
                       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                         <strong>{t.name}</strong>
                         <span style={styles.badge}>{t.playerIds.length} players</span>
-                        {t.locked ? <span style={styles.badge}>Locked</span> : <span style={styles.badge}>Unlocked</span>}
+                        {t.locked ? <span style={styles.badge}>Locked</span : <span style={styles.badge}>Unlocked</span>}
                       </div>
                       <div style={{ marginTop: 6, ...styles.muted }}>
                         {t.playerIds.length === 0
@@ -544,7 +607,7 @@ export default function App() {
           </div>
         </Card>
 
-        <Card title="Tables">
+        <Card title="Tables (Admin)">
           <div style={styles.row}>
             <input
               style={styles.input}
@@ -571,6 +634,7 @@ export default function App() {
                     teamsById={teamsById}
                     setTableTeamIds={setTableTeamIds}
                     onRemove={() => removeTable(tb.id)}
+                    onOpenTableView={() => openTableViewLink(tb.id)}
                   />
                 ))}
               </div>
@@ -578,47 +642,16 @@ export default function App() {
           </div>
         </Card>
 
-        <Card title="Scoreboard">
-          {scoreboard.length === 0 ? (
-            <div style={styles.muted}>No team scores yet.</div>
-          ) : (
-            <div style={{ overflowX: "auto" }}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Team</th>
-                    <th style={styles.thRight}>For</th>
-                    <th style={styles.thRight}>Against</th>
-                    <th style={styles.thRight}>Net</th>
-                    <th style={styles.thRight}>Hands</th>
-                    <th style={styles.thRight}>W</th>
-                    <th style={styles.thRight}>L</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {scoreboard.map((s) => (
-                    <tr key={s.teamId}>
-                      <td style={styles.td}>{s.name}</td>
-                      <td style={styles.tdRight}>{s.pointsFor}</td>
-                      <td style={styles.tdRight}>{s.pointsAgainst}</td>
-                      <td style={styles.tdRight}>{s.net}</td>
-                      <td style={styles.tdRight}>{s.hands}</td>
-                      <td style={styles.tdRight}>{s.wins}</td>
-                      <td style={styles.tdRight}>{s.losses}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+        <Card title="Global Scoreboard (Admin)">
+          <ScoreboardTable scoreboard={globalScoreboard} />
 
           <div style={{ marginTop: 12 }}>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>Funny stats</div>
-            {funnyStats.length === 0 ? (
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>Funny stats</div>
+            {globalFunnyStats.length === 0 ? (
               <div style={styles.muted}>Play a few hands to see stats.</div>
             ) : (
               <ul style={styles.list}>
-                {funnyStats.map((x, idx) => (
+                {globalFunnyStats.map((x, idx) => (
                   <li key={idx} style={styles.listItem}>
                     <span>{x.label}</span>
                     <strong>{x.value}</strong>
@@ -629,7 +662,7 @@ export default function App() {
           </div>
         </Card>
 
-        <Card title="Hand Tracker (by table)">
+        <Card title="Hand Entry (Admin — choose a table)">
           {state.tables.length === 0 ? (
             <div style={styles.muted}>Create a table first.</div>
           ) : (
@@ -647,51 +680,14 @@ export default function App() {
           )}
         </Card>
 
-        <Card title="Recent Hands">
-          {state.hands.length === 0 ? (
-            <div style={styles.muted}>No hands recorded yet.</div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {state.hands.slice(0, 60).map((h) => {
-                const tableName = tablesById.get(h.tableId)?.name || "Unknown table";
-                const ta = teamsById.get(h.teamAId)?.name || "Team A";
-                const tb = teamsById.get(h.teamBId)?.name || "Team B";
-                const suitLabel = SUITS.find((s) => s.key === h.suit)?.label || h.suit || "—";
-
-                return (
-                  <div key={h.id} style={styles.handCard}>
-                    <div style={styles.rowBetween}>
-                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                        <strong>{tableName}</strong>
-                        <span style={styles.badge}>{fmtDateTime(h.ts)}</span>
-                        <span style={styles.badge}>{suitLabel}</span>
-                        {h.contract ? <span style={styles.badge}>Contract: {h.contract}</span> : null}
-                        {h.coinche ? <span style={styles.badge}>Coinche ({h.coincheTeam})</span> : null}
-                        {h.capot ? <span style={styles.badge}>Capot ({h.capotTeam})</span> : null}
-                        {h.belote ? <span style={styles.badge}>Belote ({h.beloteTeam})</span> : null}
-                      </div>
-                      <button style={styles.smallDanger} onClick={() => deleteHand(h.id)}>
-                        Delete
-                      </button>
-                    </div>
-
-                    <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                      <div style={styles.teamScoreBox}>
-                        <div style={styles.muted}>{ta}</div>
-                        <div style={styles.bigNumber}>{clampInt(h.teamAPoints, 0)}</div>
-                      </div>
-                      <div style={styles.teamScoreBox}>
-                        <div style={styles.muted}>{tb}</div>
-                        <div style={styles.bigNumber}>{clampInt(h.teamBPoints, 0)}</div>
-                      </div>
-                    </div>
-
-                    {h.notes ? <div style={{ marginTop: 8, ...styles.muted }}>Notes: {h.notes}</div> : null}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+        <Card title="Recent Hands (Admin — all tables)">
+          <HandsList
+            hands={state.hands}
+            tablesById={tablesById}
+            teamsById={teamsById}
+            onDeleteHand={deleteHand}
+            limit={120}
+          />
         </Card>
       </div>
 
@@ -700,14 +696,39 @@ export default function App() {
   );
 }
 
+/** --- View Helpers --- **/
+function openTableViewLink(tableId) {
+  const base = window.location.origin + window.location.pathname;
+  const url = `${base}?table=${encodeURIComponent(tableId)}`;
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+/** --- Stats Helpers --- **/
+function buildFunnyStats(scoreboard) {
+  if (!scoreboard || scoreboard.length === 0) return [];
+  const bestNet = [...scoreboard].sort((a, b) => b.net - a.net)[0];
+  const mostWins = [...scoreboard].sort((a, b) => b.wins - a.wins)[0];
+  const mostCoinches = [...scoreboard].sort((a, b) => b.coinches - a.coinches)[0];
+  const mostBelotes = [...scoreboard].sort((a, b) => b.belotes - a.belotes)[0];
+  const mostCapots = [...scoreboard].sort((a, b) => b.capots - a.capots)[0];
+
+  return [
+    bestNet && { label: "Best Net Points", value: `${bestNet.name} (${bestNet.net})` },
+    mostWins && { label: "Most Wins", value: `${mostWins.name} (${mostWins.wins})` },
+    mostCoinches && { label: "Most Coinches", value: `${mostCoinches.name} (${mostCoinches.coinches})` },
+    mostBelotes && { label: "Most Belotes", value: `${mostBelotes.name} (${mostBelotes.belotes})` },
+    mostCapots && { label: "Most Capots", value: `${mostCapots.name} (${mostCapots.capots})` },
+  ].filter(Boolean);
+}
+
 /** --- Components --- **/
-function Header({ onExport, onReset }) {
+function AdminHeader({ onExport, onReset }) {
   return (
     <div style={styles.header}>
       <div>
-        <div style={styles.h1}>Coinche Table Manager</div>
+        <div style={styles.h1}>Coinche Table Manager — Admin</div>
         <div style={styles.muted}>
-          Add players → build teams → assign teams to tables → track hands & scores.
+          Admin sets up players/teams/tables. Players use their table link to enter hands.
         </div>
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -722,10 +743,34 @@ function Header({ onExport, onReset }) {
   );
 }
 
+function TableHeader({ table, onGoAdmin }) {
+  return (
+    <div style={styles.header}>
+      <div>
+        <div style={styles.h1}>Table View</div>
+        <div style={styles.muted}>
+          {table ? (
+            <>
+              You are entering hands for: <strong>{table.name}</strong>
+            </>
+          ) : (
+            "Table not found in this browser."
+          )}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <button style={styles.small} onClick={onGoAdmin}>
+          Go to Admin
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Footer() {
   return (
     <div style={{ marginTop: 20, ...styles.muted }}>
-      Tip: For each table, assign exactly <strong>2 teams</strong> to enable hand entry.
+      Tip: Assign at least <strong>2 teams</strong> to each table to enable hand entry.
     </div>
   );
 }
@@ -739,8 +784,43 @@ function Card({ title, children }) {
   );
 }
 
-function TableCard({ table, teams, teamsById, setTableTeamIds, onRemove }) {
-  // Select 2 teams for this table (you can technically assign more, but hand entry uses first 2)
+function ScoreboardTable({ scoreboard }) {
+  if (!scoreboard || scoreboard.length === 0) {
+    return <div style={styles.muted}>No team scores yet.</div>;
+  }
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={styles.table}>
+        <thead>
+          <tr>
+            <th style={styles.th}>Team</th>
+            <th style={styles.thRight}>For</th>
+            <th style={styles.thRight}>Against</th>
+            <th style={styles.thRight}>Net</th>
+            <th style={styles.thRight}>Hands</th>
+            <th style={styles.thRight}>W</th>
+            <th style={styles.thRight}>L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {scoreboard.map((s) => (
+            <tr key={s.teamId}>
+              <td style={styles.td}>{s.name}</td>
+              <td style={styles.tdRight}>{s.pointsFor}</td>
+              <td style={styles.tdRight}>{s.pointsAgainst}</td>
+              <td style={styles.tdRight}>{s.net}</td>
+              <td style={styles.tdRight}>{s.hands}</td>
+              <td style={styles.tdRight}>{s.wins}</td>
+              <td style={styles.tdRight}>{s.losses}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TableCard({ table, teams, teamsById, setTableTeamIds, onRemove, onOpenTableView }) {
   const selected = table.teamIds || [];
   const [open, setOpen] = useState(false);
 
@@ -750,12 +830,14 @@ function TableCard({ table, teams, teamsById, setTableTeamIds, onRemove }) {
     setTableTeamIds(table.id, next);
   }
 
-  const teamNames = selected.map((id) => teamsById.get(id)?.name || "Unknown").join(" vs ");
+  const teamNames = selected.slice(0, 2).map((id) => teamsById.get(id)?.name || "Unknown").join(" vs ");
+
+  const tableLink = `${window.location.origin}${window.location.pathname}?table=${encodeURIComponent(table.id)}`;
 
   return (
     <div style={styles.tableCard}>
       <div style={styles.rowBetween}>
-        <div>
+        <div style={{ flex: 1 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <strong>{table.name}</strong>
             <span style={styles.badge}>
@@ -764,11 +846,24 @@ function TableCard({ table, teams, teamsById, setTableTeamIds, onRemove }) {
             {selected.length >= 2 ? <span style={styles.badge}>{teamNames}</span> : null}
           </div>
           <div style={{ marginTop: 6, ...styles.muted }}>
-            Pick teams for this table. Hand entry is enabled when 2+ teams are selected.
+            Table link (share with players):
+          </div>
+          <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <code style={styles.code}>{tableLink}</code>
+            <button
+              style={styles.small}
+              onClick={() => navigator.clipboard?.writeText?.(tableLink)}
+              title="Copy link"
+            >
+              Copy
+            </button>
+            <button style={styles.small} onClick={onOpenTableView}>
+              Open Table View
+            </button>
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button style={styles.small} onClick={() => setOpen((v) => !v)}>
             {open ? "Hide Teams" : "Assign Teams"}
           </button>
@@ -789,10 +884,7 @@ function TableCard({ table, teams, teamsById, setTableTeamIds, onRemove }) {
                 <button
                   key={t.id}
                   onClick={() => toggleTeam(t.id)}
-                  style={{
-                    ...styles.pill,
-                    ...(active ? styles.pillActive : {}),
-                  }}
+                  style={{ ...styles.pill, ...(active ? styles.pillActive : {}) }}
                 >
                   {t.name}
                 </button>
@@ -801,6 +893,11 @@ function TableCard({ table, teams, teamsById, setTableTeamIds, onRemove }) {
           )}
         </div>
       ) : null}
+
+      <div style={{ marginTop: 10, ...styles.muted }}>
+        Hand entry uses the <strong>first 2</strong> teams selected (Team A vs Team B). You can select more if you want,
+        but only the first two are used for entry on that table.
+      </div>
     </div>
   );
 }
@@ -823,7 +920,7 @@ function HandEntry({ table, teamsById, addHand, disabledReason }) {
   const teamBName = teamsById.get(teamBId)?.name || "Team B";
 
   const [suit, setSuit] = useState("S");
-  const [contract, setContract] = useState(""); // optional (e.g., 80, 100, 160, etc.)
+  const [contract, setContract] = useState("");
   const [aPts, setAPts] = useState("");
   const [bPts, setBPts] = useState("");
 
@@ -885,7 +982,9 @@ function HandEntry({ table, teamsById, addHand, disabledReason }) {
         <div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <strong>{table.name}</strong>
-            <span style={styles.badge}>{teamAName} vs {teamBName}</span>
+            <span style={styles.badge}>
+              {teamAName} vs {teamBName}
+            </span>
           </div>
           {disabled ? <div style={{ marginTop: 6, color: "#b00020" }}>{disabledReason}</div> : null}
         </div>
@@ -988,11 +1087,51 @@ function ToggleRow({ title, enabled, setEnabled, team, setTeam, teamAName, teamB
   );
 }
 
-/** --- CSV escape --- **/
-function csvEscape(s) {
-  const str = String(s ?? "");
-  if (/[,"\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
-  return str;
+function HandsList({ hands, tablesById, teamsById, onDeleteHand, limit = 80 }) {
+  if (!hands || hands.length === 0) return <div style={styles.muted}>No hands recorded yet.</div>;
+
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {hands.slice(0, limit).map((h) => {
+        const tableName = tablesById.get(h.tableId)?.name || "Unknown table";
+        const ta = teamsById.get(h.teamAId)?.name || "Team A";
+        const tb = teamsById.get(h.teamBId)?.name || "Team B";
+        const suitLabel = SUITS.find((s) => s.key === h.suit)?.label || h.suit || "—";
+
+        return (
+          <div key={h.id} style={styles.handCard}>
+            <div style={styles.rowBetween}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <strong>{tableName}</strong>
+                <span style={styles.badge}>{fmtDateTime(h.ts)}</span>
+                <span style={styles.badge}>{suitLabel}</span>
+                {h.contract ? <span style={styles.badge}>Contract: {h.contract}</span> : null}
+                {h.coinche ? <span style={styles.badge}>Coinche ({h.coincheTeam})</span> : null}
+                {h.capot ? <span style={styles.badge}>Capot ({h.capotTeam})</span> : null}
+                {h.belote ? <span style={styles.badge}>Belote ({h.beloteTeam})</span> : null}
+              </div>
+              <button style={styles.smallDanger} onClick={() => onDeleteHand(h.id)}>
+                Delete
+              </button>
+            </div>
+
+            <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div style={styles.teamScoreBox}>
+                <div style={styles.muted}>{ta}</div>
+                <div style={styles.bigNumber}>{clampInt(h.teamAPoints, 0)}</div>
+              </div>
+              <div style={styles.teamScoreBox}>
+                <div style={styles.muted}>{tb}</div>
+                <div style={styles.bigNumber}>{clampInt(h.teamBPoints, 0)}</div>
+              </div>
+            </div>
+
+            {h.notes ? <div style={{ marginTop: 8, ...styles.muted }}>Notes: {h.notes}</div> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /** --- Styles --- **/
@@ -1096,6 +1235,16 @@ const styles = {
     fontSize: 12,
     color: "#333",
     background: "#fff",
+  },
+  code: {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    fontSize: 12,
+    padding: "6px 8px",
+    borderRadius: 10,
+    border: "1px solid #eee",
+    background: "#fafafa",
+    overflowX: "auto",
+    maxWidth: "100%",
   },
   list: { listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 },
   listItem: {
