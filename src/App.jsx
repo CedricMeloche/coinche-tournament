@@ -187,14 +187,14 @@ const styles = {
     padding: 16,
   },
   // FULL SCREEN / WIDE:
-  container: {
-    width: "100%",
-    maxWidth: "min(1800px, calc(100vw - 32px))",
-    margin: "0 auto",
-    display: "flex",
-    flexDirection: "column",
-    gap: 14,
-  },
+container: {
+  width: "100%",
+  maxWidth: "none",
+  margin: "0",
+  display: "flex",
+  flexDirection: "column",
+  gap: 14,
+},
   topbar: {
     display: "flex",
     justifyContent: "space-between",
