@@ -3,20 +3,36 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 /**
  * Coinche Scorekeeper (Vite single-file App.jsx)
  * ✅ Admin view + Public view (read-only) + Table view (enter only your table match)
- * ✅ Unlimited players + unlimited teams
- * ✅ Admin creates matches (tables) manually (no pools/bracket/timer)
- * ✅ Fast mode Hand Tracker (same scoring logic)
- * ✅ Live scoreboard + stats + funny stats + fun facts (blowout/comeback/etc.)
- * ✅ Leading team glows green + score pop animation on update
- * ✅ Fullscreen layout + dropdown/input black text
- * ✅ Uses localStorage
- * ✅ Routes via URL hash:
- *    #/admin
- *    #/public
- *    #/table?code=AB12
+ * ✅ Unlimited players, teams, tables, matches (no pools/bracket/timer)
+ * ✅ Team builder: manual OR randomize (respects locks) + avoid repeating pairs
+ * ✅ Assign teams to tables (matches) + share unique Table links (code)
+ * ✅ Hand Tracker (Fast Mode) with suit dropdown + icons, auto totals, edit past hands
+ * ✅ Live Scoreboard + stats + fun facts (blowout, comeback, etc.)
+ * ✅ Full width layout, bigger totals on Table view, leading team glows green
+ * ✅ Select dropdown text is black for readability
+ * ✅ Auto-backup every hand to Google Sheets (queue + retry)
+ *
+ * Routes (hash):
+ *   #/admin
+ *   #/public
+ *   #/table?code=AB12
  */
 
-const LS_KEY = "coinche_scorekeeper_vite_fullscreen_v1";
+const LS_KEY = "coinche_scorekeeper_vite_v1";
+
+// === Google Sheets Web App (your link) ===
+const GSHEET_WEBHOOK_URL =
+  "https://script.google.com/macros/s/AKfycbz-ok_dxCTExzV6LA8NixK6nYnw03MhOBZ3M6SgP_Na5-hlrhnMLX3bIUYqqq5laguSHw/exec";
+
+/**
+ * OPTIONAL: If your Apps Script expects a secret, set it here AND in Apps Script.
+ * If your Apps Script does NOT use a secret, leave it as "".
+ */
+const GSHEET_SECRET = "";
+
+const DEVICE_ID_KEY = "coinche_device_id_v1";
+const PENDING_QUEUE_KEY = "coinche_pending_sheets_queue_v1";
+
 const TARGET_SCORE = 2000;
 
 function uid(prefix = "id") {
@@ -27,6 +43,14 @@ function shortCode() {
   let s = "";
   for (let i = 0; i < 4; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
+}
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 function safeInt(v) {
   if (v === "" || v === null || v === undefined) return null;
@@ -39,6 +63,7 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, x));
 }
 
+/** ===== Fast mode scoring helpers ===== */
 function roundTrickPoints(x) {
   if (x == null) return 0;
   const n = clamp(Number(x) || 0, 0, 162);
@@ -46,7 +71,16 @@ function roundTrickPoints(x) {
 }
 
 /**
- * Fast mode compute (kept from your previous)
+ * Fast mode compute
+ * - bidder trick points (0..162 raw)
+ * - announces A/B (non-belote)
+ * - belote team adds 20 to that team
+ * - capot: winner gets 250 + all announces + belote + bid
+ * - coinche: winner gets 160 + mult*bid + announces ; belote remains with declaring team
+ * - normal:
+ *    - success: bidder gets rounded tricks + bidder announces + bid (+ belote if theirs)
+ *              opp gets rounded opp tricks + opp announces (+ belote if theirs)
+ *    - fail: bidder gets 0 (keeps belote if theirs), opp gets 160 + bid + all announces (+ their belote if theirs)
  */
 function computeFastCoincheScore({
   bidder, // "A"|"B"
@@ -161,25 +195,51 @@ function parseHashRoute() {
   return { path, query };
 }
 
+function fmtMMSS(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+function SuitIcon({ suit }) {
+  const map = {
+    H: { ch: "♥", color: "#fb7185", label: "Hearts" },
+    D: { ch: "♦", color: "#fb7185", label: "Diamonds" },
+    C: { ch: "♣", color: "#34d399", label: "Clubs" },
+    S: { ch: "♠", color: "#60a5fa", label: "Spades" },
+  };
+  const s = map[suit] || map.S;
+  return (
+    <span title={s.label} style={{ fontWeight: 1000, color: s.color }}>
+      {s.ch}
+    </span>
+  );
+}
+
 /** ===== Styles ===== */
 const styles = {
   page: {
     minHeight: "100vh",
     width: "100vw",
-    boxSizing: "border-box",
+    margin: 0,
     background:
       "radial-gradient(1200px 600px at 10% 10%, rgba(99,102,241,0.25), transparent 60%), radial-gradient(1200px 600px at 90% 10%, rgba(16,185,129,0.18), transparent 55%), radial-gradient(1200px 600px at 50% 90%, rgba(244,63,94,0.12), transparent 60%), linear-gradient(180deg, #0b1220 0%, #050814 100%)",
     color: "#e5e7eb",
-    padding: 8,
+    padding: 16,
+    boxSizing: "border-box",
   },
+
+  // Full width container (no narrow max width)
   container: {
     width: "100%",
     maxWidth: "100%",
     margin: "0 auto",
     display: "flex",
     flexDirection: "column",
-    gap: 16,
+    gap: 14,
   },
+
   topbar: {
     display: "flex",
     justifyContent: "space-between",
@@ -190,6 +250,12 @@ const styles = {
   title: { margin: 0, fontSize: 28, fontWeight: 950, letterSpacing: "-0.02em" },
   subtitle: { color: "#94a3b8", marginTop: 6, fontSize: 13 },
   pillRow: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
+  pill: {
+    border: "1px solid rgba(148,163,184,0.20)",
+    background: "rgba(2,6,23,0.55)",
+    padding: "10px 12px",
+    borderRadius: 16,
+  },
   section: {
     background: "rgba(2,6,23,0.55)",
     border: "1px solid rgba(148,163,184,0.18)",
@@ -246,55 +312,43 @@ const styles = {
   },
   disabled: { opacity: 0.55, cursor: "not-allowed" },
 
-  // Black text inputs/selects
   input: (w = 240) => ({
     width: typeof w === "number" ? `${w}px` : w,
     padding: "10px 12px",
     borderRadius: 14,
     border: "1px solid rgba(148,163,184,0.22)",
-    background: "#ffffff",
-    color: "#000000",
-    fontWeight: 600,
-    outline: "none",
-    boxSizing: "border-box",
-    minWidth: 0,
-    display: "block",
-  }),
-  select: (w = 180) => ({
-    width: typeof w === "number" ? `${w}px` : w,
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(148,163,184,0.22)",
-    background: "#ffffff",
-    color: "#000000",
-    fontWeight: 600,
+    background: "rgba(2,6,23,0.35)",
+    color: "#e5e7eb",
     outline: "none",
     boxSizing: "border-box",
     minWidth: 0,
     display: "block",
   }),
 
-  grid2: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(450px, 1fr))",
-    gap: 16,
-  },
-  grid3: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(350px, 1fr))",
-    gap: 16,
-  },
-  grid4: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-    gap: 16,
-  },
+  // Dropdowns: black text for readability
+  select: (w = 180) => ({
+    width: typeof w === "number" ? `${w}px` : w,
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(148,163,184,0.22)",
+    background: "rgba(255,255,255,0.92)",
+    color: "#000",
+    outline: "none",
+    boxSizing: "border-box",
+    minWidth: 0,
+    display: "block",
+  }),
+
+  grid2: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 },
+  grid3: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 },
+  grid4: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12 },
   card: {
     background: "rgba(2,6,23,0.35)",
     border: "1px solid rgba(148,163,184,0.18)",
     borderRadius: 18,
     padding: 12,
   },
+
   row: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
 
   progressWrap: {
@@ -333,6 +387,7 @@ const styles = {
     alignItems: "center",
     flexWrap: "wrap",
   },
+
   tag: {
     display: "inline-flex",
     alignItems: "center",
@@ -345,111 +400,67 @@ const styles = {
     fontSize: 12,
     fontWeight: 800,
   },
+
+  bigTotal: {
+    fontSize: 44,
+    fontWeight: 1000,
+    letterSpacing: "-0.03em",
+    lineHeight: 1,
+  },
+
+  glowLeader: {
+    boxShadow: "0 0 24px rgba(34,197,94,0.35), 0 0 64px rgba(34,197,94,0.18)",
+    borderColor: "rgba(34,197,94,0.45)",
+  },
 };
 
-function GlobalAnimStyles() {
+// Small inline keyframes (so you don’t need a CSS file)
+function GlobalKeyframes() {
   return (
-    <style>{`
+    <style>
+      {`
       @keyframes scorePop {
-        0%   { transform: scale(1); }
-        35%  { transform: scale(1.18); }
-        100% { transform: scale(1); }
+        0% { transform: scale(1); filter: brightness(1); }
+        35% { transform: scale(1.08); filter: brightness(1.15); }
+        100% { transform: scale(1); filter: brightness(1); }
       }
-    `}</style>
+      `}
+    </style>
   );
 }
 
-function SuitIcon({ suit }) {
-  const map = {
-    H: { ch: "♥", color: "#fb7185", label: "Hearts" },
-    D: { ch: "♦", color: "#fb7185", label: "Diamonds" },
-    C: { ch: "♣", color: "#34d399", label: "Clubs" },
-    S: { ch: "♠", color: "#60a5fa", label: "Spades" },
-  };
-  const s = map[suit] || map.S;
-  return (
-    <span title={s.label} style={{ fontWeight: 1000, color: s.color }}>
-      {s.ch}
-    </span>
-  );
-}
-
-/** ===== Stats helpers ===== */
-function matchLabel(match, teamById) {
-  const ta = teamById.get(match.teamAId)?.name ?? "Team A";
-  const tb = teamById.get(match.teamBId)?.name ?? "Team B";
-  return `${ta} vs ${tb}`;
-}
-
-function matchStoryStats(match) {
-  const hands = match.hands || [];
-  let a = 0;
-  let b = 0;
-
-  let maxLeadA = 0;
-  let maxLeadB = 0;
-
-  let leadChanges = 0;
-  let lastLeader = 0; // 1 A, -1 B, 0 tie
-
-  const diffs = [0];
-  let momentum2Swing = 0;
-
-  let perfectDefenseA = 0;
-  let perfectDefenseB = 0;
-
-  hands.forEach((h) => {
-    const sA = Number(h.scoreA) || 0;
-    const sB = Number(h.scoreB) || 0;
-
-    a += sA;
-    b += sB;
-
-    if (sA > 0 && sB === 0) perfectDefenseA += 1;
-    if (sB > 0 && sA === 0) perfectDefenseB += 1;
-
-    const diff = a - b;
-    diffs.push(diff);
-
-    maxLeadA = Math.max(maxLeadA, diff);
-    maxLeadB = Math.max(maxLeadB, -diff);
-
-    const leaderNow = diff === 0 ? 0 : diff > 0 ? 1 : -1;
-    if (leaderNow !== 0 && lastLeader !== 0 && leaderNow !== lastLeader) leadChanges += 1;
-    if (leaderNow !== 0) lastLeader = leaderNow;
-
-    if (diffs.length >= 3) {
-      const prev2 = diffs[diffs.length - 3];
-      const swing2 = Math.abs(diff - prev2);
-      if (swing2 > momentum2Swing) momentum2Swing = swing2;
-    }
-  });
-
-  const finalDiff = Math.abs((match.totalA || 0) - (match.totalB || 0));
-
-  let comebackDeficit = 0;
-  if (match.winnerId) {
-    const winnerIsA = match.winnerId === match.teamAId;
-    comebackDeficit = winnerIsA ? maxLeadB : maxLeadA;
-  }
-
-  let clutchMinDiff = null;
-  if (hands.length > 0) {
-    const startIdx = Math.max(0, diffs.length - 1 - 3);
-    for (let i = startIdx; i < diffs.length; i++) {
-      const d = Math.abs(diffs[i]);
-      clutchMinDiff = clutchMinDiff === null ? d : Math.min(clutchMinDiff, d);
-    }
-  }
-
+function defaultFastDraft() {
   return {
-    finalDiff,
-    comebackDeficit,
-    leadChanges,
-    momentum2Swing,
-    clutchMinDiff: clutchMinDiff ?? 0,
-    perfectDefenseA,
-    perfectDefenseB,
+    bidder: "A",
+    bid: "",
+    suit: "S",
+    coincheLevel: "NONE",
+    capot: false,
+    bidderTrickPoints: "",
+    announceA: "0",
+    announceB: "0",
+    beloteTeam: "NONE",
+  };
+}
+
+function makeEmptyMatch({ tableId, tableName, teamAId, teamBId }) {
+  const code = shortCode();
+  return {
+    id: uid("match"),
+    code,
+    tableId,
+    label: tableName ? `${tableName}` : `Table`,
+    teamAId: teamAId || "",
+    teamBId: teamBId || "",
+    hands: [],
+    totalA: 0,
+    totalB: 0,
+    winnerId: null,
+    completed: false,
+    fastDraft: defaultFastDraft(),
+    editingHandIdx: null,
+    // for comeback stat
+    timelineDiffs: [], // array of (totalA-totalB) after each hand
   };
 }
 
@@ -458,47 +469,184 @@ export default function App() {
   const [route, setRoute] = useState(() => parseHashRoute());
   const [loaded, setLoaded] = useState(false);
 
-  const [eventName, setEventName] = useState("Coinche Scorekeeper");
-
+  const [tournamentName, setTournamentName] = useState("Coinche Scorekeeper");
   const [players, setPlayers] = useState([]); // {id,name}
-  const [teams, setTeams] = useState([]); // {id,name,playerIds[]}
-  const [matches, setMatches] = useState([]); // {id,code,table,label,teamAId,teamBId,hands,totalA,totalB,winnerId,completed,fastDraft,editingHandIdx}
+  const [teams, setTeams] = useState([]); // {id,name,playerIds[], locked:boolean}
+  const [avoidSameTeams, setAvoidSameTeams] = useState(true);
+  const [pairHistory, setPairHistory] = useState([]); // ["p1|p2", ...]
 
+  const [tables, setTables] = useState([]); // {id,name}
+  const [matches, setMatches] = useState([]); // one match per table
+
+  // UI helpers
   const [newPlayerName, setNewPlayerName] = useState("");
-  const [newTeamName, setNewTeamName] = useState("");
-  const [newMatchTable, setNewMatchTable] = useState("1");
-  const [newMatchTeamA, setNewMatchTeamA] = useState("");
-  const [newMatchTeamB, setNewMatchTeamB] = useState("");
+  const [newTableName, setNewTableName] = useState("");
+  const [teamCount, setTeamCount] = useState(8);
+  const playerInputRef = useRef(null);
 
-  const inputRef = useRef(null);
+  // Device id for backups
+  const deviceId = useMemo(() => {
+    let id = localStorage.getItem(DEVICE_ID_KEY);
+    if (!id) {
+      id = `dev_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+      localStorage.setItem(DEVICE_ID_KEY, id);
+    }
+    return id;
+  }, []);
 
+  // Route listener
   useEffect(() => {
     const onHash = () => setRoute(parseHashRoute());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  function defaultFastDraft() {
-    return {
-      bidder: "A",
-      bid: "",
-      suit: "S",
-      coincheLevel: "NONE",
-      capot: false,
-      bidderTrickPoints: "",
-      announceA: "0",
-      announceB: "0",
-      beloteTeam: "NONE",
-    };
+  // Load
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) {
+        const d = JSON.parse(raw);
+        setTournamentName(d.tournamentName ?? "Coinche Scorekeeper");
+        setPlayers(d.players ?? []);
+        setTeams(d.teams ?? []);
+        setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
+        setPairHistory(d.pairHistory ?? []);
+        setTables(d.tables ?? []);
+        setMatches(d.matches ?? []);
+        setTeamCount(Number.isFinite(d.teamCount) ? d.teamCount : 8);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  // Persist
+  useEffect(() => {
+    if (!loaded) return;
+    localStorage.setItem(
+      LS_KEY,
+      JSON.stringify({
+        tournamentName,
+        players,
+        teams,
+        avoidSameTeams,
+        pairHistory,
+        tables,
+        matches,
+        teamCount,
+      })
+    );
+  }, [loaded, tournamentName, players, teams, avoidSameTeams, pairHistory, tables, matches, teamCount]);
+
+  // Maps
+  const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
+  const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
+
+  const teamNumberById = useMemo(() => {
+    const m = new Map();
+    teams.forEach((t, i) => m.set(t.id, i + 1));
+    return m;
+  }, [teams]);
+
+  const usedPlayerIds = useMemo(() => {
+    const s = new Set();
+    teams.forEach((t) => (t.playerIds || []).forEach((pid) => s.add(pid)));
+    return s;
+  }, [teams]);
+
+  /** ===== Backup queue to Google Sheets ===== */
+  function enqueueBackup(payload) {
+    try {
+      const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+      const q = raw ? JSON.parse(raw) : [];
+      q.push(payload);
+      localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(q));
+    } catch {
+      // ignore
+    }
   }
 
+  async function flushBackupQueue() {
+    let q = [];
+    try {
+      const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+      q = raw ? JSON.parse(raw) : [];
+    } catch {
+      q = [];
+    }
+    if (!q.length) return;
+
+    const keep = [];
+    for (const payload of q) {
+      try {
+        const res = await fetch(GSHEET_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) keep.push(payload);
+      } catch {
+        keep.push(payload);
+      }
+    }
+    localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(keep));
+  }
+
+  // Flush periodically
+  useEffect(() => {
+    const id = setInterval(() => {
+      flushBackupQueue();
+    }, 15000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function recordHandBackup({ match, hand, teamAName, teamBName }) {
+    const d = hand.draftSnapshot || {};
+    const payload = {
+      secret: GSHEET_SECRET || undefined,
+      timestamp: new Date().toISOString(),
+      tournamentName,
+      matchCode: match.code,
+      matchLabel: match.label,
+      teamA: teamAName || "",
+      teamB: teamBName || "",
+      handIdx: hand.idx,
+      scoreA: hand.scoreA,
+      scoreB: hand.scoreB,
+      bidder: d.bidder,
+      bid: d.bid,
+      suit: d.suit,
+      coincheLevel: d.coincheLevel,
+      capot: !!d.capot,
+      bidderTrickPoints: d.bidderTrickPoints,
+      announceA: d.announceA,
+      announceB: d.announceB,
+      beloteTeam: d.beloteTeam,
+      bidderSucceeded: !!hand.bidderSucceeded,
+      totalA: match.totalA,
+      totalB: match.totalB,
+      deviceId,
+    };
+
+    enqueueBackup(payload);
+    // fire-and-forget flush attempt (queue remains if it fails)
+    flushBackupQueue();
+  }
+
+  /** ===== Helpers ===== */
   function recomputeMatch(m) {
     const hands = m.hands || [];
     let totalA = 0;
     let totalB = 0;
+    const diffs = [];
     for (const h of hands) {
       totalA += Number(h.scoreA) || 0;
       totalB += Number(h.scoreB) || 0;
+      diffs.push(totalA - totalB);
     }
 
     const completed = totalA >= TARGET_SCORE || totalB >= TARGET_SCORE;
@@ -508,85 +656,67 @@ export default function App() {
       winnerId = totalA > totalB ? m.teamAId : m.teamBId;
     }
 
-    return { ...m, totalA, totalB, completed, winnerId };
+    return {
+      ...m,
+      totalA,
+      totalB,
+      completed,
+      winnerId,
+      timelineDiffs: diffs,
+    };
   }
 
-  // Load localStorage
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) {
-        const d = JSON.parse(raw);
-        setEventName(d.eventName ?? "Coinche Scorekeeper");
-        setPlayers(d.players ?? []);
-        setTeams(d.teams ?? []);
-        setMatches(d.matches ?? []);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
-
-  // Persist localStorage
-  useEffect(() => {
-    if (!loaded) return;
-    localStorage.setItem(
-      LS_KEY,
-      JSON.stringify({
-        eventName,
-        players,
-        teams,
-        matches,
-      })
-    );
-  }, [loaded, eventName, players, teams, matches]);
-
-  const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
-  const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
-
-  /** ===== Players ===== */
   function addPlayer() {
     const name = newPlayerName.trim();
     if (!name) return;
     setPlayers((prev) => [...prev, { id: uid("p"), name }]);
     setNewPlayerName("");
-    setTimeout(() => inputRef.current?.focus?.(), 0);
+    setTimeout(() => playerInputRef.current?.focus?.(), 0);
   }
   function removePlayer(id) {
     setPlayers((prev) => prev.filter((p) => p.id !== id));
-    // also remove from teams
+    // if they were used, keep teams but clear references
     setTeams((prev) =>
       prev.map((t) => ({ ...t, playerIds: (t.playerIds || []).filter((pid) => pid !== id) }))
     );
   }
 
-  /** ===== Teams ===== */
-  function addTeam() {
-    const name = newTeamName.trim();
-    if (!name) return;
-    setTeams((prev) => [...prev, { id: uid("t"), name, playerIds: [] }]);
-    setNewTeamName("");
-  }
-  function removeTeam(teamId) {
-    setTeams((prev) => prev.filter((t) => t.id !== teamId));
-    // remove/clear matches referencing this team
+  function ensureTeamSkeleton(count) {
+    const n = clamp(count || 0, 2, 64);
+    setTeams((prev) => {
+      const next = [...prev];
+      // trim
+      if (next.length > n) next.length = n;
+      // add
+      while (next.length < n) {
+        next.push({ id: uid("t"), name: `Team ${next.length + 1}`, playerIds: [], locked: false });
+      }
+      // rename defaults if empty
+      return next.map((t, idx) => ({
+        ...t,
+        name: t.name?.trim() ? t.name : `Team ${idx + 1}`,
+      }));
+    });
+    // matches might reference removed teams; sanitize
     setMatches((prev) =>
-      prev.map((m) => {
-        if (m.teamAId === teamId || m.teamBId === teamId) {
-          return recomputeMatch({
-            ...m,
-            teamAId: m.teamAId === teamId ? "" : m.teamAId,
-            teamBId: m.teamBId === teamId ? "" : m.teamBId,
-            hands: [],
-            fastDraft: defaultFastDraft(),
-            editingHandIdx: null,
-          });
-        }
-        return m;
-      })
+      prev.map((m) => ({
+        ...m,
+        teamAId: "",
+        teamBId: "",
+        hands: [],
+        totalA: 0,
+        totalB: 0,
+        winnerId: null,
+        completed: false,
+        fastDraft: defaultFastDraft(),
+        editingHandIdx: null,
+        timelineDiffs: [],
+      }))
     );
+  }
+
+  function toggleTeamLock(teamId, locked) {
+    setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, locked: !!locked } : t)));
   }
   function renameTeam(teamId, name) {
     setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, name } : t)));
@@ -599,51 +729,134 @@ export default function App() {
         while (ids.length < 2) ids.push("");
         ids[slotIdx] = playerIdOrEmpty;
 
-        if (slotIdx === 0 && ids[0] && ids[0] === ids[1]) ids[1] = "";
-        if (slotIdx === 1 && ids[1] && ids[0] === ids[1]) ids[0] = "";
-
+        // no duplicates within team
+        if (ids[0] && ids[0] === ids[1]) {
+          if (slotIdx === 0) ids[1] = "";
+          else ids[0] = "";
+        }
         return { ...t, playerIds: ids.filter(Boolean) };
       })
     );
   }
 
-  const usedPlayerIds = useMemo(() => {
-    const s = new Set();
-    teams.forEach((t) => (t.playerIds || []).forEach((pid) => s.add(pid)));
-    return s;
-  }, [teams]);
+  function buildRandomTeams() {
+    if (players.length < 2) return;
 
-  /** ===== Matches (Tables) ===== */
-  function addMatch() {
-    if (!newMatchTeamA || !newMatchTeamB) return;
-    if (newMatchTeamA === newMatchTeamB) return;
+    const currentTeams = teams.length ? teams : (() => {
+      const n = clamp(teamCount || 8, 2, 64);
+      return Array.from({ length: n }, (_, i) => ({
+        id: uid("t"),
+        name: `Team ${i + 1}`,
+        playerIds: [],
+        locked: false,
+      }));
+    })();
 
-    const tableNum = safeInt(newMatchTable) ?? 1;
+    // locked playerIds
+    const lockedPlayers = new Set();
+    currentTeams.forEach((t) => {
+      if (!t.locked) return;
+      (t.playerIds || []).forEach((pid) => lockedPlayers.add(pid));
+    });
 
-    const label = `Table ${tableNum}`;
-    const m = {
-      id: uid("match"),
-      code: shortCode(),
-      table: tableNum,
-      label,
-      teamAId: newMatchTeamA,
-      teamBId: newMatchTeamB,
-      hands: [],
-      totalA: 0,
-      totalB: 0,
-      winnerId: null,
-      completed: false,
-      fastDraft: defaultFastDraft(),
-      editingHandIdx: null,
-    };
-    setMatches((prev) => [...prev, recomputeMatch(m)].sort((a, b) => (a.table || 0) - (b.table || 0)));
+    const available = players.map((p) => p.id).filter((pid) => !lockedPlayers.has(pid));
+    const tries = avoidSameTeams ? 40 : 1;
+    const historySet = new Set(pairHistory);
+    let best = null;
+
+    for (let k = 0; k < tries; k++) {
+      const shuffled = shuffleArray(available);
+      const pairs = [];
+      for (let i = 0; i < shuffled.length; i += 2) {
+        const a = shuffled[i];
+        const b = shuffled[i + 1] || null;
+        pairs.push([a, b]);
+      }
+      let repeats = 0;
+      for (const [a, b] of pairs) {
+        if (!a || !b) continue;
+        const key = [a, b].sort().join("|");
+        if (historySet.has(key)) repeats++;
+      }
+      if (!best || repeats < best.repeats) {
+        best = { pairs, repeats };
+        if (repeats === 0) break;
+      }
+    }
+
+    const finalPairs = best?.pairs ?? [];
+    const nextTeams = currentTeams.map((t) => ({ ...t, playerIds: [...(t.playerIds || [])] }));
+
+    let pairIdx = 0;
+    for (let i = 0; i < nextTeams.length; i++) {
+      if (nextTeams[i].locked) continue;
+      const pair = finalPairs[pairIdx] || [null, null];
+      pairIdx++;
+      nextTeams[i].playerIds = [pair[0], pair[1]].filter(Boolean);
+    }
+
+    const namedTeams = nextTeams.map((t, i) => {
+      const pnames = (t.playerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean);
+      const base = `Team ${i + 1}`;
+      const label = pnames.length ? `${base} — ${pnames.join(" / ")}` : base;
+      return { ...t, name: t.name?.startsWith("Team ") ? label : t.name || label };
+    });
+
+    const newPairs = [];
+    for (const t of namedTeams) {
+      if ((t.playerIds || []).length === 2) newPairs.push([...t.playerIds].sort().join("|"));
+    }
+
+    setTeams(namedTeams);
+    setPairHistory((prev) => Array.from(new Set([...prev, ...newPairs])));
+    // matches unchanged; manual match assignment still valid
   }
 
-  function removeMatch(matchId) {
-    setMatches((prev) => prev.filter((m) => m.id !== matchId));
+  /** ===== Tables & Matches ===== */
+  function addTable() {
+    const name = (newTableName || "").trim();
+    if (!name) return;
+    const t = { id: uid("table"), name };
+    setTables((prev) => [...prev, t]);
+    setMatches((prev) => [...prev, makeEmptyMatch({ tableId: t.id, tableName: name })]);
+    setNewTableName("");
   }
 
-  function updateMatchDraft(matchId, patch) {
+  function removeTable(tableId) {
+    setTables((prev) => prev.filter((t) => t.id !== tableId));
+    setMatches((prev) => prev.filter((m) => m.tableId !== tableId));
+  }
+
+  function renameTable(tableId, name) {
+    setTables((prev) => prev.map((t) => (t.id === tableId ? { ...t, name } : t)));
+    setMatches((prev) =>
+      prev.map((m) =>
+        m.tableId === tableId ? { ...m, label: name || m.label } : m
+      )
+    );
+  }
+
+  function setMatchTeams(matchId, key, value) {
+    setMatches((prev) =>
+      prev.map((m) => {
+        if (m.id !== matchId) return m;
+        const next = { ...m, [key]: value };
+        // if teams change, clear hands to prevent mixing
+        return recomputeMatch({
+          ...next,
+          hands: [],
+          fastDraft: defaultFastDraft(),
+          editingHandIdx: null,
+        });
+      })
+    );
+  }
+
+  function regenerateMatchCode(matchId) {
+    setMatches((prev) => prev.map((m) => (m.id === matchId ? { ...m, code: shortCode() } : m)));
+  }
+
+  function updateDraft(matchId, patch) {
     setMatches((prev) =>
       prev.map((m) => {
         if (m.id !== matchId) return m;
@@ -667,7 +880,7 @@ export default function App() {
             bid: String(d.bid ?? ""),
             suit: d.suit ?? "S",
             coincheLevel: d.coincheLevel ?? "NONE",
-            capot: Boolean(d.capot),
+            capot: !!d.capot,
             bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
             announceA: String(d.announceA ?? "0"),
             announceB: String(d.announceB ?? "0"),
@@ -680,95 +893,9 @@ export default function App() {
 
   function cancelEditHand(matchId) {
     setMatches((prev) =>
-      prev.map((m) => (m.id === matchId ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() } : m))
-    );
-  }
-
-  function addOrSaveHand(matchId) {
-    setMatches((prev) =>
-      prev.map((m) => {
-        if (m.id !== matchId) return m;
-
-        const canPlay = !!m.teamAId && !!m.teamBId;
-        if (!canPlay) return m;
-
-        const d = m.fastDraft || defaultFastDraft();
-        const bidVal = safeInt(d.bid);
-        const trickVal = safeInt(d.bidderTrickPoints);
-        if (bidVal === null || trickVal === null) return m;
-
-        const res = computeFastCoincheScore({
-          bidder: d.bidder,
-          bid: bidVal,
-          suit: d.suit || "S",
-          coincheLevel: d.coincheLevel || "NONE",
-          capot: Boolean(d.capot),
-          bidderTrickPoints: trickVal,
-          announceA: safeInt(d.announceA) ?? 0,
-          announceB: safeInt(d.announceB) ?? 0,
-          beloteTeam: d.beloteTeam || "NONE",
-        });
-
-        // If editing: replace that hand
-        if (m.editingHandIdx) {
-          const nextHands = (m.hands || []).map((h) => {
-            if (h.idx !== m.editingHandIdx) return h;
-            return {
-              ...h,
-              draftSnapshot: {
-                bidder: d.bidder,
-                bid: bidVal,
-                suit: d.suit || "S",
-                coincheLevel: d.coincheLevel || "NONE",
-                capot: Boolean(d.capot),
-                bidderTrickPoints: trickVal,
-                announceA: safeInt(d.announceA) ?? 0,
-                announceB: safeInt(d.announceB) ?? 0,
-                beloteTeam: d.beloteTeam || "NONE",
-              },
-              scoreA: res.scoreA,
-              scoreB: res.scoreB,
-              bidderSucceeded: res.bidderSucceeded,
-            };
-          });
-
-          return recomputeMatch({
-            ...m,
-            hands: nextHands,
-            fastDraft: defaultFastDraft(),
-            editingHandIdx: null,
-          });
-        }
-
-        // Normal add: don't add after match ended
-        const current = recomputeMatch(m);
-        if (current.completed) return current;
-
-        const nextHand = {
-          idx: (m.hands?.length || 0) + 1,
-          createdAt: Date.now(),
-          draftSnapshot: {
-            bidder: d.bidder,
-            bid: bidVal,
-            suit: d.suit || "S",
-            coincheLevel: d.coincheLevel || "NONE",
-            capot: Boolean(d.capot),
-            bidderTrickPoints: trickVal,
-            announceA: safeInt(d.announceA) ?? 0,
-            announceB: safeInt(d.announceB) ?? 0,
-            beloteTeam: d.beloteTeam || "NONE",
-          },
-          scoreA: res.scoreA,
-          scoreB: res.scoreB,
-          bidderSucceeded: res.bidderSucceeded,
-        };
-
-        return recomputeMatch({
-          ...m,
-          hands: [...(m.hands || []), nextHand],
-          fastDraft: defaultFastDraft(),
-        });
-      })
+      prev.map((m) =>
+        m.id === matchId ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() } : m
+      )
     );
   }
 
@@ -782,234 +909,151 @@ export default function App() {
     );
   }
 
-  /** ===== Links ===== */
-  const publicLink = useMemo(() => `${window.location.origin}${window.location.pathname}#/public`, []);
-  const tableLinks = useMemo(() => {
-    return matches.map((m) => ({
-      label: `${m.label} • ${teamById.get(m.teamAId)?.name ?? "TBD"} vs ${teamById.get(m.teamBId)?.name ?? "TBD"}`,
-      code: m.code,
-      href: `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`,
-    }));
-  }, [matches, teamById]);
+  function addOrSaveHand(matchId) {
+    // We also need to send a backup payload: we’ll build it from the updated match+hand we compute inside.
+    let backupToSend = null;
 
-  /** ===== Table lookup ===== */
-  const { path, query } = route;
-  const tableMatch = useMemo(() => {
-    const code = (query.code || "").toUpperCase();
-    if (!code) return null;
-    const m = matches.find((x) => (x.code || "").toUpperCase() === code);
-    return m || null;
-  }, [query.code, matches]);
+    setMatches((prev) =>
+      prev.map((m) => {
+        if (m.id !== matchId) return m;
 
-  /** ===== Scoreboard rows (across all matches) ===== */
-  const scoreboardRows = useMemo(() => {
-    const rows = teams.map((t) => ({
-      teamId: t.id,
-      name: t.name,
-      wins: 0,
-      losses: 0,
-      gamesPlayed: 0,
-      pointsFor: 0,
-      pointsAgainst: 0,
-      completedGames: 0,
-    }));
+        // Must have teams set
+        if (!m.teamAId || !m.teamBId) return m;
 
-    const byId = new Map(rows.map((r) => [r.teamId, r]));
+        const d = m.fastDraft || defaultFastDraft();
+        const bidVal = safeInt(d.bid);
+        const trickVal = safeInt(d.bidderTrickPoints);
+        if (bidVal === null || trickVal === null) return m;
 
-    matches.forEach((m) => {
-      if (!m.teamAId || !m.teamBId) return;
-      const a = byId.get(m.teamAId);
-      const b = byId.get(m.teamBId);
-      if (!a || !b) return;
+        const res = computeFastCoincheScore({
+          bidder: d.bidder,
+          bid: bidVal,
+          suit: d.suit || "S",
+          coincheLevel: d.coincheLevel || "NONE",
+          capot: !!d.capot,
+          bidderTrickPoints: trickVal,
+          announceA: safeInt(d.announceA) ?? 0,
+          announceB: safeInt(d.announceB) ?? 0,
+          beloteTeam: d.beloteTeam || "NONE",
+        });
 
-      a.pointsFor += Number(m.totalA) || 0;
-      a.pointsAgainst += Number(m.totalB) || 0;
-      b.pointsFor += Number(m.totalB) || 0;
-      b.pointsAgainst += Number(m.totalA) || 0;
+        // editing
+        if (m.editingHandIdx) {
+          const nextHands = (m.hands || []).map((h) => {
+            if (h.idx !== m.editingHandIdx) return h;
+            return {
+              ...h,
+              draftSnapshot: {
+                bidder: d.bidder,
+                bid: bidVal,
+                suit: d.suit || "S",
+                coincheLevel: d.coincheLevel || "NONE",
+                capot: !!d.capot,
+                bidderTrickPoints: trickVal,
+                announceA: safeInt(d.announceA) ?? 0,
+                announceB: safeInt(d.announceB) ?? 0,
+                beloteTeam: d.beloteTeam || "NONE",
+              },
+              scoreA: res.scoreA,
+              scoreB: res.scoreB,
+              bidderSucceeded: res.bidderSucceeded,
+              updatedAt: Date.now(),
+            };
+          });
 
-      if ((m.hands || []).length > 0) {
-        a.gamesPlayed += 1;
-        b.gamesPlayed += 1;
-      }
+          const nextMatch = recomputeMatch({
+            ...m,
+            hands: nextHands,
+            fastDraft: defaultFastDraft(),
+            editingHandIdx: null,
+          });
 
-      if (m.completed) {
-        a.completedGames += 1;
-        b.completedGames += 1;
+          // backup: store the edited hand row as well (latest snapshot)
+          const edited = nextHands.find((h) => h.idx === m.editingHandIdx);
+          if (edited) {
+            backupToSend = { match: nextMatch, hand: edited };
+          }
 
-        if (m.winnerId === m.teamAId) {
-          a.wins += 1;
-          b.losses += 1;
-        } else if (m.winnerId === m.teamBId) {
-          b.wins += 1;
-          a.losses += 1;
+          return nextMatch;
         }
-      }
-    });
 
-    return [...rows].sort((x, y) => {
-      if (y.wins !== x.wins) return y.wins - x.wins;
-      const xDiff = x.pointsFor - x.pointsAgainst;
-      const yDiff = y.pointsFor - y.pointsAgainst;
-      if (yDiff !== xDiff) return yDiff - xDiff;
-      if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
-      return x.name.localeCompare(y.name);
-    });
-  }, [teams, matches]);
+        // normal add: don't add after match ended
+        const current = recomputeMatch(m);
+        if (current.completed) return current;
 
-  /** ===== Global stats + fun facts ===== */
-  const globalStats = useMemo(() => {
-    const completed = matches.filter((m) => m.completed);
+        const nextHand = {
+          idx: (m.hands?.length || 0) + 1,
+          createdAt: Date.now(),
+          draftSnapshot: {
+            bidder: d.bidder,
+            bid: bidVal,
+            suit: d.suit || "S",
+            coincheLevel: d.coincheLevel || "NONE",
+            capot: !!d.capot,
+            bidderTrickPoints: trickVal,
+            announceA: safeInt(d.announceA) ?? 0,
+            announceB: safeInt(d.announceB) ?? 0,
+            beloteTeam: d.beloteTeam || "NONE",
+          },
+          scoreA: res.scoreA,
+          scoreB: res.scoreB,
+          bidderSucceeded: res.bidderSucceeded,
+        };
 
-    const totalHands = completed.reduce((acc, m) => acc + (m.hands?.length || 0), 0);
+        const nextMatch = recomputeMatch({
+          ...m,
+          hands: [...(m.hands || []), nextHand],
+          fastDraft: defaultFastDraft(),
+        });
 
-    // biggest hand swing
-    let biggestHand = { pts: 0, label: "—" };
-    for (const m of completed) {
-      for (const h of m.hands || []) {
-        const swing = Math.abs((h.scoreA || 0) - (h.scoreB || 0));
-        if (swing > biggestHand.pts) {
-          biggestHand = { pts: swing, label: `${matchLabel(m, teamById)} (Hand ${h.idx})` };
-        }
-      }
-    }
+        backupToSend = { match: nextMatch, hand: nextHand };
+        return nextMatch;
+      })
+    );
 
-    // fastest match (fewest hands)
-    let fastest = null;
-    for (const m of completed) {
-      const hands = (m.hands || []).length;
-      if (!hands) continue;
-      if (!fastest || hands < fastest.hands) fastest = { match: m, hands };
-    }
+    // Send backup (outside state setter)
+    // NOTE: we used closure variable backupToSend which is set synchronously above.
+    setTimeout(() => {
+      if (!backupToSend) return;
+      const { match, hand } = backupToSend;
+      const teamAName = teamById.get(match.teamAId)?.name ?? "";
+      const teamBName = teamById.get(match.teamBId)?.name ?? "";
+      recordHandBackup({ match, hand, teamAName, teamBName });
+    }, 0);
+  }
 
-    // closest match (smallest abs diff)
-    let closest = null;
-    for (const m of completed) {
-      const diff = Math.abs((m.totalA || 0) - (m.totalB || 0));
-      if (diff === 0) continue;
-      if (!closest || diff < closest.diff) closest = { match: m, diff };
-    }
-
-    // Funny stats (coinche/capot/belote)
-    const teamFun = new Map(); // teamId -> {coinches, surcoinches, capots, belotes}
-    const bump = (tid, key, n = 1) => {
-      if (!tid) return;
-      const cur = teamFun.get(tid) || { coinches: 0, surcoinches: 0, capots: 0, belotes: 0 };
-      cur[key] = (cur[key] || 0) + n;
-      teamFun.set(tid, cur);
-    };
-
-    for (const m of completed) {
-      for (const h of m.hands || []) {
-        const d = h.draftSnapshot || {};
-        if (d.coincheLevel === "COINCHE") bump(d.bidder === "A" ? m.teamAId : m.teamBId, "coinches");
-        if (d.coincheLevel === "SURCOINCHE") bump(d.bidder === "A" ? m.teamAId : m.teamBId, "surcoinches");
-        if (d.capot) bump(d.bidder === "A" ? m.teamAId : m.teamBId, "capots");
-        if (d.beloteTeam === "A") bump(m.teamAId, "belotes");
-        if (d.beloteTeam === "B") bump(m.teamBId, "belotes");
-      }
-    }
-
-    const funLeaders = (key) => {
-      let best = null;
-      for (const [tid, obj] of teamFun.entries()) {
-        const v = obj[key] || 0;
-        if (!best || v > best.v) best = { tid, v };
-      }
-      if (!best || best.v === 0) return { name: "—", v: 0 };
-      return { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
-    };
-
-    const coincheKing = funLeaders("coinches");
-    const surcoincheBoss = funLeaders("surcoinches");
-    const capotHero = funLeaders("capots");
-    const beloteMagnet = funLeaders("belotes");
-
-    // Fun facts
-    let biggestBlowout = { diff: 0, label: "—" };
-    let bestComeback = { deficit: 0, label: "—" };
-    let mostBackAndForth = { changes: 0, label: "—" };
-
-    let clutchFinish = { diff: 0, label: "—" }; // smallest is best (we store min)
-    let momentumMonster = { swing: 0, label: "—" };
-
-    const pdByTeam = new Map();
-    const bumpPD = (teamId, n) => {
-      if (!teamId || !n) return;
-      pdByTeam.set(teamId, (pdByTeam.get(teamId) || 0) + n);
-    };
-
-    for (const m of completed) {
-      const s = matchStoryStats(m);
-      const label = matchLabel(m, teamById);
-
-      if (s.finalDiff > biggestBlowout.diff) biggestBlowout = { diff: s.finalDiff, label };
-      if (s.comebackDeficit > bestComeback.deficit) bestComeback = { deficit: s.comebackDeficit, label };
-      if (s.leadChanges > mostBackAndForth.changes) mostBackAndForth = { changes: s.leadChanges, label };
-
-      // clutch: smallest non-zero is best
-      if (s.clutchMinDiff > 0) {
-        if (clutchFinish.label === "—" || s.clutchMinDiff < clutchFinish.diff) {
-          clutchFinish = { diff: s.clutchMinDiff, label };
-        }
-      }
-
-      if (s.momentum2Swing > momentumMonster.swing) {
-        momentumMonster = { swing: s.momentum2Swing, label };
-      }
-
-      bumpPD(m.teamAId, s.perfectDefenseA);
-      bumpPD(m.teamBId, s.perfectDefenseB);
-    }
-
-    let bestPD = { teamId: null, v: 0 };
-    for (const [teamId, v] of pdByTeam.entries()) {
-      if (v > bestPD.v) bestPD = { teamId, v };
-    }
-    const perfectDefense =
-      bestPD.v > 0
-        ? { name: teamById.get(bestPD.teamId)?.name ?? "—", v: bestPD.v }
-        : { name: "—", v: 0 };
-
-    return {
-      completedGames: completed.length,
-      totalHands,
-      biggestHand,
-      fastest,
-      closest,
-      funny: { coincheKing, surcoincheBoss, capotHero, beloteMagnet },
-      biggestBlowout,
-      bestComeback,
-      mostBackAndForth,
-      clutchFinish,
-      momentumMonster,
-      perfectDefense,
-    };
-  }, [matches, teamById]);
-
-  /** ===== Export CSV ===== */
+  /** ===== Export CSV / JSON ===== */
   function exportCSV() {
     const rows = [];
-    const pushRow = (obj) => rows.push(obj);
+    const push = (obj) => rows.push(obj);
 
-    pushRow({ TYPE: "META", eventName, date: new Date().toISOString() });
+    push({ TYPE: "META", tournamentName, date: new Date().toISOString() });
 
-    teams.forEach((t) => {
+    teams.forEach((t, idx) => {
       const pnames = (t.playerIds || [])
         .map((pid) => playerById.get(pid)?.name)
         .filter(Boolean)
         .join(" / ");
-      pushRow({ TYPE: "TEAM", teamId: t.id, teamName: t.name, players: pnames });
+      push({
+        TYPE: "TEAM",
+        teamNumber: idx + 1,
+        teamId: t.id,
+        teamName: t.name,
+        players: pnames,
+        locked: t.locked ? "YES" : "NO",
+      });
     });
+
+    tables.forEach((tb) => push({ TYPE: "TABLE", tableId: tb.id, tableName: tb.name }));
 
     matches.forEach((m) => {
       const ta = teamById.get(m.teamAId)?.name ?? "";
       const tb = teamById.get(m.teamBId)?.name ?? "";
-      pushRow({
+      push({
         TYPE: "MATCH",
         matchId: m.id,
         code: m.code,
-        table: m.table ?? "",
-        label: m.label,
+        table: m.label,
         teamA: ta,
         teamB: tb,
         totalA: m.totalA ?? 0,
@@ -1020,10 +1064,11 @@ export default function App() {
 
       (m.hands || []).forEach((h) => {
         const d = h.draftSnapshot || {};
-        pushRow({
+        push({
           TYPE: "HAND",
           matchId: m.id,
           code: m.code,
+          table: m.label,
           handIdx: h.idx,
           scoreA: h.scoreA,
           scoreB: h.scoreB,
@@ -1055,14 +1100,225 @@ export default function App() {
     };
 
     const csv = [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n");
-
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "coinche_scorekeeper_export.csv";
+    a.download = "coinche_export.csv";
     a.click();
     URL.revokeObjectURL(a.href);
   }
+
+  function exportJSON() {
+    const blob = new Blob(
+      [
+        JSON.stringify(
+          {
+            tournamentName,
+            players,
+            teams,
+            avoidSameTeams,
+            pairHistory,
+            tables,
+            matches,
+            exportedAt: new Date().toISOString(),
+          },
+          null,
+          2
+        ),
+      ],
+      { type: "application/json;charset=utf-8" }
+    );
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "coinche_backup.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function importJSONFromFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const d = JSON.parse(String(reader.result || "{}"));
+        setTournamentName(d.tournamentName ?? "Coinche Scorekeeper");
+        setPlayers(d.players ?? []);
+        setTeams(d.teams ?? []);
+        setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
+        setPairHistory(d.pairHistory ?? []);
+        setTables(d.tables ?? []);
+        setMatches(d.matches ?? []);
+      } catch {
+        alert("Invalid JSON backup file.");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  /** ===== Links ===== */
+  const publicLink = useMemo(
+    () => `${window.location.origin}${window.location.pathname}#/public`,
+    []
+  );
+  const tableLinks = useMemo(() => {
+    return matches.map((m) => ({
+      label: m.label,
+      code: m.code,
+      href: `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`,
+    }));
+  }, [matches]);
+
+  /** ===== Scoreboard + stats ===== */
+  const scoreboardRows = useMemo(() => {
+    // Aggregate per-team totals across all matches
+    const rows = teams.map((t) => ({
+      teamId: t.id,
+      name: t.name,
+      matchesPlayed: 0,
+      matchesWon: 0,
+      matchesLost: 0,
+      totalPointsFor: 0,
+      totalPointsAgainst: 0,
+      handsPlayed: 0,
+    }));
+
+    const byId = new Map(rows.map((r) => [r.teamId, r]));
+
+    for (const m of matches) {
+      if (!m.teamAId || !m.teamBId) continue;
+
+      const a = byId.get(m.teamAId);
+      const b = byId.get(m.teamBId);
+      if (!a || !b) continue;
+
+      const hands = (m.hands || []).length;
+      a.handsPlayed += hands;
+      b.handsPlayed += hands;
+
+      a.totalPointsFor += Number(m.totalA) || 0;
+      a.totalPointsAgainst += Number(m.totalB) || 0;
+      b.totalPointsFor += Number(m.totalB) || 0;
+      b.totalPointsAgainst += Number(m.totalA) || 0;
+
+      // count match only if at least one hand exists
+      if (hands > 0) {
+        a.matchesPlayed += 1;
+        b.matchesPlayed += 1;
+      }
+
+      if (m.completed && m.winnerId) {
+        if (m.winnerId === m.teamAId) {
+          a.matchesWon += 1;
+          b.matchesLost += 1;
+        } else if (m.winnerId === m.teamBId) {
+          b.matchesWon += 1;
+          a.matchesLost += 1;
+        }
+      }
+    }
+
+    return [...rows].sort((x, y) => {
+      if (y.matchesWon !== x.matchesWon) return y.matchesWon - x.matchesWon;
+      const diffY = (y.totalPointsFor - y.totalPointsAgainst) || 0;
+      const diffX = (x.totalPointsFor - x.totalPointsAgainst) || 0;
+      if (diffY !== diffX) return diffY - diffX;
+      return x.name.localeCompare(y.name);
+    });
+  }, [teams, matches]);
+
+  const funStats = useMemo(() => {
+    const completed = matches.filter((m) => m.completed && m.teamAId && m.teamBId);
+
+    // Biggest blowout: largest final point diff
+    let biggestBlowout = { diff: 0, label: "—" };
+    for (const m of completed) {
+      const diff = Math.abs((m.totalA || 0) - (m.totalB || 0));
+      if (diff > biggestBlowout.diff) {
+        const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+        const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+        biggestBlowout = { diff, label: `${ta} vs ${tb} (${m.label})` };
+      }
+    }
+
+    // Closest match
+    let closest = { diff: Infinity, label: "—" };
+    for (const m of completed) {
+      const diff = Math.abs((m.totalA || 0) - (m.totalB || 0));
+      if (diff > 0 && diff < closest.diff) {
+        const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+        const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+        closest = { diff, label: `${ta} vs ${tb} (${m.label})` };
+      }
+    }
+    if (!Number.isFinite(closest.diff)) closest = { diff: 0, label: "—" };
+
+    // Best comeback: winner had the largest negative (or positive) deficit at any point and still won
+    let bestComeback = { deficit: 0, label: "—" };
+    for (const m of completed) {
+      const diffs = m.timelineDiffs || [];
+      if (!diffs.length) continue;
+
+      const winnerIsA = m.winnerId === m.teamAId;
+      // If A won, comeback is the minimum (most negative) diff during match.
+      // If B won, comeback is the maximum (most positive) diff during match (A was leading).
+      const deficit = winnerIsA ? Math.min(0, ...diffs) : Math.max(0, ...diffs);
+      const comebackSize = Math.abs(deficit);
+
+      if (comebackSize > bestComeback.deficit) {
+        const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+        const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+        bestComeback = { deficit: comebackSize, label: `${ta} vs ${tb} (${m.label})` };
+      }
+    }
+
+    // Funny stats (3 extra fun facts): coinche king, capot hero, belote magnet
+    const teamFun = new Map(); // teamId -> {coinches,surcoinches,capots,belotes}
+    const bump = (tid, key, n = 1) => {
+      if (!tid) return;
+      const cur = teamFun.get(tid) || { coinches: 0, surcoinches: 0, capots: 0, belotes: 0 };
+      cur[key] = (cur[key] || 0) + n;
+      teamFun.set(tid, cur);
+    };
+
+    for (const m of completed) {
+      for (const h of m.hands || []) {
+        const d = h.draftSnapshot || {};
+        const bidderTeamId = d.bidder === "A" ? m.teamAId : m.teamBId;
+        if (d.coincheLevel === "COINCHE") bump(bidderTeamId, "coinches");
+        if (d.coincheLevel === "SURCOINCHE") bump(bidderTeamId, "surcoinches");
+        if (d.capot) bump(bidderTeamId, "capots");
+        if (d.beloteTeam === "A") bump(m.teamAId, "belotes");
+        if (d.beloteTeam === "B") bump(m.teamBId, "belotes");
+      }
+    }
+
+    const leader = (key) => {
+      let best = null;
+      for (const [tid, obj] of teamFun.entries()) {
+        const v = obj[key] || 0;
+        if (!best || v > best.v) best = { tid, v };
+      }
+      if (!best || best.v === 0) return { name: "—", v: 0 };
+      return { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
+    };
+
+    return {
+      biggestBlowout,
+      bestComeback,
+      closest,
+      coincheKing: leader("coinches"),
+      capotHero: leader("capots"),
+      beloteMagnet: leader("belotes"),
+    };
+  }, [matches, teamById]);
+
+  /** ===== Table view match resolve ===== */
+  const { path, query } = route;
+
+  const tableMatch = useMemo(() => {
+    const code = (query.code || "").toUpperCase();
+    if (!code) return null;
+    return matches.find((m) => (m.code || "").toUpperCase() === code) || null;
+  }, [query.code, matches]);
 
   /** ===== Nav pills ===== */
   const NavPills = ({ showAdmin = true }) => (
@@ -1082,10 +1338,11 @@ export default function App() {
   if (path === "/public") {
     return (
       <div style={styles.page}>
+        <GlobalKeyframes />
         <div style={styles.container}>
           <div style={styles.topbar}>
             <div>
-              <h1 style={styles.title}>{eventName}</h1>
+              <h1 style={styles.title}>{tournamentName}</h1>
               <div style={styles.subtitle}>Public scoreboard • Live updates</div>
             </div>
             <NavPills showAdmin={true} />
@@ -1098,68 +1355,33 @@ export default function App() {
 
             <Section title="Fun Facts">
               <div style={styles.grid3}>
-                <StatCard
-                  label="Biggest Blowout"
-                  value={globalStats.biggestBlowout.diff ? `${globalStats.biggestBlowout.diff} pts` : "—"}
-                  sub={globalStats.biggestBlowout.label}
-                />
-                <StatCard
-                  label="Best Comeback"
-                  value={globalStats.bestComeback.deficit ? `${globalStats.bestComeback.deficit} pts` : "—"}
-                  sub={globalStats.bestComeback.label}
-                />
-                <StatCard
-                  label="Most Back-and-Forth"
-                  value={globalStats.mostBackAndForth.changes ? `${globalStats.mostBackAndForth.changes} lead changes` : "—"}
-                  sub={globalStats.mostBackAndForth.label}
-                />
-                <StatCard
-                  label="Clutch Finish (last 3 hands)"
-                  value={globalStats.clutchFinish.label !== "—" ? `${globalStats.clutchFinish.diff} pts` : "—"}
-                  sub={globalStats.clutchFinish.label}
-                />
-                <StatCard
-                  label="Momentum Monster (2 hands)"
-                  value={globalStats.momentumMonster.swing ? `${globalStats.momentumMonster.swing} swing` : "—"}
-                  sub={globalStats.momentumMonster.label}
-                />
-                <StatCard
-                  label="Perfect Defense"
-                  value={globalStats.perfectDefense.name}
-                  sub={globalStats.perfectDefense.v ? `${globalStats.perfectDefense.v} zero-hands forced` : ""}
-                />
+                <StatCard label="Biggest Blowout" value={`${funStats.biggestBlowout.diff} pts`} sub={funStats.biggestBlowout.label} />
+                <StatCard label="Best Comeback" value={`${funStats.bestComeback.deficit} pts`} sub={funStats.bestComeback.label} />
+                <StatCard label="Closest Match" value={`${funStats.closest.diff} pts`} sub={funStats.closest.label} />
+                <StatCard label="Coinche King" value={funStats.coincheKing.name} sub={`${funStats.coincheKing.v} coinches`} />
+                <StatCard label="Capot Hero" value={funStats.capotHero.name} sub={`${funStats.capotHero.v} capots`} />
+                <StatCard label="Belote Magnet" value={funStats.beloteMagnet.name} sub={`${funStats.beloteMagnet.v} belotes`} />
               </div>
             </Section>
           </div>
 
-          <div style={styles.grid2}>
-            <Section title="Funny Stats">
-              <div style={styles.grid3}>
-                <StatCard label="Coinche King" value={globalStats.funny.coincheKing.name} sub={`${globalStats.funny.coincheKing.v} coinches`} />
-                <StatCard label="Surcoinche Boss" value={globalStats.funny.surcoincheBoss.name} sub={`${globalStats.funny.surcoincheBoss.v} surcoinches`} />
-                <StatCard label="Capot Hero" value={globalStats.funny.capotHero.name} sub={`${globalStats.funny.capotHero.v} capots`} />
-                <StatCard label="Belote Magnet" value={globalStats.funny.beloteMagnet.name} sub={`${globalStats.funny.beloteMagnet.v} belotes`} />
-              </div>
-            </Section>
-
-            <Section title="Table Entry Links">
-              <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
-                Each table uses their own link to enter hands/scores.
-              </div>
-              <div style={styles.grid3}>
-                {tableLinks.map((t) => (
-                  <div key={t.code} style={styles.card}>
-                    <div style={{ fontWeight: 900, marginBottom: 6 }}>{t.label}</div>
-                    <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>Code: {t.code}</div>
-                    <a href={t.href} style={{ ...styles.btnSecondary, display: "inline-block", textDecoration: "none" }}>
-                      Open Table View
-                    </a>
-                  </div>
-                ))}
-                {tableLinks.length === 0 ? <div style={styles.small}>No matches created yet (Admin creates tables).</div> : null}
-              </div>
-            </Section>
-          </div>
+          <Section title="Table Entry Links (share to each table)">
+            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
+              Each table has a unique link to enter hands/scores.
+            </div>
+            <div style={styles.grid3}>
+              {tableLinks.map((t) => (
+                <div key={t.code} style={styles.card}>
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>{t.label}</div>
+                  <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>Code: {t.code}</div>
+                  <a href={t.href} style={{ ...styles.btnSecondary, display: "inline-block", textDecoration: "none" }}>
+                    Open Table View
+                  </a>
+                </div>
+              ))}
+              {tableLinks.length === 0 ? <div style={styles.small}>Add tables in Admin to generate table links.</div> : null}
+            </div>
+          </Section>
         </div>
       </div>
     );
@@ -1169,10 +1391,11 @@ export default function App() {
   if (path === "/table") {
     return (
       <div style={styles.page}>
+        <GlobalKeyframes />
         <div style={styles.container}>
           <div style={styles.topbar}>
             <div>
-              <h1 style={styles.title}>{eventName}</h1>
+              <h1 style={styles.title}>{tournamentName}</h1>
               <div style={styles.subtitle}>Table View • Enter hands for your match only</div>
             </div>
             <NavPills showAdmin={true} />
@@ -1192,11 +1415,13 @@ export default function App() {
               <TableMatchPanel
                 match={tableMatch}
                 teamById={teamById}
-                onDraftPatch={(patch) => updateMatchDraft(tableMatch.id, patch)}
+                teamNumberById={teamNumberById}
+                onDraftPatch={(patch) => updateDraft(tableMatch.id, patch)}
                 onAddHand={() => addOrSaveHand(tableMatch.id)}
                 onClearHands={() => clearMatchHands(tableMatch.id)}
                 onStartEditHand={(handIdx) => startEditHand(tableMatch.id, handIdx)}
                 onCancelEdit={() => cancelEditHand(tableMatch.id)}
+                bigTotals={true}
               />
             </Section>
           )}
@@ -1218,11 +1443,14 @@ export default function App() {
   /** ===== Admin View ===== */
   return (
     <div style={styles.page}>
+      <GlobalKeyframes />
       <div style={styles.container}>
         <div style={styles.topbar}>
           <div>
-            <h1 style={styles.title}>{eventName}</h1>
-            <div style={styles.subtitle}>Admin • Setup players/teams • Create table matches • Share links • Export CSV</div>
+            <h1 style={styles.title}>{tournamentName}</h1>
+            <div style={styles.subtitle}>
+              Admin • Setup players/teams • Create tables • Assign matches • Share links • Export backups
+            </div>
           </div>
           <NavPills showAdmin={false} />
         </div>
@@ -1237,6 +1465,22 @@ export default function App() {
               <button style={styles.btnSecondary} onClick={exportCSV}>
                 Export CSV (Excel)
               </button>
+              <button style={styles.btnSecondary} onClick={exportJSON}>
+                Export JSON Backup
+              </button>
+              <label style={{ ...styles.btnSecondary, cursor: "pointer" }}>
+                Import JSON
+                <input
+                  type="file"
+                  accept="application/json"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) importJSONFromFile(f);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
               <button
                 style={styles.btnSecondary}
                 onClick={() => {
@@ -1246,39 +1490,74 @@ export default function App() {
               >
                 Copy Public Link
               </button>
-              <button
-                style={styles.btnDanger}
-                onClick={() => {
-                  if (!confirm("Reset everything? This clears players, teams and matches.")) return;
-                  setPlayers([]);
-                  setTeams([]);
-                  setMatches([]);
-                }}
-              >
-                Full Reset
-              </button>
             </div>
           }
         >
-          <div style={styles.grid4}>
+          <div style={styles.small}>
+            Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span>
+          </div>
+          <div style={{ marginTop: 10, ...styles.small }}>
+            Google Sheets backup: queued writes are stored locally and retried every ~15s automatically.
+          </div>
+          <div style={{ marginTop: 8, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button style={styles.btnSecondary} onClick={flushBackupQueue}>
+              Flush GoogleSheet Queue Now
+            </button>
+            <button
+              style={styles.btnSecondary}
+              onClick={() => {
+                const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+                const count = raw ? (JSON.parse(raw) || []).length : 0;
+                alert(`Pending queued rows: ${count}`);
+              }}
+            >
+              Check Pending Queue
+            </button>
+          </div>
+        </Section>
+
+        <Section title="Settings">
+          <div style={styles.grid3}>
             <div style={styles.card}>
-              <div style={styles.small}>Event name</div>
-              <input style={styles.input("100%")} value={eventName} onChange={(e) => setEventName(e.target.value)} />
+              <div style={styles.small}>Tournament name</div>
+              <input
+                style={styles.input("100%")}
+                value={tournamentName}
+                onChange={(e) => setTournamentName(e.target.value)}
+              />
             </div>
+
             <div style={styles.card}>
-              <div style={styles.small}>Target score</div>
-              <div style={{ fontSize: 18, fontWeight: 950 }}>{TARGET_SCORE}</div>
-              <div style={styles.small}>Match completes when a team reaches {TARGET_SCORE}+.</div>
+              <div style={styles.small}>Team slots</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <input
+                  style={styles.input(140)}
+                  value={String(teamCount)}
+                  onChange={(e) => setTeamCount(Number(e.target.value || 0))}
+                  inputMode="numeric"
+                />
+                <button style={styles.btnSecondary} onClick={() => ensureTeamSkeleton(teamCount)}>
+                  Apply Team Count
+                </button>
+              </div>
+              <div style={{ marginTop: 8, ...styles.small }}>Tip: 8 teams is great for 16 players.</div>
             </div>
+
             <div style={styles.card}>
-              <div style={styles.small}>Created matches</div>
-              <div style={{ fontSize: 18, fontWeight: 950 }}>{matches.length}</div>
-              <div style={styles.small}>Each match has a table code link.</div>
-            </div>
-            <div style={styles.card}>
-              <div style={styles.small}>Completed games</div>
-              <div style={{ fontSize: 18, fontWeight: 950 }}>{globalStats.completedGames}</div>
-              <div style={styles.small}>Total hands: {globalStats.totalHands}</div>
+              <div style={styles.small}>Pairing randomizer</div>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
+                <input
+                  type="checkbox"
+                  checked={avoidSameTeams}
+                  onChange={(e) => setAvoidSameTeams(e.target.checked)}
+                />
+                Avoid repeating pairs
+              </label>
+              <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button style={styles.btnSecondary} onClick={buildRandomTeams} disabled={players.length < 2 || teams.length < 2}>
+                  Randomize Teams (respects locks)
+                </button>
+              </div>
             </div>
           </div>
         </Section>
@@ -1286,7 +1565,7 @@ export default function App() {
         <Section title={`Players (${players.length})`}>
           <div style={styles.row}>
             <input
-              ref={inputRef}
+              ref={playerInputRef}
               style={styles.input(320)}
               value={newPlayerName}
               onChange={(e) => setNewPlayerName(e.target.value)}
@@ -1317,238 +1596,230 @@ export default function App() {
         </Section>
 
         <Section title={`Teams (${teams.length})`}>
+          {teams.length < 2 ? (
+            <div style={styles.small}>Set team slots above, then assign players manually or randomize.</div>
+          ) : (
+            <>
+              <div style={{ ...styles.small, marginBottom: 10 }}>
+                Manual assignment: pick players for each team (prevents overlap). Use <b>Lock</b> to keep a team fixed when randomizing.
+              </div>
+
+              <div style={styles.grid2}>
+                {teams.map((t, idx) => (
+                  <div key={t.id} style={styles.card}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 950 }}>Team #{idx + 1}</div>
+                      <label
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          alignItems: "center",
+                          fontWeight: 900,
+                          color: t.locked ? "#34d399" : "#94a3b8",
+                        }}
+                      >
+                        <input type="checkbox" checked={!!t.locked} onChange={(e) => toggleTeamLock(t.id, e.target.checked)} />
+                        Lock
+                      </label>
+                    </div>
+
+                    <div style={{ marginTop: 10 }}>
+                      <div style={styles.small}>Team name</div>
+                      <input style={styles.input("100%")} value={t.name} onChange={(e) => renameTeam(t.id, e.target.value)} />
+                    </div>
+
+                    <div style={{ marginTop: 10, ...styles.grid2 }}>
+                      <div>
+                        <div style={styles.small}>Player 1</div>
+                        <select
+                          style={styles.select("100%")}
+                          value={t.playerIds?.[0] || ""}
+                          onChange={(e) => setTeamPlayer(t.id, 0, e.target.value)}
+                        >
+                          <option value="">— Select —</option>
+                          {players.map((p) => {
+                            const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
+                            return (
+                              <option key={p.id} value={p.id} disabled={taken}>
+                                {p.name}
+                                {taken ? " (used)" : ""}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      <div>
+                        <div style={styles.small}>Player 2</div>
+                        <select
+                          style={styles.select("100%")}
+                          value={t.playerIds?.[1] || ""}
+                          onChange={(e) => setTeamPlayer(t.id, 1, e.target.value)}
+                        >
+                          <option value="">— Select —</option>
+                          {players.map((p) => {
+                            const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
+                            return (
+                              <option key={p.id} value={p.id} disabled={taken}>
+                                {p.name}
+                                {taken ? " (used)" : ""}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 10, ...styles.small }}>
+                      Members:{" "}
+                      {(t.playerIds || [])
+                        .map((pid) => playerById.get(pid)?.name)
+                        .filter(Boolean)
+                        .join(" / ") || "—"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </Section>
+
+        <Section title={`Tables (${tables.length})`}>
           <div style={styles.row}>
             <input
-              style={styles.input(320)}
-              value={newTeamName}
-              onChange={(e) => setNewTeamName(e.target.value)}
-              placeholder="New team name"
+              style={styles.input(260)}
+              value={newTableName}
+              onChange={(e) => setNewTableName(e.target.value)}
+              placeholder="Add table name (ex: Table 1)"
               onKeyDown={(e) => {
-                if (e.key === "Enter") addTeam();
+                if (e.key === "Enter") addTable();
               }}
             />
-            <button style={styles.btnPrimary} onClick={addTeam} disabled={!newTeamName.trim()}>
-              Add Team
+            <button style={styles.btnPrimary} onClick={addTable} disabled={!newTableName.trim()}>
+              Add Table
             </button>
           </div>
 
-          <div style={{ marginTop: 12, ...styles.grid2 }}>
-            {teams.map((t) => (
+          <div style={{ marginTop: 12, ...styles.grid3 }}>
+            {tables.map((t) => (
               <div key={t.id} style={styles.card}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                  <div style={{ fontWeight: 950 }}>Team</div>
-                  <button style={styles.btnDanger} onClick={() => removeTeam(t.id)}>
-                    Delete Team
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                  <div style={{ fontWeight: 950 }}>{t.name}</div>
+                  <button style={styles.btnDanger} onClick={() => removeTable(t.id)}>
+                    Remove
                   </button>
                 </div>
-
                 <div style={{ marginTop: 10 }}>
-                  <div style={styles.small}>Team name</div>
-                  <input style={styles.input("100%")} value={t.name} onChange={(e) => renameTeam(t.id, e.target.value)} />
-                </div>
-
-                <div style={{ marginTop: 10, ...styles.grid2 }}>
-                  <div>
-                    <div style={styles.small}>Player 1</div>
-                    <select
-                      style={styles.select("100%")}
-                      value={t.playerIds?.[0] || ""}
-                      onChange={(e) => setTeamPlayer(t.id, 0, e.target.value)}
-                    >
-                      <option value="">— Select —</option>
-                      {players.map((p) => {
-                        const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
-                        return (
-                          <option key={p.id} value={p.id} disabled={taken}>
-                            {p.name}
-                            {taken ? " (used)" : ""}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </div>
-
-                  <div>
-                    <div style={styles.small}>Player 2</div>
-                    <select
-                      style={styles.select("100%")}
-                      value={t.playerIds?.[1] || ""}
-                      onChange={(e) => setTeamPlayer(t.id, 1, e.target.value)}
-                    >
-                      <option value="">— Select —</option>
-                      {players.map((p) => {
-                        const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
-                        return (
-                          <option key={p.id} value={p.id} disabled={taken}>
-                            {p.name}
-                            {taken ? " (used)" : ""}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 10, ...styles.small }}>
-                  Members: {(t.playerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean).join(" / ") || "—"}
+                  <div style={styles.small}>Rename table</div>
+                  <input
+                    style={styles.input("100%")}
+                    value={t.name}
+                    onChange={(e) => renameTable(t.id, e.target.value)}
+                  />
                 </div>
               </div>
             ))}
-            {teams.length === 0 ? <div style={styles.small}>Add teams to create matches (tables).</div> : null}
+            {tables.length === 0 ? <div style={styles.small}>Add tables to create matches and table links.</div> : null}
           </div>
         </Section>
 
-        <Section title="Create a Match (Table)">
-          <div style={styles.grid4}>
-            <div style={styles.card}>
-              <div style={styles.small}>Table #</div>
-              <input style={styles.input("100%")} value={newMatchTable} onChange={(e) => setNewMatchTable(e.target.value)} inputMode="numeric" />
-            </div>
-
-            <div style={styles.card}>
-              <div style={styles.small}>Team A</div>
-              <select style={styles.select("100%")} value={newMatchTeamA} onChange={(e) => setNewMatchTeamA(e.target.value)}>
-                <option value="">— Select —</option>
-                {teams.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div style={styles.card}>
-              <div style={styles.small}>Team B</div>
-              <select style={styles.select("100%")} value={newMatchTeamB} onChange={(e) => setNewMatchTeamB(e.target.value)}>
-                <option value="">— Select —</option>
-                {teams.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div style={styles.card}>
-              <div style={styles.small}>Create</div>
-              <button
-                style={styles.btnPrimary}
-                onClick={addMatch}
-                disabled={!newMatchTeamA || !newMatchTeamB || newMatchTeamA === newMatchTeamB}
-              >
-                Add Match
-              </button>
-              <div style={{ marginTop: 8, ...styles.small }}>Creates a unique table code link.</div>
-            </div>
-          </div>
-        </Section>
-
-        <Section title="Matches (Admin can edit)">
-          {!matches.length ? (
-            <div style={styles.small}>No matches yet. Create table matches above.</div>
+        <Section title="Matches (assign teams to each table)">
+          {matches.length === 0 ? (
+            <div style={styles.small}>No matches yet. Add tables above.</div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {matches
-                .slice()
-                .sort((a, b) => (a.table || 0) - (b.table || 0))
-                .map((m) => {
-                  const href = `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`;
-                  return (
-                    <div key={m.id} style={styles.card}>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
-                        <div style={{ fontWeight: 950 }}>
-                          {m.label} <span style={styles.small}>• Code {m.code}</span>
-                        </div>
-                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          <a href={href} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
-                            Open Table
-                          </a>
-                          <button
-                            style={styles.btnSecondary}
-                            onClick={() => {
-                              navigator.clipboard?.writeText(href);
-                              alert("Table link copied!");
-                            }}
-                          >
-                            Copy Link
-                          </button>
-                          <button style={styles.btnDanger} onClick={() => removeMatch(m.id)}>
-                            Delete Match
-                          </button>
-                        </div>
-                      </div>
+            <div style={styles.grid2}>
+              {matches.map((m) => (
+                <div key={m.id} style={styles.card}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 950 }}>{m.label}</div>
+                    <span style={styles.tag}>Code: {m.code}</span>
+                  </div>
 
-                      <div style={{ marginTop: 10 }}>
-                        <TableMatchPanel
-                          match={m}
-                          teamById={teamById}
-                          onDraftPatch={(patch) => updateMatchDraft(m.id, patch)}
-                          onAddHand={() => addOrSaveHand(m.id)}
-                          onClearHands={() => clearMatchHands(m.id)}
-                          onStartEditHand={(handIdx) => startEditHand(m.id, handIdx)}
-                          onCancelEdit={() => cancelEditHand(m.id)}
-                        />
-                      </div>
+                  <div style={{ marginTop: 10, ...styles.grid2 }}>
+                    <div>
+                      <div style={styles.small}>Team A</div>
+                      <select
+                        style={styles.select("100%")}
+                        value={m.teamAId || ""}
+                        onChange={(e) => setMatchTeams(m.id, "teamAId", e.target.value)}
+                      >
+                        <option value="">— Select —</option>
+                        {teams.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            #{teamNumberById.get(t.id)} {t.name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
-                  );
-                })}
+                    <div>
+                      <div style={styles.small}>Team B</div>
+                      <select
+                        style={styles.select("100%")}
+                        value={m.teamBId || ""}
+                        onChange={(e) => setMatchTeams(m.id, "teamBId", e.target.value)}
+                      >
+                        <option value="">— Select —</option>
+                        {teams.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            #{teamNumberById.get(t.id)} {t.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <a
+                      href={`${window.location.origin}${window.location.pathname}#/table?code=${m.code}`}
+                      style={{ ...styles.btnSecondary, textDecoration: "none" }}
+                    >
+                      Open Table View
+                    </a>
+                    <button style={styles.btnSecondary} onClick={() => regenerateMatchCode(m.id)}>
+                      Regenerate Code
+                    </button>
+                    <button
+                      style={styles.btnSecondary}
+                      onClick={() => {
+                        const href = `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`;
+                        navigator.clipboard?.writeText(href);
+                        alert(`Copied link for ${m.label}`);
+                      }}
+                    >
+                      Copy Link
+                    </button>
+                    <button style={styles.btnSecondary} onClick={() => clearMatchHands(m.id)}>
+                      Clear Hands
+                    </button>
+                  </div>
+
+                  <div style={{ marginTop: 10, ...styles.small }}>
+                    Current total: <b style={{ color: "#e5e7eb" }}>{m.totalA}</b> – <b style={{ color: "#e5e7eb" }}>{m.totalB}</b>{" "}
+                    {m.completed ? <span style={{ color: "#34d399", fontWeight: 900 }}> • Completed</span> : null}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </Section>
 
-        <Section title="Live Scoreboard + Stats">
+        <Section title="Scoreboard + Fun Facts (Live)">
           <div style={styles.grid2}>
             <div style={styles.card}>
               <div style={{ fontWeight: 950, marginBottom: 8 }}>Live Scoreboard</div>
               <ScoreboardTable rows={scoreboardRows} />
             </div>
-
             <div style={styles.card}>
               <div style={{ fontWeight: 950, marginBottom: 8 }}>Fun Facts</div>
               <div style={styles.grid3}>
-                <StatCard label="Biggest Blowout" value={globalStats.biggestBlowout.diff ? `${globalStats.biggestBlowout.diff} pts` : "—"} sub={globalStats.biggestBlowout.label} />
-                <StatCard label="Best Comeback" value={globalStats.bestComeback.deficit ? `${globalStats.bestComeback.deficit} pts` : "—"} sub={globalStats.bestComeback.label} />
-                <StatCard label="Most Back-and-Forth" value={globalStats.mostBackAndForth.changes ? `${globalStats.mostBackAndForth.changes} lead changes` : "—"} sub={globalStats.mostBackAndForth.label} />
-                <StatCard label="Clutch Finish (last 3 hands)" value={globalStats.clutchFinish.label !== "—" ? `${globalStats.clutchFinish.diff} pts` : "—"} sub={globalStats.clutchFinish.label} />
-                <StatCard label="Momentum Monster (2 hands)" value={globalStats.momentumMonster.swing ? `${globalStats.momentumMonster.swing} swing` : "—"} sub={globalStats.momentumMonster.label} />
-                <StatCard label="Perfect Defense" value={globalStats.perfectDefense.name} sub={globalStats.perfectDefense.v ? `${globalStats.perfectDefense.v} zero-hands forced` : ""} />
-              </div>
-
-              <div style={{ marginTop: 12, fontWeight: 950 }}>Funny Stats</div>
-              <div style={{ marginTop: 10, ...styles.grid3 }}>
-                <StatCard label="Coinche King" value={globalStats.funny.coincheKing.name} sub={`${globalStats.funny.coincheKing.v} coinches`} />
-                <StatCard label="Surcoinche Boss" value={globalStats.funny.surcoincheBoss.name} sub={`${globalStats.funny.surcoincheBoss.v} surcoinches`} />
-                <StatCard label="Capot Hero" value={globalStats.funny.capotHero.name} sub={`${globalStats.funny.capotHero.v} capots`} />
-                <StatCard label="Belote Magnet" value={globalStats.funny.beloteMagnet.name} sub={`${globalStats.funny.beloteMagnet.v} belotes`} />
+                <StatCard label="Biggest Blowout" value={`${funStats.biggestBlowout.diff} pts`} sub={funStats.biggestBlowout.label} />
+                <StatCard label="Best Comeback" value={`${funStats.bestComeback.deficit} pts`} sub={funStats.bestComeback.label} />
+                <StatCard label="Closest Match" value={`${funStats.closest.diff} pts`} sub={funStats.closest.label} />
+                <StatCard label="Coinche King" value={funStats.coincheKing.name} sub={`${funStats.coincheKing.v} coinches`} />
+                <StatCard label="Capot Hero" value={funStats.capotHero.name} sub={`${funStats.capotHero.v} capots`} />
+                <StatCard label="Belote Magnet" value={funStats.beloteMagnet.name} sub={`${funStats.beloteMagnet.v} belotes`} />
               </div>
             </div>
-          </div>
-        </Section>
-
-        <Section title="Table Links (share to each table)">
-          <div style={styles.small}>Each match has a unique code + link. Teams should open their match link to enter hands.</div>
-          <div style={{ marginTop: 10, ...styles.grid3 }}>
-            {tableLinks.map((t) => (
-              <div key={t.code} style={styles.card}>
-                <div style={{ fontWeight: 950, marginBottom: 6 }}>{t.label}</div>
-                <div style={styles.small}>Code: {t.code}</div>
-                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <a href={t.href} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
-                    Open
-                  </a>
-                  <button
-                    style={styles.btnSecondary}
-                    onClick={() => {
-                      navigator.clipboard?.writeText(t.href);
-                      alert(`Copied link for ${t.label}`);
-                    }}
-                  >
-                    Copy Link
-                  </button>
-                </div>
-              </div>
-            ))}
-            {tableLinks.length === 0 ? <div style={styles.small}>No matches yet.</div> : null}
           </div>
         </Section>
       </div>
@@ -1586,7 +1857,7 @@ function ScoreboardTable({ rows }) {
       <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
         <thead>
           <tr>
-            {["Rank", "Team", "W", "L", "PF", "PA", "Diff"].map((h) => (
+            {["Rank", "Team", "W", "L", "Matches", "Hands", "For", "Against", "+/-"].map((h) => (
               <th
                 key={h}
                 style={{
@@ -1595,6 +1866,7 @@ function ScoreboardTable({ rows }) {
                   fontSize: 12,
                   color: "#94a3b8",
                   borderBottom: "1px solid rgba(148,163,184,0.18)",
+                  whiteSpace: "nowrap",
                 }}
               >
                 {h}
@@ -1604,24 +1876,49 @@ function ScoreboardTable({ rows }) {
         </thead>
         <tbody>
           {rows.map((r, i) => {
-            const diff = (r.pointsFor || 0) - (r.pointsAgainst || 0);
+            const diff = (r.totalPointsFor || 0) - (r.totalPointsAgainst || 0);
             return (
               <tr key={r.teamId}>
-                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 950 }}>#{i + 1}</td>
-                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.name}</td>
-                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.wins}</td>
-                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.losses}</td>
-                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.pointsFor}</td>
-                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.pointsAgainst}</td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 950 }}>
+                  #{i + 1}
+                </td>
                 <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>
-                  {diff >= 0 ? `+${diff}` : diff}
+                  {r.name}
+                </td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>
+                  {r.matchesWon}
+                </td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>
+                  {r.matchesLost}
+                </td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>
+                  {r.matchesPlayed}
+                </td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>
+                  {r.handsPlayed}
+                </td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>
+                  {r.totalPointsFor}
+                </td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>
+                  {r.totalPointsAgainst}
+                </td>
+                <td
+                  style={{
+                    padding: "10px 10px",
+                    borderBottom: "1px solid rgba(148,163,184,0.10)",
+                    fontWeight: 950,
+                    color: diff >= 0 ? "#34d399" : "#fb7185",
+                  }}
+                >
+                  {diff >= 0 ? `+${diff}` : `${diff}`}
                 </td>
               </tr>
             );
           })}
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={7} style={{ padding: 12, color: "#94a3b8" }}>
+              <td colSpan={9} style={{ padding: 12, color: "#94a3b8" }}>
                 No data yet.
               </td>
             </tr>
@@ -1635,79 +1932,58 @@ function ScoreboardTable({ rows }) {
 function TableMatchPanel({
   match,
   teamById,
+  teamNumberById,
   onDraftPatch,
   onAddHand,
   onClearHands,
   onStartEditHand,
   onCancelEdit,
+  bigTotals = false,
 }) {
   const ta = teamById.get(match.teamAId)?.name ?? "TBD";
   const tb = teamById.get(match.teamBId)?.name ?? "TBD";
 
+  const numA = match.teamAId ? teamNumberById?.get(match.teamAId) ?? "?" : "?";
+  const numB = match.teamBId ? teamNumberById?.get(match.teamBId) ?? "?" : "?";
+
   const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
   const pctB = Math.min(100, Math.round(((match.totalB || 0) / TARGET_SCORE) * 100));
 
-  const d = match.fastDraft || {
-    bidder: "A",
-    bid: "",
-    suit: "S",
-    coincheLevel: "NONE",
-    capot: false,
-    bidderTrickPoints: "",
-    announceA: "0",
-    announceB: "0",
-    beloteTeam: "NONE",
-  };
-
   const canPlay = !!match.teamAId && !!match.teamBId;
 
-  // Glow leader (ignore ties)
+  const d = match.fastDraft || defaultFastDraft();
+
+  // Leading team glow
   const aLeads = (match.totalA || 0) > (match.totalB || 0);
   const bLeads = (match.totalB || 0) > (match.totalA || 0);
 
-  const leaderCardStyle = (isLeader) =>
-    isLeader
-      ? {
-          border: "1px solid rgba(34,197,94,0.55)",
-          boxShadow: "0 0 0 1px rgba(34,197,94,0.25), 0 0 28px rgba(34,197,94,0.28)",
-          background: "linear-gradient(180deg, rgba(34,197,94,0.14), rgba(2,6,23,0.35))",
-        }
-      : {};
-
-  // Animate totals on change
-  const [popA, setPopA] = useState(false);
-  const [popB, setPopB] = useState(false);
-  const lastARef = useRef(match.totalA || 0);
-  const lastBRef = useRef(match.totalB || 0);
+  // Animate score when it updates
+  const [animA, setAnimA] = useState(false);
+  const [animB, setAnimB] = useState(false);
+  const prevTotalsRef = useRef({ a: match.totalA || 0, b: match.totalB || 0 });
 
   useEffect(() => {
-    const a = match.totalA || 0;
-    if (a !== lastARef.current) {
-      lastARef.current = a;
-      setPopA(true);
-      const t = setTimeout(() => setPopA(false), 320);
-      return () => clearTimeout(t);
-    }
-  }, [match.totalA]);
+    const prev = prevTotalsRef.current;
+    const aNow = match.totalA || 0;
+    const bNow = match.totalB || 0;
 
-  useEffect(() => {
-    const b = match.totalB || 0;
-    if (b !== lastBRef.current) {
-      lastBRef.current = b;
-      setPopB(true);
-      const t = setTimeout(() => setPopB(false), 320);
-      return () => clearTimeout(t);
+    if (aNow !== prev.a) {
+      setAnimA(true);
+      setTimeout(() => setAnimA(false), 420);
     }
-  }, [match.totalB]);
+    if (bNow !== prev.b) {
+      setAnimB(true);
+      setTimeout(() => setAnimB(false), 420);
+    }
+
+    prevTotalsRef.current = { a: aNow, b: bNow };
+  }, [match.totalA, match.totalB]);
 
   return (
     <div style={{ ...styles.card, borderRadius: 18 }}>
-      <GlobalAnimStyles />
-
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
         <div style={{ fontWeight: 950 }}>
-          {match.label}
-          {match.table ? <span style={styles.small}> • Table {match.table}</span> : null}
+          {match.label} <span style={styles.small}>• Code {match.code}</span>
         </div>
         <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
           {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
@@ -1715,48 +1991,46 @@ function TableMatchPanel({
       </div>
 
       <div style={{ marginTop: 10, ...styles.grid2 }}>
-        <div style={{ ...styles.card, ...leaderCardStyle(aLeads) }}>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>{`Team A: ${ta}`}</div>
+        <div style={{ ...styles.card, ...(aLeads ? styles.glowLeader : {}) }}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>{`Team #${numA}: ${ta}`}</div>
 
-          <div style={{ marginTop: 6 }}>
-            <div
-              style={{
-                fontSize: 42,
-                fontWeight: 1000,
-                lineHeight: 1,
-                display: "inline-block",
-                animation: popA ? "scorePop 320ms ease-out" : "none",
-              }}
-            >
-              {match.totalA}
-            </div>
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>/ {TARGET_SCORE}</div>
+          <div style={styles.small}>Total</div>
+          <div
+            style={{
+              ...(bigTotals ? styles.bigTotal : { fontSize: 28, fontWeight: 1000 }),
+              animation: animA ? "scorePop 420ms ease-out" : "none",
+            }}
+          >
+            {match.totalA}
           </div>
 
-          <div style={{ marginTop: 8, ...styles.progressWrap }}>
+          <div style={{ marginTop: 8, ...styles.small }}>
+            / {TARGET_SCORE}
+          </div>
+
+          <div style={{ marginTop: 10, ...styles.progressWrap }}>
             <div style={styles.progressFillA(pctA)} />
           </div>
         </div>
 
-        <div style={{ ...styles.card, ...leaderCardStyle(bLeads) }}>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>{`Team B: ${tb}`}</div>
+        <div style={{ ...styles.card, ...(bLeads ? styles.glowLeader : {}) }}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>{`Team #${numB}: ${tb}`}</div>
 
-          <div style={{ marginTop: 6 }}>
-            <div
-              style={{
-                fontSize: 42,
-                fontWeight: 1000,
-                lineHeight: 1,
-                display: "inline-block",
-                animation: popB ? "scorePop 320ms ease-out" : "none",
-              }}
-            >
-              {match.totalB}
-            </div>
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>/ {TARGET_SCORE}</div>
+          <div style={styles.small}>Total</div>
+          <div
+            style={{
+              ...(bigTotals ? styles.bigTotal : { fontSize: 28, fontWeight: 1000 }),
+              animation: animB ? "scorePop 420ms ease-out" : "none",
+            }}
+          >
+            {match.totalB}
           </div>
 
-          <div style={{ marginTop: 8, ...styles.progressWrap }}>
+          <div style={{ marginTop: 8, ...styles.small }}>
+            / {TARGET_SCORE}
+          </div>
+
+          <div style={{ marginTop: 10, ...styles.progressWrap }}>
             <div style={styles.progressFillB(pctB)} />
           </div>
         </div>
@@ -1777,14 +2051,21 @@ function TableMatchPanel({
           <div>
             <div style={styles.small}>Bidder</div>
             <select style={styles.select("100%")} value={d.bidder} onChange={(e) => onDraftPatch({ bidder: e.target.value })} disabled={!canPlay}>
-              <option value="A">{`Team A — ${ta}`}</option>
-              <option value="B">{`Team B — ${tb}`}</option>
+              <option value="A">{`Team #${numA} — ${ta}`}</option>
+              <option value="B">{`Team #${numB} — ${tb}`}</option>
             </select>
           </div>
 
           <div>
             <div style={styles.small}>Bid</div>
-            <input style={styles.input("100%")} value={d.bid} onChange={(e) => onDraftPatch({ bid: e.target.value })} placeholder="80, 90, 110..." inputMode="numeric" disabled={!canPlay} />
+            <input
+              style={styles.input("100%")}
+              value={d.bid}
+              onChange={(e) => onDraftPatch({ bid: e.target.value })}
+              placeholder="80, 90, 110..."
+              inputMode="numeric"
+              disabled={!canPlay}
+            />
           </div>
 
           <div>
@@ -1799,7 +2080,12 @@ function TableMatchPanel({
 
           <div>
             <div style={styles.small}>Coinche</div>
-            <select style={styles.select("100%")} value={d.coincheLevel} onChange={(e) => onDraftPatch({ coincheLevel: e.target.value })} disabled={!canPlay}>
+            <select
+              style={styles.select("100%")}
+              value={d.coincheLevel}
+              onChange={(e) => onDraftPatch({ coincheLevel: e.target.value })}
+              disabled={!canPlay}
+            >
               <option value="NONE">None</option>
               <option value="COINCHE">Coinche (x2)</option>
               <option value="SURCOINCHE">Surcoinche (x4)</option>
@@ -1808,7 +2094,12 @@ function TableMatchPanel({
 
           <div>
             <div style={styles.small}>Capot</div>
-            <select style={styles.select("100%")} value={d.capot ? "YES" : "NO"} onChange={(e) => onDraftPatch({ capot: e.target.value === "YES" })} disabled={!canPlay}>
+            <select
+              style={styles.select("100%")}
+              value={d.capot ? "YES" : "NO"}
+              onChange={(e) => onDraftPatch({ capot: e.target.value === "YES" })}
+              disabled={!canPlay}
+            >
               <option value="NO">No</option>
               <option value="YES">Yes</option>
             </select>
@@ -1816,25 +2107,49 @@ function TableMatchPanel({
 
           <div>
             <div style={styles.small}>Bidder trick points (0–162)</div>
-            <input style={styles.input("100%")} value={d.bidderTrickPoints} onChange={(e) => onDraftPatch({ bidderTrickPoints: e.target.value })} placeholder="ex: 81" inputMode="numeric" disabled={!canPlay} />
+            <input
+              style={styles.input("100%")}
+              value={d.bidderTrickPoints}
+              onChange={(e) => onDraftPatch({ bidderTrickPoints: e.target.value })}
+              placeholder="ex: 81"
+              inputMode="numeric"
+              disabled={!canPlay}
+            />
           </div>
 
           <div>
             <div style={styles.small}>Announces Team A (non-belote)</div>
-            <input style={styles.input("100%")} value={d.announceA} onChange={(e) => onDraftPatch({ announceA: e.target.value })} inputMode="numeric" disabled={!canPlay} />
+            <input
+              style={styles.input("100%")}
+              value={d.announceA}
+              onChange={(e) => onDraftPatch({ announceA: e.target.value })}
+              inputMode="numeric"
+              disabled={!canPlay}
+            />
           </div>
 
           <div>
             <div style={styles.small}>Announces Team B (non-belote)</div>
-            <input style={styles.input("100%")} value={d.announceB} onChange={(e) => onDraftPatch({ announceB: e.target.value })} inputMode="numeric" disabled={!canPlay} />
+            <input
+              style={styles.input("100%")}
+              value={d.announceB}
+              onChange={(e) => onDraftPatch({ announceB: e.target.value })}
+              inputMode="numeric"
+              disabled={!canPlay}
+            />
           </div>
 
           <div>
             <div style={styles.small}>Belote</div>
-            <select style={styles.select("100%")} value={d.beloteTeam} onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })} disabled={!canPlay}>
+            <select
+              style={styles.select("100%")}
+              value={d.beloteTeam}
+              onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })}
+              disabled={!canPlay}
+            >
               <option value="NONE">None</option>
-              <option value="A">Team A</option>
-              <option value="B">Team B</option>
+              <option value="A">{`Team #${numA}`}</option>
+              <option value="B">{`Team #${numB}`}</option>
             </select>
           </div>
         </div>
@@ -1893,7 +2208,9 @@ function TableMatchPanel({
         )}
       </div>
 
-      <div style={{ marginTop: 12, ...styles.small }}>This match is scorekeeping-only (no tournament logic).</div>
+      <div style={{ marginTop: 12, ...styles.small }}>
+        Each hand is auto-saved locally and queued to Google Sheets (auto retry).
+      </div>
     </div>
   );
 }
