@@ -2,35 +2,21 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Coinche Scorekeeper (Vite single-file App.jsx)
- * ✅ No pools / no bracket / no timer
  * ✅ Admin view + Public view (read-only) + Table view (enter only your table match)
  * ✅ Unlimited players + unlimited teams
- * ✅ Team builder:
- *    - randomize teams
- *    - OR manual pick players for each team
- *    - lock team toggle (locked teams won't change on randomize)
- * ✅ Admin creates matches (tables) by selecting Team A vs Team B + table # + label
- * ✅ Each match has a unique table code link: #/table?code=AB12
- * ✅ Fast mode Hand Tracker (same scoring logic):
- *    - suit dropdown + icons
- *    - auto calculates hand points and accumulates to match totals
- *    - ends match immediately at 2000+
- *    - NEW hand starts blank after add/save
- *    - past hands editable
- * ✅ Progress bars to 2000 per team for the current match
- * ✅ Live scoreboard + stats + funny stats
- * ✅ Export CSV (Excel-friendly)
- *
- * Notes:
- * - Deploy-friendly (no shadcn)
- * - Uses localStorage
- * - Route via URL hash:
+ * ✅ Admin creates matches (tables) manually (no pools/bracket/timer)
+ * ✅ Fast mode Hand Tracker (same scoring logic)
+ * ✅ Live scoreboard + stats + funny stats + fun facts (blowout/comeback/etc.)
+ * ✅ Leading team glows green + score pop animation on update
+ * ✅ Fullscreen layout + dropdown/input black text
+ * ✅ Uses localStorage
+ * ✅ Routes via URL hash:
  *    #/admin
  *    #/public
  *    #/table?code=AB12
  */
 
-const LS_KEY = "coinche_scorekeeper_vite_v1";
+const LS_KEY = "coinche_scorekeeper_vite_fullscreen_v1";
 const TARGET_SCORE = 2000;
 
 function uid(prefix = "id") {
@@ -41,14 +27,6 @@ function shortCode() {
   let s = "";
   for (let i = 0; i < 4; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
-}
-function shuffleArray(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
 }
 function safeInt(v) {
   if (v === "" || v === null || v === undefined) return null;
@@ -61,7 +39,6 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, x));
 }
 
-/** ===== Fast mode scoring helpers (same as your previous) ===== */
 function roundTrickPoints(x) {
   if (x == null) return 0;
   const n = clamp(Number(x) || 0, 0, 162);
@@ -69,16 +46,7 @@ function roundTrickPoints(x) {
 }
 
 /**
- * Fast mode compute (kept)
- * - bidder trick points (0..162 raw)
- * - announces A/B (non-belote)
- * - belote team adds 20 to that team
- * - capot: winner gets 250 + all announces + belote + bid
- * - coinche: winner gets 160 + mult*bid + announces ; belote remains with declaring team
- * - normal:
- *    - success: bidder gets rounded tricks + bidder announces + bid (+ belote if theirs)
- *              opp gets rounded opp tricks + opp announces (+ belote if theirs)
- *    - fail: bidder gets 0 (keeps belote if theirs), opp gets 160 + bid + all announces (+ their belote if theirs)
+ * Fast mode compute (kept from your previous)
  */
 function computeFastCoincheScore({
   bidder, // "A"|"B"
@@ -115,14 +83,12 @@ function computeFastCoincheScore({
   const baseMin = bidderHasBelote ? 71 : 81;
   const special80 = bidVal === 80 ? 81 : 0;
 
-  // Announces help (fast mode)
   const announceHelp = bidderAnn + (bidderHasBelote ? 20 : 0);
   const required = Math.max(baseMin, special80, bidVal - announceHelp);
 
   const bidderSucceeded = capot ? true : rawBidder >= required;
 
-  const mult =
-    coincheLevel === "SURCOINCHE" ? 4 : coincheLevel === "COINCHE" ? 2 : 1;
+  const mult = coincheLevel === "SURCOINCHE" ? 4 : coincheLevel === "COINCHE" ? 2 : 1;
   const isCoinche = coincheLevel !== "NONE";
 
   let scoreA = 0;
@@ -195,26 +161,25 @@ function parseHashRoute() {
   return { path, query };
 }
 
-/** ===== Styles (kept same vibe) ===== */
+/** ===== Styles ===== */
 const styles = {
   page: {
-  minHeight: "100vh",
-  width: "100vw",
-  boxSizing: "border-box",
-  background:
-    "radial-gradient(1200px 600px at 10% 10%, rgba(99,102,241,0.25), transparent 60%), radial-gradient(1200px 600px at 90% 10%, rgba(16,185,129,0.18), transparent 55%), radial-gradient(1200px 600px at 50% 90%, rgba(244,63,94,0.12), transparent 60%), linear-gradient(180deg, #0b1220 0%, #050814 100%)",
-  color: "#e5e7eb",
-  padding: 8,   // smaller outer padding
-
+    minHeight: "100vh",
+    width: "100vw",
+    boxSizing: "border-box",
+    background:
+      "radial-gradient(1200px 600px at 10% 10%, rgba(99,102,241,0.25), transparent 60%), radial-gradient(1200px 600px at 90% 10%, rgba(16,185,129,0.18), transparent 55%), radial-gradient(1200px 600px at 50% 90%, rgba(244,63,94,0.12), transparent 60%), linear-gradient(180deg, #0b1220 0%, #050814 100%)",
+    color: "#e5e7eb",
+    padding: 8,
   },
   container: {
-  width: "100%",
-  maxWidth: "100%",
-  margin: "0 auto",
-  display: "flex",
-  flexDirection: "column",
-  gap: 16,
-},
+    width: "100%",
+    maxWidth: "100%",
+    margin: "0 auto",
+    display: "flex",
+    flexDirection: "column",
+    gap: 16,
+  },
   topbar: {
     display: "flex",
     justifyContent: "space-between",
@@ -232,7 +197,14 @@ const styles = {
     padding: 14,
     boxShadow: "0 12px 40px rgba(0,0,0,0.25)",
   },
-  sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 },
+  sectionHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 10,
+    flexWrap: "wrap",
+    marginBottom: 10,
+  },
   h2: { margin: 0, fontSize: 16, fontWeight: 900, letterSpacing: "-0.01em" },
   small: { fontSize: 12, color: "#94a3b8" },
 
@@ -272,43 +244,57 @@ const styles = {
     cursor: "pointer",
     fontWeight: 900,
   },
+  disabled: { opacity: 0.55, cursor: "not-allowed" },
 
-input: (w = 240) => ({
-  width: typeof w === "number" ? `${w}px` : w,
-  padding: "10px 12px",
-  borderRadius: 14,
-  border: "1px solid rgba(148,163,184,0.22)",
-  background: "rgba(255,255,255,0.95)",   // lighter background
-  color: "#000",                          // black text
-  outline: "none",
-  boxSizing: "border-box",
-  minWidth: 0,
-  display: "block",
-}),
+  // Black text inputs/selects
+  input: (w = 240) => ({
+    width: typeof w === "number" ? `${w}px` : w,
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(148,163,184,0.22)",
+    background: "#ffffff",
+    color: "#000000",
+    fontWeight: 600,
+    outline: "none",
+    boxSizing: "border-box",
+    minWidth: 0,
+    display: "block",
+  }),
+  select: (w = 180) => ({
+    width: typeof w === "number" ? `${w}px` : w,
+    padding: "10px 12px",
+    borderRadius: 14,
+    border: "1px solid rgba(148,163,184,0.22)",
+    background: "#ffffff",
+    color: "#000000",
+    fontWeight: 600,
+    outline: "none",
+    boxSizing: "border-box",
+    minWidth: 0,
+    display: "block",
+  }),
 
-select: (w = 180) => ({
-  width: typeof w === "number" ? `${w}px` : w,
-  padding: "10px 12px",
-  borderRadius: 14,
-  border: "1px solid rgba(148,163,184,0.22)",
-  background: "rgba(255,255,255,0.95)",   // lighter background
-  color: "#000",                          // black text
-  outline: "none",
-  boxSizing: "border-box",
-  minWidth: 0,
-  display: "block",
-}),
-
-  grid2: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12 },
-  grid3: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 },
-  grid4: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12 },
+  grid2: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(450px, 1fr))",
+    gap: 16,
+  },
+  grid3: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(350px, 1fr))",
+    gap: 16,
+  },
+  grid4: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+    gap: 16,
+  },
   card: {
     background: "rgba(2,6,23,0.35)",
     border: "1px solid rgba(148,163,184,0.18)",
     borderRadius: 18,
     padding: 12,
   },
-
   row: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
 
   progressWrap: {
@@ -347,7 +333,6 @@ select: (w = 180) => ({
     alignItems: "center",
     flexWrap: "wrap",
   },
-
   tag: {
     display: "inline-flex",
     alignItems: "center",
@@ -361,6 +346,18 @@ select: (w = 180) => ({
     fontWeight: 800,
   },
 };
+
+function GlobalAnimStyles() {
+  return (
+    <style>{`
+      @keyframes scorePop {
+        0%   { transform: scale(1); }
+        35%  { transform: scale(1.18); }
+        100% { transform: scale(1); }
+      }
+    `}</style>
+  );
+}
 
 function SuitIcon({ suit }) {
   const map = {
@@ -377,83 +374,109 @@ function SuitIcon({ suit }) {
   );
 }
 
+/** ===== Stats helpers ===== */
+function matchLabel(match, teamById) {
+  const ta = teamById.get(match.teamAId)?.name ?? "Team A";
+  const tb = teamById.get(match.teamBId)?.name ?? "Team B";
+  return `${ta} vs ${tb}`;
+}
+
+function matchStoryStats(match) {
+  const hands = match.hands || [];
+  let a = 0;
+  let b = 0;
+
+  let maxLeadA = 0;
+  let maxLeadB = 0;
+
+  let leadChanges = 0;
+  let lastLeader = 0; // 1 A, -1 B, 0 tie
+
+  const diffs = [0];
+  let momentum2Swing = 0;
+
+  let perfectDefenseA = 0;
+  let perfectDefenseB = 0;
+
+  hands.forEach((h) => {
+    const sA = Number(h.scoreA) || 0;
+    const sB = Number(h.scoreB) || 0;
+
+    a += sA;
+    b += sB;
+
+    if (sA > 0 && sB === 0) perfectDefenseA += 1;
+    if (sB > 0 && sA === 0) perfectDefenseB += 1;
+
+    const diff = a - b;
+    diffs.push(diff);
+
+    maxLeadA = Math.max(maxLeadA, diff);
+    maxLeadB = Math.max(maxLeadB, -diff);
+
+    const leaderNow = diff === 0 ? 0 : diff > 0 ? 1 : -1;
+    if (leaderNow !== 0 && lastLeader !== 0 && leaderNow !== lastLeader) leadChanges += 1;
+    if (leaderNow !== 0) lastLeader = leaderNow;
+
+    if (diffs.length >= 3) {
+      const prev2 = diffs[diffs.length - 3];
+      const swing2 = Math.abs(diff - prev2);
+      if (swing2 > momentum2Swing) momentum2Swing = swing2;
+    }
+  });
+
+  const finalDiff = Math.abs((match.totalA || 0) - (match.totalB || 0));
+
+  let comebackDeficit = 0;
+  if (match.winnerId) {
+    const winnerIsA = match.winnerId === match.teamAId;
+    comebackDeficit = winnerIsA ? maxLeadB : maxLeadA;
+  }
+
+  let clutchMinDiff = null;
+  if (hands.length > 0) {
+    const startIdx = Math.max(0, diffs.length - 1 - 3);
+    for (let i = startIdx; i < diffs.length; i++) {
+      const d = Math.abs(diffs[i]);
+      clutchMinDiff = clutchMinDiff === null ? d : Math.min(clutchMinDiff, d);
+    }
+  }
+
+  return {
+    finalDiff,
+    comebackDeficit,
+    leadChanges,
+    momentum2Swing,
+    clutchMinDiff: clutchMinDiff ?? 0,
+    perfectDefenseA,
+    perfectDefenseB,
+  };
+}
+
 /** ===== Main App ===== */
 export default function App() {
   const [route, setRoute] = useState(() => parseHashRoute());
   const [loaded, setLoaded] = useState(false);
 
-  const [tournamentName, setTournamentName] = useState("Coinche Scorekeeper");
+  const [eventName, setEventName] = useState("Coinche Scorekeeper");
 
-  // Players and teams
   const [players, setPlayers] = useState([]); // {id,name}
-  const [teams, setTeams] = useState([]); // {id,name,playerIds[], locked:boolean}
-  const [avoidSameTeams, setAvoidSameTeams] = useState(true);
-  const [pairHistory, setPairHistory] = useState([]); // ["p1|p2", ...]
+  const [teams, setTeams] = useState([]); // {id,name,playerIds[]}
+  const [matches, setMatches] = useState([]); // {id,code,table,label,teamAId,teamBId,hands,totalA,totalB,winnerId,completed,fastDraft,editingHandIdx}
 
-  // Matches (tables)
-  const [matches, setMatches] = useState([]); // {id, code, label, table, teamAId, teamBId, hands, totals, completed...}
-
-  // UI helpers
   const [newPlayerName, setNewPlayerName] = useState("");
-  const inputRef = useRef(null);
-
-  // New match builder inputs (Admin)
-  const [newMatchLabel, setNewMatchLabel] = useState("");
+  const [newTeamName, setNewTeamName] = useState("");
   const [newMatchTable, setNewMatchTable] = useState("1");
   const [newMatchTeamA, setNewMatchTeamA] = useState("");
   const [newMatchTeamB, setNewMatchTeamB] = useState("");
 
-  // Hash route listener
+  const inputRef = useRef(null);
+
   useEffect(() => {
     const onHash = () => setRoute(parseHashRoute());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
-
-  // Load localStorage
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) {
-        const d = JSON.parse(raw);
-        setTournamentName(d.tournamentName ?? "Coinche Scorekeeper");
-        setPlayers(d.players ?? []);
-        setTeams(d.teams ?? []);
-        setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
-        setPairHistory(d.pairHistory ?? []);
-        setMatches(d.matches ?? []);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
-
-  // Persist localStorage
-  useEffect(() => {
-    if (!loaded) return;
-    localStorage.setItem(
-      LS_KEY,
-      JSON.stringify({
-        tournamentName,
-        players,
-        teams,
-        avoidSameTeams,
-        pairHistory,
-        matches,
-      })
-    );
-  }, [loaded, tournamentName, players, teams, avoidSameTeams, pairHistory, matches]);
-
-  const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
-  const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
-
-  const teamNumberById = useMemo(() => {
-    const m = new Map();
-    teams.forEach((t, i) => m.set(t.id, i + 1));
-    return m;
-  }, [teams]);
 
   function defaultFastDraft() {
     return {
@@ -466,25 +489,6 @@ export default function App() {
       announceA: "0",
       announceB: "0",
       beloteTeam: "NONE",
-    };
-  }
-
-  function makeEmptyMatch({ label, table, teamAId, teamBId }) {
-    return {
-      id: uid("match"),
-      code: shortCode(),
-      label: label || `Table ${table || "?"}`,
-      table: table ? Number(table) : null,
-      teamAId: teamAId || null,
-      teamBId: teamBId || null,
-      hands: [],
-      totalA: 0,
-      totalB: 0,
-      winnerId: null,
-      completed: false,
-      fastDraft: defaultFastDraft(),
-      editingHandIdx: null,
-      createdAt: Date.now(),
     };
   }
 
@@ -507,6 +511,41 @@ export default function App() {
     return { ...m, totalA, totalB, completed, winnerId };
   }
 
+  // Load localStorage
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) {
+        const d = JSON.parse(raw);
+        setEventName(d.eventName ?? "Coinche Scorekeeper");
+        setPlayers(d.players ?? []);
+        setTeams(d.teams ?? []);
+        setMatches(d.matches ?? []);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  // Persist localStorage
+  useEffect(() => {
+    if (!loaded) return;
+    localStorage.setItem(
+      LS_KEY,
+      JSON.stringify({
+        eventName,
+        players,
+        teams,
+        matches,
+      })
+    );
+  }, [loaded, eventName, players, teams, matches]);
+
+  const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
+  const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
+
   /** ===== Players ===== */
   function addPlayer() {
     const name = newPlayerName.trim();
@@ -515,46 +554,43 @@ export default function App() {
     setNewPlayerName("");
     setTimeout(() => inputRef.current?.focus?.(), 0);
   }
-
   function removePlayer(id) {
     setPlayers((prev) => prev.filter((p) => p.id !== id));
-    // If player removed, easiest is to clear teams to avoid dangling ids
-    setTeams([]);
-    setPairHistory([]);
-    setMatches([]);
+    // also remove from teams
+    setTeams((prev) =>
+      prev.map((t) => ({ ...t, playerIds: (t.playerIds || []).filter((pid) => pid !== id) }))
+    );
   }
 
   /** ===== Teams ===== */
   function addTeam() {
-    const n = teams.length + 1;
-    setTeams((prev) => [
-      ...prev,
-      { id: uid("t"), name: `Team ${n}`, playerIds: [], locked: false },
-    ]);
+    const name = newTeamName.trim();
+    if (!name) return;
+    setTeams((prev) => [...prev, { id: uid("t"), name, playerIds: [] }]);
+    setNewTeamName("");
   }
-
   function removeTeam(teamId) {
     setTeams((prev) => prev.filter((t) => t.id !== teamId));
-    // remove from matches too
+    // remove/clear matches referencing this team
     setMatches((prev) =>
-      prev
-        .map((m) => {
-          if (m.teamAId === teamId) m = { ...m, teamAId: null };
-          if (m.teamBId === teamId) m = { ...m, teamBId: null };
-          return recomputeMatch({ ...m, hands: [] });
-        })
-        .filter(Boolean)
+      prev.map((m) => {
+        if (m.teamAId === teamId || m.teamBId === teamId) {
+          return recomputeMatch({
+            ...m,
+            teamAId: m.teamAId === teamId ? "" : m.teamAId,
+            teamBId: m.teamBId === teamId ? "" : m.teamBId,
+            hands: [],
+            fastDraft: defaultFastDraft(),
+            editingHandIdx: null,
+          });
+        }
+        return m;
+      })
     );
   }
-
-  function toggleTeamLock(teamId, locked) {
-    setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, locked: Boolean(locked) } : t)));
-  }
-
   function renameTeam(teamId, name) {
     setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, name } : t)));
   }
-
   function setTeamPlayer(teamId, slotIdx, playerIdOrEmpty) {
     setTeams((prev) =>
       prev.map((t) => {
@@ -563,11 +599,9 @@ export default function App() {
         while (ids.length < 2) ids.push("");
         ids[slotIdx] = playerIdOrEmpty;
 
-        // Avoid duplicates within same team
-        if (ids[0] && ids[0] === ids[1]) {
-          if (slotIdx === 0) ids[1] = "";
-          else ids[0] = "";
-        }
+        if (slotIdx === 0 && ids[0] && ids[0] === ids[1]) ids[1] = "";
+        if (slotIdx === 1 && ids[1] && ids[0] === ids[1]) ids[0] = "";
+
         return { ...t, playerIds: ids.filter(Boolean) };
       })
     );
@@ -579,100 +613,37 @@ export default function App() {
     return s;
   }, [teams]);
 
-  function buildRandomTeams() {
-    if (players.length < 2 || teams.length === 0) return;
+  /** ===== Matches (Tables) ===== */
+  function addMatch() {
+    if (!newMatchTeamA || !newMatchTeamB) return;
+    if (newMatchTeamA === newMatchTeamB) return;
 
-    const currentTeams = teams.map((t) => ({ ...t, playerIds: [...(t.playerIds || [])] }));
+    const tableNum = safeInt(newMatchTable) ?? 1;
 
-    // collect locked players
-    const lockedPlayers = new Set();
-    currentTeams.forEach((t) => {
-      if (!t.locked) return;
-      (t.playerIds || []).forEach((pid) => lockedPlayers.add(pid));
-    });
-
-    const available = players.map((p) => p.id).filter((pid) => !lockedPlayers.has(pid));
-    const tries = avoidSameTeams ? 40 : 1;
-    const historySet = new Set(pairHistory);
-    let best = null;
-
-    for (let k = 0; k < tries; k++) {
-      const shuffled = shuffleArray(available);
-      const pairs = [];
-      for (let i = 0; i < shuffled.length; i += 2) {
-        const a = shuffled[i];
-        const b = shuffled[i + 1] || null;
-        pairs.push([a, b]);
-      }
-
-      let repeats = 0;
-      for (const [a, b] of pairs) {
-        if (!a || !b) continue;
-        const key = [a, b].sort().join("|");
-        if (historySet.has(key)) repeats++;
-      }
-
-      if (!best || repeats < best.repeats) {
-        best = { pairs, repeats };
-        if (repeats === 0) break;
-      }
-    }
-
-    const finalPairs = best?.pairs ?? [];
-    const nextTeams = currentTeams.map((t) => ({ ...t }));
-
-    let pairIdx = 0;
-    for (let i = 0; i < nextTeams.length; i++) {
-      if (nextTeams[i].locked) continue;
-      const pair = finalPairs[pairIdx] || [null, null];
-      pairIdx++;
-      nextTeams[i].playerIds = [pair[0], pair[1]].filter(Boolean);
-    }
-
-    const namedTeams = nextTeams.map((t, i) => {
-      const pnames = (t.playerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean);
-      const base = `Team ${i + 1}`;
-      const label = pnames.length ? `${base} — ${pnames.join(" / ")}` : base;
-      return { ...t, name: t.name?.startsWith("Team ") ? label : t.name || label };
-    });
-
-    const newPairs = [];
-    for (const t of namedTeams) {
-      if ((t.playerIds || []).length === 2) newPairs.push([...t.playerIds].sort().join("|"));
-    }
-
-    setTeams(namedTeams);
-    setPairHistory((prev) => Array.from(new Set([...prev, ...newPairs])));
-  }
-
-  /** ===== Matches ===== */
-  function createMatch() {
-    if (!newMatchTeamA || !newMatchTeamB || newMatchTeamA === newMatchTeamB) return;
-    const m = makeEmptyMatch({
-      label: newMatchLabel.trim() || `Table ${newMatchTable}`,
-      table: newMatchTable,
+    const label = `Table ${tableNum}`;
+    const m = {
+      id: uid("match"),
+      code: shortCode(),
+      table: tableNum,
+      label,
       teamAId: newMatchTeamA,
       teamBId: newMatchTeamB,
-    });
-    setMatches((prev) => [...prev, recomputeMatch(m)]);
-    setNewMatchLabel("");
+      hands: [],
+      totalA: 0,
+      totalB: 0,
+      winnerId: null,
+      completed: false,
+      fastDraft: defaultFastDraft(),
+      editingHandIdx: null,
+    };
+    setMatches((prev) => [...prev, recomputeMatch(m)].sort((a, b) => (a.table || 0) - (b.table || 0)));
   }
 
   function removeMatch(matchId) {
     setMatches((prev) => prev.filter((m) => m.id !== matchId));
   }
 
-  function clearMatchHands(matchId) {
-    setMatches((prev) =>
-      prev.map((m) =>
-        m.id === matchId
-          ? recomputeMatch({ ...m, hands: [], editingHandIdx: null, fastDraft: defaultFastDraft() })
-          : m
-      )
-    );
-  }
-
-  function updateDraft(matchId, patch) {
+  function updateMatchDraft(matchId, patch) {
     setMatches((prev) =>
       prev.map((m) => {
         if (m.id !== matchId) return m;
@@ -709,9 +680,7 @@ export default function App() {
 
   function cancelEditHand(matchId) {
     setMatches((prev) =>
-      prev.map((m) =>
-        m.id === matchId ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() } : m
-      )
+      prev.map((m) => (m.id === matchId ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() } : m))
     );
   }
 
@@ -724,7 +693,6 @@ export default function App() {
         if (!canPlay) return m;
 
         const d = m.fastDraft || defaultFastDraft();
-
         const bidVal = safeInt(d.bid);
         const trickVal = safeInt(d.bidderTrickPoints);
         if (bidVal === null || trickVal === null) return m;
@@ -741,7 +709,7 @@ export default function App() {
           beloteTeam: d.beloteTeam || "NONE",
         });
 
-        // Editing existing hand
+        // If editing: replace that hand
         if (m.editingHandIdx) {
           const nextHands = (m.hands || []).map((h) => {
             if (h.idx !== m.editingHandIdx) return h;
@@ -772,7 +740,7 @@ export default function App() {
           });
         }
 
-        // Normal add (stop if match ended)
+        // Normal add: don't add after match ended
         const current = recomputeMatch(m);
         if (current.completed) return current;
 
@@ -804,39 +772,70 @@ export default function App() {
     );
   }
 
-  /** ===== Global scoreboard + stats ===== */
+  function clearMatchHands(matchId) {
+    setMatches((prev) =>
+      prev.map((m) =>
+        m.id === matchId
+          ? recomputeMatch({ ...m, hands: [], editingHandIdx: null, fastDraft: defaultFastDraft() })
+          : m
+      )
+    );
+  }
+
+  /** ===== Links ===== */
+  const publicLink = useMemo(() => `${window.location.origin}${window.location.pathname}#/public`, []);
+  const tableLinks = useMemo(() => {
+    return matches.map((m) => ({
+      label: `${m.label} • ${teamById.get(m.teamAId)?.name ?? "TBD"} vs ${teamById.get(m.teamBId)?.name ?? "TBD"}`,
+      code: m.code,
+      href: `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`,
+    }));
+  }, [matches, teamById]);
+
+  /** ===== Table lookup ===== */
+  const { path, query } = route;
+  const tableMatch = useMemo(() => {
+    const code = (query.code || "").toUpperCase();
+    if (!code) return null;
+    const m = matches.find((x) => (x.code || "").toUpperCase() === code);
+    return m || null;
+  }, [query.code, matches]);
+
+  /** ===== Scoreboard rows (across all matches) ===== */
   const scoreboardRows = useMemo(() => {
-    // wins/losses from completed matches
     const rows = teams.map((t) => ({
       teamId: t.id,
       name: t.name,
-      matchesPlayed: 0,
       wins: 0,
       losses: 0,
-      totalGamePoints: 0, // sum of points they scored across all matches
-      pointsDiff: 0,
+      gamesPlayed: 0,
+      pointsFor: 0,
+      pointsAgainst: 0,
+      completedGames: 0,
     }));
 
     const byId = new Map(rows.map((r) => [r.teamId, r]));
 
-    for (const m of matches) {
-      if (!m.teamAId || !m.teamBId) continue;
-
+    matches.forEach((m) => {
+      if (!m.teamAId || !m.teamBId) return;
       const a = byId.get(m.teamAId);
       const b = byId.get(m.teamBId);
-      if (!a || !b) continue;
+      if (!a || !b) return;
 
-      a.totalGamePoints += Number(m.totalA) || 0;
-      b.totalGamePoints += Number(m.totalB) || 0;
-      a.pointsDiff += (Number(m.totalA) || 0) - (Number(m.totalB) || 0);
-      b.pointsDiff += (Number(m.totalB) || 0) - (Number(m.totalA) || 0);
+      a.pointsFor += Number(m.totalA) || 0;
+      a.pointsAgainst += Number(m.totalB) || 0;
+      b.pointsFor += Number(m.totalB) || 0;
+      b.pointsAgainst += Number(m.totalA) || 0;
 
       if ((m.hands || []).length > 0) {
-        a.matchesPlayed += 1;
-        b.matchesPlayed += 1;
+        a.gamesPlayed += 1;
+        b.gamesPlayed += 1;
       }
 
-      if (m.completed && m.winnerId) {
+      if (m.completed) {
+        a.completedGames += 1;
+        b.completedGames += 1;
+
         if (m.winnerId === m.teamAId) {
           a.wins += 1;
           b.losses += 1;
@@ -845,33 +844,36 @@ export default function App() {
           a.losses += 1;
         }
       }
-    }
+    });
 
     return [...rows].sort((x, y) => {
       if (y.wins !== x.wins) return y.wins - x.wins;
-      if (y.pointsDiff !== x.pointsDiff) return y.pointsDiff - x.pointsDiff;
-      if (y.totalGamePoints !== x.totalGamePoints) return y.totalGamePoints - x.totalGamePoints;
+      const xDiff = x.pointsFor - x.pointsAgainst;
+      const yDiff = y.pointsFor - y.pointsAgainst;
+      if (yDiff !== xDiff) return yDiff - xDiff;
+      if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
       return x.name.localeCompare(y.name);
     });
   }, [teams, matches]);
 
+  /** ===== Global stats + fun facts ===== */
   const globalStats = useMemo(() => {
     const completed = matches.filter((m) => m.completed);
 
-    const totalHands = matches.reduce((acc, m) => acc + (m.hands?.length || 0), 0);
+    const totalHands = completed.reduce((acc, m) => acc + (m.hands?.length || 0), 0);
 
+    // biggest hand swing
     let biggestHand = { pts: 0, label: "—" };
-    for (const m of matches) {
+    for (const m of completed) {
       for (const h of m.hands || []) {
         const swing = Math.abs((h.scoreA || 0) - (h.scoreB || 0));
         if (swing > biggestHand.pts) {
-          const ta = teamById.get(m.teamAId)?.name ?? "Team A";
-          const tb = teamById.get(m.teamBId)?.name ?? "Team B";
-          biggestHand = { pts: swing, label: `${ta} vs ${tb} (Hand ${h.idx})` };
+          biggestHand = { pts: swing, label: `${matchLabel(m, teamById)} (Hand ${h.idx})` };
         }
       }
     }
 
+    // fastest match (fewest hands)
     let fastest = null;
     for (const m of completed) {
       const hands = (m.hands || []).length;
@@ -879,14 +881,15 @@ export default function App() {
       if (!fastest || hands < fastest.hands) fastest = { match: m, hands };
     }
 
+    // closest match (smallest abs diff)
     let closest = null;
     for (const m of completed) {
       const diff = Math.abs((m.totalA || 0) - (m.totalB || 0));
-      if (!m.completed || diff === 0) continue;
+      if (diff === 0) continue;
       if (!closest || diff < closest.diff) closest = { match: m, diff };
     }
 
-    // Funny stats
+    // Funny stats (coinche/capot/belote)
     const teamFun = new Map(); // teamId -> {coinches, surcoinches, capots, belotes}
     const bump = (tid, key, n = 1) => {
       if (!tid) return;
@@ -895,13 +898,12 @@ export default function App() {
       teamFun.set(tid, cur);
     };
 
-    for (const m of matches) {
+    for (const m of completed) {
       for (const h of m.hands || []) {
         const d = h.draftSnapshot || {};
-        const bidderTeamId = d.bidder === "A" ? m.teamAId : m.teamBId;
-        if (d.coincheLevel === "COINCHE") bump(bidderTeamId, "coinches");
-        if (d.coincheLevel === "SURCOINCHE") bump(bidderTeamId, "surcoinches");
-        if (d.capot) bump(bidderTeamId, "capots");
+        if (d.coincheLevel === "COINCHE") bump(d.bidder === "A" ? m.teamAId : m.teamBId, "coinches");
+        if (d.coincheLevel === "SURCOINCHE") bump(d.bidder === "A" ? m.teamAId : m.teamBId, "surcoinches");
+        if (d.capot) bump(d.bidder === "A" ? m.teamAId : m.teamBId, "capots");
         if (d.beloteTeam === "A") bump(m.teamAId, "belotes");
         if (d.beloteTeam === "B") bump(m.teamBId, "belotes");
       }
@@ -917,65 +919,97 @@ export default function App() {
       return { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
     };
 
+    const coincheKing = funLeaders("coinches");
+    const surcoincheBoss = funLeaders("surcoinches");
+    const capotHero = funLeaders("capots");
+    const beloteMagnet = funLeaders("belotes");
+
+    // Fun facts
+    let biggestBlowout = { diff: 0, label: "—" };
+    let bestComeback = { deficit: 0, label: "—" };
+    let mostBackAndForth = { changes: 0, label: "—" };
+
+    let clutchFinish = { diff: 0, label: "—" }; // smallest is best (we store min)
+    let momentumMonster = { swing: 0, label: "—" };
+
+    const pdByTeam = new Map();
+    const bumpPD = (teamId, n) => {
+      if (!teamId || !n) return;
+      pdByTeam.set(teamId, (pdByTeam.get(teamId) || 0) + n);
+    };
+
+    for (const m of completed) {
+      const s = matchStoryStats(m);
+      const label = matchLabel(m, teamById);
+
+      if (s.finalDiff > biggestBlowout.diff) biggestBlowout = { diff: s.finalDiff, label };
+      if (s.comebackDeficit > bestComeback.deficit) bestComeback = { deficit: s.comebackDeficit, label };
+      if (s.leadChanges > mostBackAndForth.changes) mostBackAndForth = { changes: s.leadChanges, label };
+
+      // clutch: smallest non-zero is best
+      if (s.clutchMinDiff > 0) {
+        if (clutchFinish.label === "—" || s.clutchMinDiff < clutchFinish.diff) {
+          clutchFinish = { diff: s.clutchMinDiff, label };
+        }
+      }
+
+      if (s.momentum2Swing > momentumMonster.swing) {
+        momentumMonster = { swing: s.momentum2Swing, label };
+      }
+
+      bumpPD(m.teamAId, s.perfectDefenseA);
+      bumpPD(m.teamBId, s.perfectDefenseB);
+    }
+
+    let bestPD = { teamId: null, v: 0 };
+    for (const [teamId, v] of pdByTeam.entries()) {
+      if (v > bestPD.v) bestPD = { teamId, v };
+    }
+    const perfectDefense =
+      bestPD.v > 0
+        ? { name: teamById.get(bestPD.teamId)?.name ?? "—", v: bestPD.v }
+        : { name: "—", v: 0 };
+
     return {
-      completedMatches: completed.length,
+      completedGames: completed.length,
       totalHands,
       biggestHand,
       fastest,
       closest,
-      funny: {
-        coincheKing: funLeaders("coinches"),
-        surcoincheBoss: funLeaders("surcoinches"),
-        capotHero: funLeaders("capots"),
-        beloteMagnet: funLeaders("belotes"),
-      },
+      funny: { coincheKing, surcoincheBoss, capotHero, beloteMagnet },
+      biggestBlowout,
+      bestComeback,
+      mostBackAndForth,
+      clutchFinish,
+      momentumMonster,
+      perfectDefense,
     };
   }, [matches, teamById]);
-
-  /** ===== Links ===== */
-  const publicLink = useMemo(
-    () => `${window.location.origin}${window.location.pathname}#/public`,
-    []
-  );
-  const tableLinks = useMemo(() => {
-    return matches.map((m) => ({
-      label: m.label,
-      code: m.code,
-      href: `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`,
-    }));
-  }, [matches]);
 
   /** ===== Export CSV ===== */
   function exportCSV() {
     const rows = [];
     const pushRow = (obj) => rows.push(obj);
 
-    pushRow({ TYPE: "META", tournamentName, date: new Date().toISOString() });
+    pushRow({ TYPE: "META", eventName, date: new Date().toISOString() });
 
-    teams.forEach((t, idx) => {
+    teams.forEach((t) => {
       const pnames = (t.playerIds || [])
         .map((pid) => playerById.get(pid)?.name)
         .filter(Boolean)
         .join(" / ");
-      pushRow({
-        TYPE: "TEAM",
-        teamNumber: idx + 1,
-        teamId: t.id,
-        teamName: t.name,
-        players: pnames,
-        locked: t.locked ? "YES" : "NO",
-      });
+      pushRow({ TYPE: "TEAM", teamId: t.id, teamName: t.name, players: pnames });
     });
 
-    const addMatchRows = (m) => {
+    matches.forEach((m) => {
       const ta = teamById.get(m.teamAId)?.name ?? "";
       const tb = teamById.get(m.teamBId)?.name ?? "";
       pushRow({
         TYPE: "MATCH",
         matchId: m.id,
         code: m.code,
-        label: m.label,
         table: m.table ?? "",
+        label: m.label,
         teamA: ta,
         teamB: tb,
         totalA: m.totalA ?? 0,
@@ -1005,9 +1039,7 @@ export default function App() {
           bidderSucceeded: h.bidderSucceeded ? "YES" : "NO",
         });
       });
-    };
-
-    matches.forEach((m) => addMatchRows(m));
+    });
 
     const cols = Array.from(
       rows.reduce((set, r) => {
@@ -1032,16 +1064,7 @@ export default function App() {
     URL.revokeObjectURL(a.href);
   }
 
-  /** ===== Route rendering ===== */
-  const { path, query } = route;
-
-  const tableMatch = useMemo(() => {
-    const code = (query.code || "").toUpperCase();
-    if (!code) return null;
-    const m = matches.find((x) => (x.code || "").toUpperCase() === code);
-    return m || null;
-  }, [query.code, matches]);
-
+  /** ===== Nav pills ===== */
   const NavPills = ({ showAdmin = true }) => (
     <div style={styles.pillRow}>
       {showAdmin ? (
@@ -1062,43 +1085,54 @@ export default function App() {
         <div style={styles.container}>
           <div style={styles.topbar}>
             <div>
-              <h1 style={styles.title}>{tournamentName}</h1>
-              <div style={styles.subtitle}>Public scoreboard • Live updates • Scorekeeping only</div>
+              <h1 style={styles.title}>{eventName}</h1>
+              <div style={styles.subtitle}>Public scoreboard • Live updates</div>
             </div>
             <NavPills showAdmin={true} />
           </div>
 
-          <Section title="Live Scoreboard">
-            <ScoreboardTable rows={scoreboardRows} />
-          </Section>
-
           <div style={styles.grid2}>
-            <Section title="Important Stats">
+            <Section title="Live Scoreboard">
+              <ScoreboardTable rows={scoreboardRows} />
+            </Section>
+
+            <Section title="Fun Facts">
               <div style={styles.grid3}>
-                <StatCard label="Completed Matches" value={globalStats.completedMatches} />
-                <StatCard label="Total Hands Played" value={globalStats.totalHands} />
-                <StatCard label="Biggest Hand Swing" value={`${globalStats.biggestHand.pts}`} sub={globalStats.biggestHand.label} />
                 <StatCard
-                  label="Fastest Finished Match"
-                  value={globalStats.fastest ? `${globalStats.fastest.hands} hands` : "—"}
-                  sub={
-                    globalStats.fastest
-                      ? `${teamById.get(globalStats.fastest.match.teamAId)?.name ?? ""} vs ${teamById.get(globalStats.fastest.match.teamBId)?.name ?? ""}`
-                      : ""
-                  }
+                  label="Biggest Blowout"
+                  value={globalStats.biggestBlowout.diff ? `${globalStats.biggestBlowout.diff} pts` : "—"}
+                  sub={globalStats.biggestBlowout.label}
                 />
                 <StatCard
-                  label="Closest Finished Match"
-                  value={globalStats.closest ? `${globalStats.closest.diff} pts` : "—"}
-                  sub={
-                    globalStats.closest
-                      ? `${teamById.get(globalStats.closest.match.teamAId)?.name ?? ""} vs ${teamById.get(globalStats.closest.match.teamBId)?.name ?? ""}`
-                      : ""
-                  }
+                  label="Best Comeback"
+                  value={globalStats.bestComeback.deficit ? `${globalStats.bestComeback.deficit} pts` : "—"}
+                  sub={globalStats.bestComeback.label}
+                />
+                <StatCard
+                  label="Most Back-and-Forth"
+                  value={globalStats.mostBackAndForth.changes ? `${globalStats.mostBackAndForth.changes} lead changes` : "—"}
+                  sub={globalStats.mostBackAndForth.label}
+                />
+                <StatCard
+                  label="Clutch Finish (last 3 hands)"
+                  value={globalStats.clutchFinish.label !== "—" ? `${globalStats.clutchFinish.diff} pts` : "—"}
+                  sub={globalStats.clutchFinish.label}
+                />
+                <StatCard
+                  label="Momentum Monster (2 hands)"
+                  value={globalStats.momentumMonster.swing ? `${globalStats.momentumMonster.swing} swing` : "—"}
+                  sub={globalStats.momentumMonster.label}
+                />
+                <StatCard
+                  label="Perfect Defense"
+                  value={globalStats.perfectDefense.name}
+                  sub={globalStats.perfectDefense.v ? `${globalStats.perfectDefense.v} zero-hands forced` : ""}
                 />
               </div>
             </Section>
+          </div>
 
+          <div style={styles.grid2}>
             <Section title="Funny Stats">
               <div style={styles.grid3}>
                 <StatCard label="Coinche King" value={globalStats.funny.coincheKing.name} sub={`${globalStats.funny.coincheKing.v} coinches`} />
@@ -1107,25 +1141,25 @@ export default function App() {
                 <StatCard label="Belote Magnet" value={globalStats.funny.beloteMagnet.name} sub={`${globalStats.funny.beloteMagnet.v} belotes`} />
               </div>
             </Section>
-          </div>
 
-          <Section title="Table Entry Links (for tables)">
-            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
-              Each table uses their own link to enter hands/scores.
-            </div>
-            <div style={styles.grid3}>
-              {tableLinks.map((t) => (
-                <div key={t.code} style={styles.card}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>{t.label}</div>
-                  <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>Code: {t.code}</div>
-                  <a href={t.href} style={{ ...styles.btnSecondary, display: "inline-block", textDecoration: "none" }}>
-                    Open Table View
-                  </a>
-                </div>
-              ))}
-              {tableLinks.length === 0 ? <div style={styles.small}>No matches created yet (Admin must create tables).</div> : null}
-            </div>
-          </Section>
+            <Section title="Table Entry Links">
+              <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
+                Each table uses their own link to enter hands/scores.
+              </div>
+              <div style={styles.grid3}>
+                {tableLinks.map((t) => (
+                  <div key={t.code} style={styles.card}>
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>{t.label}</div>
+                    <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>Code: {t.code}</div>
+                    <a href={t.href} style={{ ...styles.btnSecondary, display: "inline-block", textDecoration: "none" }}>
+                      Open Table View
+                    </a>
+                  </div>
+                ))}
+                {tableLinks.length === 0 ? <div style={styles.small}>No matches created yet (Admin creates tables).</div> : null}
+              </div>
+            </Section>
+          </div>
         </div>
       </div>
     );
@@ -1138,7 +1172,7 @@ export default function App() {
         <div style={styles.container}>
           <div style={styles.topbar}>
             <div>
-              <h1 style={styles.title}>{tournamentName}</h1>
+              <h1 style={styles.title}>{eventName}</h1>
               <div style={styles.subtitle}>Table View • Enter hands for your match only</div>
             </div>
             <NavPills showAdmin={true} />
@@ -1158,8 +1192,7 @@ export default function App() {
               <TableMatchPanel
                 match={tableMatch}
                 teamById={teamById}
-                teamNumberById={teamNumberById}
-                onDraftPatch={(patch) => updateDraft(tableMatch.id, patch)}
+                onDraftPatch={(patch) => updateMatchDraft(tableMatch.id, patch)}
                 onAddHand={() => addOrSaveHand(tableMatch.id)}
                 onClearHands={() => clearMatchHands(tableMatch.id)}
                 onStartEditHand={(handIdx) => startEditHand(tableMatch.id, handIdx)}
@@ -1188,8 +1221,8 @@ export default function App() {
       <div style={styles.container}>
         <div style={styles.topbar}>
           <div>
-            <h1 style={styles.title}>{tournamentName}</h1>
-            <div style={styles.subtitle}>Admin • Setup teams • Create table matches • Share links • Export CSV</div>
+            <h1 style={styles.title}>{eventName}</h1>
+            <div style={styles.subtitle}>Admin • Setup players/teams • Create table matches • Share links • Export CSV</div>
           </div>
           <NavPills showAdmin={false} />
         </div>
@@ -1213,29 +1246,15 @@ export default function App() {
               >
                 Copy Public Link
               </button>
-            </div>
-          }
-        >
-          <div style={styles.small}>
-            Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span>
-          </div>
-        </Section>
-
-        <Section
-          title="Settings"
-          right={
-            <div style={styles.row}>
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
-                <input type="checkbox" checked={avoidSameTeams} onChange={(e) => setAvoidSameTeams(e.target.checked)} />
-                Avoid repeating pairs
-              </label>
-              <button style={styles.btnDanger} onClick={() => { 
-                setTournamentName("Coinche Scorekeeper"); 
-                setPlayers([]); 
-                setTeams([]); 
-                setPairHistory([]); 
-                setMatches([]); 
-              }}>
+              <button
+                style={styles.btnDanger}
+                onClick={() => {
+                  if (!confirm("Reset everything? This clears players, teams and matches.")) return;
+                  setPlayers([]);
+                  setTeams([]);
+                  setMatches([]);
+                }}
+              >
                 Full Reset
               </button>
             </div>
@@ -1243,8 +1262,23 @@ export default function App() {
         >
           <div style={styles.grid4}>
             <div style={styles.card}>
-              <div style={styles.small}>Tournament name</div>
-              <input style={styles.input("100%")} value={tournamentName} onChange={(e) => setTournamentName(e.target.value)} />
+              <div style={styles.small}>Event name</div>
+              <input style={styles.input("100%")} value={eventName} onChange={(e) => setEventName(e.target.value)} />
+            </div>
+            <div style={styles.card}>
+              <div style={styles.small}>Target score</div>
+              <div style={{ fontSize: 18, fontWeight: 950 }}>{TARGET_SCORE}</div>
+              <div style={styles.small}>Match completes when a team reaches {TARGET_SCORE}+.</div>
+            </div>
+            <div style={styles.card}>
+              <div style={styles.small}>Created matches</div>
+              <div style={{ fontSize: 18, fontWeight: 950 }}>{matches.length}</div>
+              <div style={styles.small}>Each match has a table code link.</div>
+            </div>
+            <div style={styles.card}>
+              <div style={styles.small}>Completed games</div>
+              <div style={{ fontSize: 18, fontWeight: 950 }}>{globalStats.completedGames}</div>
+              <div style={styles.small}>Total hands: {globalStats.totalHands}</div>
             </div>
           </div>
         </Section>
@@ -1282,260 +1316,239 @@ export default function App() {
           </div>
         </Section>
 
-        <Section
-          title={`Teams (${teams.length})`}
-          right={
-            <div style={styles.row}>
-              <button style={styles.btnSecondary} onClick={addTeam}>
-                Add Team
-              </button>
-              <button style={styles.btnSecondary} onClick={buildRandomTeams} disabled={players.length < 2 || teams.length === 0}>
-                Randomize Teams (respects locks)
-              </button>
-            </div>
-          }
-        >
-          {teams.length === 0 ? (
-            <div style={styles.small}>Create at least 1 team to begin.</div>
-          ) : (
-            <>
-              <div style={{ ...styles.small, marginBottom: 10 }}>
-                Manual assignment: pick players for each team (prevents overlap). Use <b>Lock</b> to keep a team fixed when randomizing.
-              </div>
-
-              <div style={styles.grid2}>
-                {teams.map((t, idx) => (
-                  <div key={t.id} style={styles.card}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                      <div style={{ fontWeight: 950 }}>Team #{idx + 1}</div>
-                      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                        <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900, color: t.locked ? "#34d399" : "#94a3b8" }}>
-                          <input type="checkbox" checked={!!t.locked} onChange={(e) => toggleTeamLock(t.id, e.target.checked)} />
-                          Lock
-                        </label>
-                        <button style={styles.btnGhost} onClick={() => removeTeam(t.id)} title="Remove team">
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 10 }}>
-                      <div style={styles.small}>Team name</div>
-                      <input
-                        style={styles.input("100%")}
-                        value={t.name}
-                        onChange={(e) => renameTeam(t.id, e.target.value)}
-                        placeholder={`Team ${idx + 1}`}
-                      />
-                    </div>
-
-                    <div style={{ marginTop: 10, ...styles.grid2 }}>
-                      <div>
-                        <div style={styles.small}>Player 1</div>
-                        <select
-                          style={styles.select("100%")}
-                          value={t.playerIds?.[0] || ""}
-                          onChange={(e) => setTeamPlayer(t.id, 0, e.target.value)}
-                        >
-                          <option value="">— Select —</option>
-                          {players.map((p) => {
-                            const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
-                            return (
-                              <option key={p.id} value={p.id} disabled={taken}>
-                                {p.name}{taken ? " (used)" : ""}
-                              </option>
-                            );
-                          })}
-                        </select>
-                      </div>
-
-                      <div>
-                        <div style={styles.small}>Player 2</div>
-                        <select
-                          style={styles.select("100%")}
-                          value={t.playerIds?.[1] || ""}
-                          onChange={(e) => setTeamPlayer(t.id, 1, e.target.value)}
-                        >
-                          <option value="">— Select —</option>
-                          {players.map((p) => {
-                            const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
-                            return (
-                              <option key={p.id} value={p.id} disabled={taken}>
-                                {p.name}{taken ? " (used)" : ""}
-                              </option>
-                            );
-                          })}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 10, ...styles.small }}>
-                      Members: {(t.playerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean).join(" / ") || "—"}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </Section>
-
-        <Section title="Create Matches (Tables)">
-          <div style={{ ...styles.small, marginBottom: 10 }}>
-            Select Team A vs Team B and create a match. Each match generates a unique table code + link.
+        <Section title={`Teams (${teams.length})`}>
+          <div style={styles.row}>
+            <input
+              style={styles.input(320)}
+              value={newTeamName}
+              onChange={(e) => setNewTeamName(e.target.value)}
+              placeholder="New team name"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addTeam();
+              }}
+            />
+            <button style={styles.btnPrimary} onClick={addTeam} disabled={!newTeamName.trim()}>
+              Add Team
+            </button>
           </div>
 
-          <div style={styles.grid2}>
+          <div style={{ marginTop: 12, ...styles.grid2 }}>
+            {teams.map((t) => (
+              <div key={t.id} style={styles.card}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <div style={{ fontWeight: 950 }}>Team</div>
+                  <button style={styles.btnDanger} onClick={() => removeTeam(t.id)}>
+                    Delete Team
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 10 }}>
+                  <div style={styles.small}>Team name</div>
+                  <input style={styles.input("100%")} value={t.name} onChange={(e) => renameTeam(t.id, e.target.value)} />
+                </div>
+
+                <div style={{ marginTop: 10, ...styles.grid2 }}>
+                  <div>
+                    <div style={styles.small}>Player 1</div>
+                    <select
+                      style={styles.select("100%")}
+                      value={t.playerIds?.[0] || ""}
+                      onChange={(e) => setTeamPlayer(t.id, 0, e.target.value)}
+                    >
+                      <option value="">— Select —</option>
+                      {players.map((p) => {
+                        const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
+                        return (
+                          <option key={p.id} value={p.id} disabled={taken}>
+                            {p.name}
+                            {taken ? " (used)" : ""}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+
+                  <div>
+                    <div style={styles.small}>Player 2</div>
+                    <select
+                      style={styles.select("100%")}
+                      value={t.playerIds?.[1] || ""}
+                      onChange={(e) => setTeamPlayer(t.id, 1, e.target.value)}
+                    >
+                      <option value="">— Select —</option>
+                      {players.map((p) => {
+                        const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
+                        return (
+                          <option key={p.id} value={p.id} disabled={taken}>
+                            {p.name}
+                            {taken ? " (used)" : ""}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 10, ...styles.small }}>
+                  Members: {(t.playerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean).join(" / ") || "—"}
+                </div>
+              </div>
+            ))}
+            {teams.length === 0 ? <div style={styles.small}>Add teams to create matches (tables).</div> : null}
+          </div>
+        </Section>
+
+        <Section title="Create a Match (Table)">
+          <div style={styles.grid4}>
             <div style={styles.card}>
-              <div style={{ fontWeight: 950, marginBottom: 10 }}>New Match</div>
-
-              <div style={styles.handGrid}>
-                <div>
-                  <div style={styles.small}>Label</div>
-                  <input
-                    style={styles.input("100%")}
-                    value={newMatchLabel}
-                    onChange={(e) => setNewMatchLabel(e.target.value)}
-                    placeholder="e.g., Round 1 • Table 3"
-                  />
-                </div>
-
-                <div>
-                  <div style={styles.small}>Table #</div>
-                  <input
-                    style={styles.input("100%")}
-                    value={newMatchTable}
-                    onChange={(e) => setNewMatchTable(e.target.value)}
-                    inputMode="numeric"
-                    placeholder="1"
-                  />
-                </div>
-
-                <div>
-                  <div style={styles.small}>Team A</div>
-                  <select style={styles.select("100%")} value={newMatchTeamA} onChange={(e) => setNewMatchTeamA(e.target.value)}>
-                    <option value="">— Select —</option>
-                    {teams.map((t) => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <div style={styles.small}>Team B</div>
-                  <select style={styles.select("100%")} value={newMatchTeamB} onChange={(e) => setNewMatchTeamB(e.target.value)}>
-                    <option value="">— Select —</option>
-                    {teams.map((t) => (
-                      <option key={t.id} value={t.id} disabled={t.id === newMatchTeamA}>{t.name}{t.id === newMatchTeamA ? " (same)" : ""}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button
-                  style={styles.btnPrimary}
-                  onClick={createMatch}
-                  disabled={!newMatchTeamA || !newMatchTeamB || newMatchTeamA === newMatchTeamB}
-                >
-                  Create Match
-                </button>
-                <button style={styles.btnSecondary} onClick={() => { setNewMatchLabel(""); setNewMatchTeamA(""); setNewMatchTeamB(""); }}>
-                  Clear
-                </button>
-              </div>
+              <div style={styles.small}>Table #</div>
+              <input style={styles.input("100%")} value={newMatchTable} onChange={(e) => setNewMatchTable(e.target.value)} inputMode="numeric" />
             </div>
 
             <div style={styles.card}>
-              <div style={{ fontWeight: 950, marginBottom: 10 }}>Shareable Links</div>
-              <div style={styles.small}>Public: {publicLink}</div>
-
-              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
-                {tableLinks.map((t) => (
-                  <div key={t.code} style={{ ...styles.card, borderRadius: 16 }}>
-                    <div style={{ fontWeight: 900 }}>{t.label}</div>
-                    <div style={styles.small}>Code: <b style={{ color: "#e5e7eb" }}>{t.code}</b></div>
-                    <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                      <a href={t.href} style={{ ...styles.btnSecondary, textDecoration: "none" }}>Open</a>
-                      <button
-                        style={styles.btnSecondary}
-                        onClick={() => {
-                          navigator.clipboard?.writeText(t.href);
-                          alert(`Copied link for ${t.label}`);
-                        }}
-                      >
-                        Copy Link
-                      </button>
-                    </div>
-                  </div>
+              <div style={styles.small}>Team A</div>
+              <select style={styles.select("100%")} value={newMatchTeamA} onChange={(e) => setNewMatchTeamA(e.target.value)}>
+                <option value="">— Select —</option>
+                {teams.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
                 ))}
-                {tableLinks.length === 0 ? <div style={styles.small}>No matches created yet.</div> : null}
-              </div>
+              </select>
+            </div>
+
+            <div style={styles.card}>
+              <div style={styles.small}>Team B</div>
+              <select style={styles.select("100%")} value={newMatchTeamB} onChange={(e) => setNewMatchTeamB(e.target.value)}>
+                <option value="">— Select —</option>
+                {teams.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div style={styles.card}>
+              <div style={styles.small}>Create</div>
+              <button
+                style={styles.btnPrimary}
+                onClick={addMatch}
+                disabled={!newMatchTeamA || !newMatchTeamB || newMatchTeamA === newMatchTeamB}
+              >
+                Add Match
+              </button>
+              <div style={{ marginTop: 8, ...styles.small }}>Creates a unique table code link.</div>
             </div>
           </div>
         </Section>
 
-        <Section title="Matches (Admin can also edit)">
+        <Section title="Matches (Admin can edit)">
           {!matches.length ? (
-            <div style={styles.small}>No matches yet. Create matches above.</div>
+            <div style={styles.small}>No matches yet. Create table matches above.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {matches
                 .slice()
-                .sort((a, b) => (a.table || 0) - (b.table || 0) || (a.label || "").localeCompare(b.label || ""))
-                .map((m) => (
-                  <div key={m.id} style={styles.card}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
-                      <div style={{ fontWeight: 950 }}>
-                        {m.label} {m.table ? <span style={styles.small}>• Table {m.table}</span> : null}{" "}
-                        <span style={styles.small}>• Code {m.code}</span>
+                .sort((a, b) => (a.table || 0) - (b.table || 0))
+                .map((m) => {
+                  const href = `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`;
+                  return (
+                    <div key={m.id} style={styles.card}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+                        <div style={{ fontWeight: 950 }}>
+                          {m.label} <span style={styles.small}>• Code {m.code}</span>
+                        </div>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                          <a href={href} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                            Open Table
+                          </a>
+                          <button
+                            style={styles.btnSecondary}
+                            onClick={() => {
+                              navigator.clipboard?.writeText(href);
+                              alert("Table link copied!");
+                            }}
+                          >
+                            Copy Link
+                          </button>
+                          <button style={styles.btnDanger} onClick={() => removeMatch(m.id)}>
+                            Delete Match
+                          </button>
+                        </div>
                       </div>
-                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                        <button style={styles.btnSecondary} onClick={() => (window.location.hash = `#/table?code=${m.code}`)}>
-                          Open Table
-                        </button>
-                        <button style={styles.btnSecondary} onClick={() => clearMatchHands(m.id)}>
-                          Clear Hands
-                        </button>
-                        <button style={styles.btnDanger} onClick={() => removeMatch(m.id)}>
-                          Remove Match
-                        </button>
-                      </div>
-                    </div>
 
-                    <div style={{ marginTop: 10 }}>
-                      <TableMatchPanel
-                        match={m}
-                        teamById={teamById}
-                        teamNumberById={teamNumberById}
-                        onDraftPatch={(patch) => updateDraft(m.id, patch)}
-                        onAddHand={() => addOrSaveHand(m.id)}
-                        onClearHands={() => clearMatchHands(m.id)}
-                        onStartEditHand={(handIdx) => startEditHand(m.id, handIdx)}
-                        onCancelEdit={() => cancelEditHand(m.id)}
-                      />
+                      <div style={{ marginTop: 10 }}>
+                        <TableMatchPanel
+                          match={m}
+                          teamById={teamById}
+                          onDraftPatch={(patch) => updateMatchDraft(m.id, patch)}
+                          onAddHand={() => addOrSaveHand(m.id)}
+                          onClearHands={() => clearMatchHands(m.id)}
+                          onStartEditHand={(handIdx) => startEditHand(m.id, handIdx)}
+                          onCancelEdit={() => cancelEditHand(m.id)}
+                        />
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
             </div>
           )}
         </Section>
 
-        <Section title="Scoreboard + Stats (Live)">
+        <Section title="Live Scoreboard + Stats">
           <div style={styles.grid2}>
             <div style={styles.card}>
               <div style={{ fontWeight: 950, marginBottom: 8 }}>Live Scoreboard</div>
               <ScoreboardTable rows={scoreboardRows} />
             </div>
+
             <div style={styles.card}>
-              <div style={{ fontWeight: 950, marginBottom: 8 }}>Stats</div>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Fun Facts</div>
               <div style={styles.grid3}>
-                <StatCard label="Completed Matches" value={globalStats.completedMatches} />
-                <StatCard label="Total Hands Played" value={globalStats.totalHands} />
+                <StatCard label="Biggest Blowout" value={globalStats.biggestBlowout.diff ? `${globalStats.biggestBlowout.diff} pts` : "—"} sub={globalStats.biggestBlowout.label} />
+                <StatCard label="Best Comeback" value={globalStats.bestComeback.deficit ? `${globalStats.bestComeback.deficit} pts` : "—"} sub={globalStats.bestComeback.label} />
+                <StatCard label="Most Back-and-Forth" value={globalStats.mostBackAndForth.changes ? `${globalStats.mostBackAndForth.changes} lead changes` : "—"} sub={globalStats.mostBackAndForth.label} />
+                <StatCard label="Clutch Finish (last 3 hands)" value={globalStats.clutchFinish.label !== "—" ? `${globalStats.clutchFinish.diff} pts` : "—"} sub={globalStats.clutchFinish.label} />
+                <StatCard label="Momentum Monster (2 hands)" value={globalStats.momentumMonster.swing ? `${globalStats.momentumMonster.swing} swing` : "—"} sub={globalStats.momentumMonster.label} />
+                <StatCard label="Perfect Defense" value={globalStats.perfectDefense.name} sub={globalStats.perfectDefense.v ? `${globalStats.perfectDefense.v} zero-hands forced` : ""} />
+              </div>
+
+              <div style={{ marginTop: 12, fontWeight: 950 }}>Funny Stats</div>
+              <div style={{ marginTop: 10, ...styles.grid3 }}>
                 <StatCard label="Coinche King" value={globalStats.funny.coincheKing.name} sub={`${globalStats.funny.coincheKing.v} coinches`} />
+                <StatCard label="Surcoinche Boss" value={globalStats.funny.surcoincheBoss.name} sub={`${globalStats.funny.surcoincheBoss.v} surcoinches`} />
                 <StatCard label="Capot Hero" value={globalStats.funny.capotHero.name} sub={`${globalStats.funny.capotHero.v} capots`} />
-                <StatCard label="Biggest Hand Swing" value={`${globalStats.biggestHand.pts}`} sub={globalStats.biggestHand.label} />
+                <StatCard label="Belote Magnet" value={globalStats.funny.beloteMagnet.name} sub={`${globalStats.funny.beloteMagnet.v} belotes`} />
               </div>
             </div>
+          </div>
+        </Section>
+
+        <Section title="Table Links (share to each table)">
+          <div style={styles.small}>Each match has a unique code + link. Teams should open their match link to enter hands.</div>
+          <div style={{ marginTop: 10, ...styles.grid3 }}>
+            {tableLinks.map((t) => (
+              <div key={t.code} style={styles.card}>
+                <div style={{ fontWeight: 950, marginBottom: 6 }}>{t.label}</div>
+                <div style={styles.small}>Code: {t.code}</div>
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <a href={t.href} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                    Open
+                  </a>
+                  <button
+                    style={styles.btnSecondary}
+                    onClick={() => {
+                      navigator.clipboard?.writeText(t.href);
+                      alert(`Copied link for ${t.label}`);
+                    }}
+                  >
+                    Copy Link
+                  </button>
+                </div>
+              </div>
+            ))}
+            {tableLinks.length === 0 ? <div style={styles.small}>No matches yet.</div> : null}
           </div>
         </Section>
       </div>
@@ -1573,7 +1586,7 @@ function ScoreboardTable({ rows }) {
       <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
         <thead>
           <tr>
-            {["Rank", "Team", "MP", "W", "L", "Game Pts", "+/-"].map((h) => (
+            {["Rank", "Team", "W", "L", "PF", "PA", "Diff"].map((h) => (
               <th
                 key={h}
                 style={{
@@ -1590,19 +1603,22 @@ function ScoreboardTable({ rows }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
-            <tr key={r.teamId}>
-              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 950 }}>#{i + 1}</td>
-              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.name}</td>
-              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", color: "#94a3b8", fontWeight: 900 }}>{r.matchesPlayed}</td>
-              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.wins}</td>
-              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.losses}</td>
-              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.totalGamePoints}</td>
-              <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>
-                {r.pointsDiff >= 0 ? `+${r.pointsDiff}` : r.pointsDiff}
-              </td>
-            </tr>
-          ))}
+          {rows.map((r, i) => {
+            const diff = (r.pointsFor || 0) - (r.pointsAgainst || 0);
+            return (
+              <tr key={r.teamId}>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 950 }}>#{i + 1}</td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.name}</td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.wins}</td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.losses}</td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.pointsFor}</td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>{r.pointsAgainst}</td>
+                <td style={{ padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 900 }}>
+                  {diff >= 0 ? `+${diff}` : diff}
+                </td>
+              </tr>
+            );
+          })}
           {rows.length === 0 ? (
             <tr>
               <td colSpan={7} style={{ padding: 12, color: "#94a3b8" }}>
@@ -1619,7 +1635,6 @@ function ScoreboardTable({ rows }) {
 function TableMatchPanel({
   match,
   teamById,
-  teamNumberById,
   onDraftPatch,
   onAddHand,
   onClearHands,
@@ -1628,9 +1643,6 @@ function TableMatchPanel({
 }) {
   const ta = teamById.get(match.teamAId)?.name ?? "TBD";
   const tb = teamById.get(match.teamBId)?.name ?? "TBD";
-
-  const numA = match.teamAId ? teamNumberById?.get(match.teamAId) ?? "?" : "?";
-  const numB = match.teamBId ? teamNumberById?.get(match.teamBId) ?? "?" : "?";
 
   const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
   const pctB = Math.min(100, Math.round(((match.totalB || 0) / TARGET_SCORE) * 100));
@@ -1649,8 +1661,49 @@ function TableMatchPanel({
 
   const canPlay = !!match.teamAId && !!match.teamBId;
 
+  // Glow leader (ignore ties)
+  const aLeads = (match.totalA || 0) > (match.totalB || 0);
+  const bLeads = (match.totalB || 0) > (match.totalA || 0);
+
+  const leaderCardStyle = (isLeader) =>
+    isLeader
+      ? {
+          border: "1px solid rgba(34,197,94,0.55)",
+          boxShadow: "0 0 0 1px rgba(34,197,94,0.25), 0 0 28px rgba(34,197,94,0.28)",
+          background: "linear-gradient(180deg, rgba(34,197,94,0.14), rgba(2,6,23,0.35))",
+        }
+      : {};
+
+  // Animate totals on change
+  const [popA, setPopA] = useState(false);
+  const [popB, setPopB] = useState(false);
+  const lastARef = useRef(match.totalA || 0);
+  const lastBRef = useRef(match.totalB || 0);
+
+  useEffect(() => {
+    const a = match.totalA || 0;
+    if (a !== lastARef.current) {
+      lastARef.current = a;
+      setPopA(true);
+      const t = setTimeout(() => setPopA(false), 320);
+      return () => clearTimeout(t);
+    }
+  }, [match.totalA]);
+
+  useEffect(() => {
+    const b = match.totalB || 0;
+    if (b !== lastBRef.current) {
+      lastBRef.current = b;
+      setPopB(true);
+      const t = setTimeout(() => setPopB(false), 320);
+      return () => clearTimeout(t);
+    }
+  }, [match.totalB]);
+
   return (
     <div style={{ ...styles.card, borderRadius: 18 }}>
+      <GlobalAnimStyles />
+
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
         <div style={{ fontWeight: 950 }}>
           {match.label}
@@ -1662,21 +1715,47 @@ function TableMatchPanel({
       </div>
 
       <div style={{ marginTop: 10, ...styles.grid2 }}>
-        <div style={styles.card}>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>{`Team #${numA}: ${ta}`}</div>
-          <div style={styles.small}>
-            Total: <b style={{ color: "#e5e7eb" }}>{match.totalA}</b> / {TARGET_SCORE}
+        <div style={{ ...styles.card, ...leaderCardStyle(aLeads) }}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>{`Team A: ${ta}`}</div>
+
+          <div style={{ marginTop: 6 }}>
+            <div
+              style={{
+                fontSize: 42,
+                fontWeight: 1000,
+                lineHeight: 1,
+                display: "inline-block",
+                animation: popA ? "scorePop 320ms ease-out" : "none",
+              }}
+            >
+              {match.totalA}
+            </div>
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>/ {TARGET_SCORE}</div>
           </div>
+
           <div style={{ marginTop: 8, ...styles.progressWrap }}>
             <div style={styles.progressFillA(pctA)} />
           </div>
         </div>
 
-        <div style={styles.card}>
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>{`Team #${numB}: ${tb}`}</div>
-          <div style={styles.small}>
-            Total: <b style={{ color: "#e5e7eb" }}>{match.totalB}</b> / {TARGET_SCORE}
+        <div style={{ ...styles.card, ...leaderCardStyle(bLeads) }}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>{`Team B: ${tb}`}</div>
+
+          <div style={{ marginTop: 6 }}>
+            <div
+              style={{
+                fontSize: 42,
+                fontWeight: 1000,
+                lineHeight: 1,
+                display: "inline-block",
+                animation: popB ? "scorePop 320ms ease-out" : "none",
+              }}
+            >
+              {match.totalB}
+            </div>
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>/ {TARGET_SCORE}</div>
           </div>
+
           <div style={{ marginTop: 8, ...styles.progressWrap }}>
             <div style={styles.progressFillB(pctB)} />
           </div>
@@ -1698,21 +1777,14 @@ function TableMatchPanel({
           <div>
             <div style={styles.small}>Bidder</div>
             <select style={styles.select("100%")} value={d.bidder} onChange={(e) => onDraftPatch({ bidder: e.target.value })} disabled={!canPlay}>
-              <option value="A">{`Team #${numA} — ${ta}`}</option>
-              <option value="B">{`Team #${numB} — ${tb}`}</option>
+              <option value="A">{`Team A — ${ta}`}</option>
+              <option value="B">{`Team B — ${tb}`}</option>
             </select>
           </div>
 
           <div>
             <div style={styles.small}>Bid</div>
-            <input
-              style={styles.input("100%")}
-              value={d.bid}
-              onChange={(e) => onDraftPatch({ bid: e.target.value })}
-              placeholder="80, 90, 110..."
-              inputMode="numeric"
-              disabled={!canPlay}
-            />
+            <input style={styles.input("100%")} value={d.bid} onChange={(e) => onDraftPatch({ bid: e.target.value })} placeholder="80, 90, 110..." inputMode="numeric" disabled={!canPlay} />
           </div>
 
           <div>
@@ -1744,14 +1816,7 @@ function TableMatchPanel({
 
           <div>
             <div style={styles.small}>Bidder trick points (0–162)</div>
-            <input
-              style={styles.input("100%")}
-              value={d.bidderTrickPoints}
-              onChange={(e) => onDraftPatch({ bidderTrickPoints: e.target.value })}
-              placeholder="ex: 81"
-              inputMode="numeric"
-              disabled={!canPlay}
-            />
+            <input style={styles.input("100%")} value={d.bidderTrickPoints} onChange={(e) => onDraftPatch({ bidderTrickPoints: e.target.value })} placeholder="ex: 81" inputMode="numeric" disabled={!canPlay} />
           </div>
 
           <div>
@@ -1768,14 +1833,14 @@ function TableMatchPanel({
             <div style={styles.small}>Belote</div>
             <select style={styles.select("100%")} value={d.beloteTeam} onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })} disabled={!canPlay}>
               <option value="NONE">None</option>
-              <option value="A">{`Team #${numA}`}</option>
-              <option value="B">{`Team #${numB}`}</option>
+              <option value="A">Team A</option>
+              <option value="B">Team B</option>
             </select>
           </div>
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
-          <button style={styles.btnPrimary} onClick={onAddHand} disabled={!canPlay}>
+          <button style={{ ...styles.btnPrimary, ...(canPlay ? {} : styles.disabled) }} onClick={onAddHand} disabled={!canPlay}>
             {match.editingHandIdx ? `Save Changes (Hand ${match.editingHandIdx})` : "Add Hand"}
           </button>
 
@@ -1816,9 +1881,7 @@ function TableMatchPanel({
                   </div>
 
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <span style={styles.tag}>
-                      +{h.scoreA} / +{h.scoreB}
-                    </span>
+                    <span style={styles.tag}>+{h.scoreA} / +{h.scoreB}</span>
                     <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>
                       Edit
                     </button>
@@ -1829,6 +1892,8 @@ function TableMatchPanel({
           </div>
         )}
       </div>
+
+      <div style={{ marginTop: 12, ...styles.small }}>This match is scorekeeping-only (no tournament logic).</div>
     </div>
   );
 }
