@@ -357,6 +357,30 @@ const styles = {
     marginTop: 12,
     alignItems: "start",
   },
+
+  // ✅ NEW: explicit 3-row layout for hand tracker
+  handRow1: {
+    display: "grid",
+    gridTemplateColumns: "repeat(5, minmax(160px, 1fr))",
+    gap: 10,
+    marginTop: 12,
+    alignItems: "start",
+  },
+  handRow2: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(220px, 1fr))",
+    gap: 10,
+    marginTop: 10,
+    alignItems: "start",
+  },
+  handRow3: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(180px, 1fr))",
+    gap: 10,
+    marginTop: 10,
+    alignItems: "start",
+  },
+
   handRow: {
     border: "1px solid rgba(148,163,184,0.16)",
     background: "rgba(2,6,23,0.35)",
@@ -438,7 +462,7 @@ const styles = {
     borderRadius: 3,
     background: `hsla(${(i * 37) % 360}, 90%, 60%, 0.95)`,
     transform: `rotate(${(i * 23) % 180}deg)`,
-    animation: `confettiDrop 3000ms ease-out forwards`, // ✅ 3 seconds
+    animation: `confettiDrop 6000ms ease-out forwards`, // ✅ 6 seconds
     animationDelay: `${(i % 10) * 30}ms`,
     opacity: 0.95,
   }),
@@ -463,7 +487,7 @@ const styles = {
     transform: "translate(-50%, -50%)",
     background: "rgba(255,255,255,0.85)",
     filter: "blur(0.4px)",
-    animation: `fireworkGlow 3000ms ease-out forwards`, // ✅ 3 seconds
+    animation: `fireworkGlow 6000ms ease-out forwards`, // ✅ 6 seconds
     animationDelay: `${delayMs}ms`,
     boxShadow: "0 0 18px rgba(255,255,255,0.45)",
     opacity: 0,
@@ -477,7 +501,7 @@ const styles = {
     borderRadius: 999,
     transform: "translate(-50%, -50%)",
     background: `hsla(${hue}, 90%, 60%, 0.95)`,
-    animation: `fireworkParticle 3000ms ease-out forwards`, // ✅ 3 seconds
+    animation: `fireworkParticle 6000ms ease-out forwards`, // ✅ 6 seconds
     animationDelay: `${delayMs}ms`,
     opacity: 0,
     ["--dx"]: `${dx}px`,
@@ -686,12 +710,7 @@ export default function App() {
     return s;
   }, [teams]);
 
-  /** ===== ✅ Google Sheet backup after each hand =====
-   * Your Apps Script doPost expects:
-   *  - { secret, timestamp, tournamentName, matchCode, matchLabel, teamA, teamB, handIdx, scoreA, scoreB, bidder, bid, suit, coincheLevel, capot, bidderTrickPoints, announceA, announceB, beloteTeam, bidderSucceeded, totalA, totalB, deviceId }
-   *
-   * We queue per-hand rows and send sequentially with retry.
-   */
+  /** ===== ✅ Google Sheet backup after each hand ===== */
   function enqueueHandBackup(row) {
     backupQueueRef.current.push(row);
     setBackupState((s) => ({ ...s, queued: (s.queued || 0) + 1 }));
@@ -739,17 +758,15 @@ export default function App() {
       body: JSON.stringify(body),
     });
 
-    // Apps Script often returns 200 even on app errors; still handle non-OK
     if (!res.ok) {
       throw new Error(`Backup HTTP ${res.status}`);
     }
 
-    // If your script returns JSON, this is safe; if not, it may throw, so wrap:
     try {
       const j = await res.json();
       if (j && j.ok === false) throw new Error(j.error || "Backup failed");
     } catch {
-      // ignore parse errors (Apps Script sometimes returns plain text)
+      // ignore parse errors
     }
   }
 
@@ -765,7 +782,6 @@ export default function App() {
       const teamBName = teamById.get(m.teamBId)?.name ?? "Team B";
 
       for (const h of m.hands || []) {
-        // unique key: if edited, we still want to send again (append-only sheet)
         const editStamp = h.editedAt || 0;
         const handKey = `${m.code}|${h.idx}|${h.createdAt || 0}|${editStamp}`;
         if (sentHandKeysRef.current.has(handKey)) continue;
@@ -1083,11 +1099,9 @@ export default function App() {
         const d = m.fastDraft || defaultFastDraft();
         const bidVal = parseBidValue(d.bid);
 
-        // capot via word "capot" OR via dropdown
         const bidIsCapotWord = String(d.bid || "").trim().toLowerCase() === "capot";
         const capotFlag = Boolean(d.capot) || bidIsCapotWord;
 
-        // derive bidder trick points from whichever box is the source
         let trickVal = null;
         const bidderTP = safeInt(d.bidderTrickPoints);
         const nonBidderTP = safeInt(d.nonBidderTrickPoints);
@@ -1723,7 +1737,6 @@ export default function App() {
               <button
                 style={styles.btnSecondary}
                 onClick={() => {
-                  // Force retry any queued items
                   void flushHandBackupQueue();
                   alert("Backup retry triggered (if anything is queued).");
                 }}
@@ -1740,7 +1753,6 @@ export default function App() {
                   setTeams([]);
                   setPairHistory([]);
                   setMatches([]);
-                  // also clear sent-hand cache so you don't block future backups
                   sentHandKeysRef.current = new Set();
                 }}
               >
@@ -2215,7 +2227,6 @@ function AnimatedNumber({ value }) {
 }
 
 function Fireworks({ seed = 0 }) {
-  // deterministic-ish burst positions
   const bursts = [
     { x: 25 + (seed % 7) * 2, delay: 0 },
     { x: 50 + (seed % 5) * 2, delay: 140 },
@@ -2308,7 +2319,7 @@ function TableMatchPanel({
     const prev = prevWinnerRef.current;
     if (!prev && winnerSide) {
       setCelebrateOn(true);
-      const t = setTimeout(() => setCelebrateOn(false), 3000); // ✅ 3 seconds
+      const t = setTimeout(() => setCelebrateOn(false), 6000); // ✅ 6 seconds
       prevWinnerRef.current = winnerSide;
       return () => clearTimeout(t);
     }
@@ -2318,7 +2329,6 @@ function TableMatchPanel({
   const suitLabel =
     d.suit === "H" ? "Hearts" : d.suit === "D" ? "Diamonds" : d.suit === "C" ? "Clubs" : "Spades";
 
-  // ✅ Bigger labels over fields (+6)
   const fieldLabelStyle = {
     fontSize: (styles.small?.fontSize || 12) + 6,
     color: "#cbd5e1",
@@ -2326,7 +2336,6 @@ function TableMatchPanel({
     marginBottom: 6,
   };
 
-  // ✅ Smaller input/select just for Hand Tracker
   const handInput = { ...styles.input("100%"), padding: "8px 10px" };
   const handSelect = { ...styles.select("100%"), padding: "8px 10px" };
 
@@ -2358,7 +2367,6 @@ function TableMatchPanel({
             </div>
           ) : null}
 
-          {/* ✅ Confetti + Fireworks (3 seconds) */}
           {celebrateOn && winnerSide === "A" ? (
             <>
               <Fireworks seed={(match.id || "").length + (match.totalA || 0)} />
@@ -2403,7 +2411,6 @@ function TableMatchPanel({
             </div>
           ) : null}
 
-          {/* ✅ Confetti + Fireworks (3 seconds) */}
           {celebrateOn && winnerSide === "B" ? (
             <>
               <Fireworks seed={(match.id || "").length + (match.totalB || 0) + 7} />
@@ -2448,9 +2455,9 @@ function TableMatchPanel({
           )}
         </div>
 
-        {/* ✅ Re-ordered fields + shorter widths + larger labels */}
-        <div style={styles.handGrid}>
-          {/* Line 1: Bidder, Bid, Suit, Coinche, Capot */}
+        {/* ✅ 3 explicit rows */}
+        {/* Row 1: Bidder / Bid / Suit / Coinche / Capot */}
+        <div style={styles.handRow1}>
           <div>
             <div style={fieldLabelStyle}>Bidder</div>
             <select
@@ -2516,8 +2523,10 @@ function TableMatchPanel({
               <option value="YES">Yes</option>
             </select>
           </div>
+        </div>
 
-          {/* Line 2: Announces A / B */}
+        {/* Row 2: Announces Team A / Announces Team B */}
+        <div style={styles.handRow2}>
           <div>
             <div style={fieldLabelStyle}>Announces Team A (non-belote)</div>
             <input
@@ -2539,8 +2548,10 @@ function TableMatchPanel({
               disabled={!canPlay}
             />
           </div>
+        </div>
 
-          {/* Line 3: Belote, Bidder tricks, Non-bidder tricks */}
+        {/* Row 3: Belote / Bidder trick points / Non-bidder trick points */}
+        <div style={styles.handRow3}>
           <div>
             <div style={fieldLabelStyle}>Belote</div>
             <select
