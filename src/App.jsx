@@ -2,12 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Coinche Scorekeeper (Vite single-file App.jsx)
- * - Admin view / Public view / Table view
- * - Unlimited players/teams/matches
- * - Fast-mode hand tracker
- * - Winner celebration: confetti + fireworks (3 seconds)
- * - Google Sheets backup: APPENDS ONE ROW PER HAND (matches your Apps Script doPost)
- *
  * Routes:
  *   #/admin
  *   #/public
@@ -17,18 +11,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 const LS_KEY = "coinche_scorekeeper_v1";
 const TARGET_SCORE = 2000;
 
-// Your Google Apps Script Web App endpoint:
+// ✅ Your Google Apps Script Web App endpoint:
 const BACKUP_URL =
   "https://script.google.com/macros/s/AKfycbz-ok_dxCTExzV6LA8NixK6nYnw03MhOBZ3M6SgP_Na5-hlrhnMLX3bIUYqqq5laguSHw/exec";
 
-// MUST match your Apps Script SECRET:
+// ✅ MUST match Apps Script SECRET
+// Put your real secret string here (same as in Apps Script)
 const BACKUP_SECRET = "CHANGE_ME_TO_A_LONG_RANDOM_STRING";
-
-// Celebration duration
-const CELEBRATION_MS = 3000;
-
-// Local device id (helps you debug rows)
-const DEVICE_ID_KEY = "coinche_device_id_v1";
 
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
@@ -67,20 +56,18 @@ function ensureGlobalCSS() {
   el.innerHTML = `
 @keyframes confettiDrop {
   0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
-  100% { transform: translateY(320px) rotate(280deg); opacity: 0; }
+  100% { transform: translateY(420px) rotate(520deg); opacity: 0; }
 }
 
-@keyframes fireworkRise {
-  0%   { transform: translate(-50%, 0) scale(0.9); opacity: 0.0; }
-  12%  { opacity: 1; }
-  55%  { transform: translate(-50%, -90px) scale(1.0); opacity: 1; }
-  100% { transform: translate(-50%, -120px) scale(1.0); opacity: 0; }
+@keyframes fireworkParticle {
+  0%   { transform: translate(0px, 0px) scale(1); opacity: 1; }
+  100% { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; }
 }
 
-@keyframes sparkBurst {
-  0%   { transform: translate(0,0) scale(1); opacity: 1; }
-  70%  { opacity: 1; }
-  100% { transform: translate(var(--dx), var(--dy)) scale(0.7); opacity: 0; }
+@keyframes fireworkGlow {
+  0%   { transform: scale(0.4); opacity: 0; }
+  15%  { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.1); opacity: 0; }
 }
 `;
   document.head.appendChild(el);
@@ -94,15 +81,15 @@ function roundTrickPoints(x) {
 }
 
 function computeFastCoincheScore({
-  bidder, // "A"|"B"
-  bid, // number
-  suit, // "H"|"D"|"C"|"S"
-  coincheLevel, // "NONE"|"COINCHE"|"SURCOINCHE"
-  capot, // boolean
-  bidderTrickPoints, // 0..162 raw
-  announceA, // non-belote announces total A
-  announceB, // non-belote announces total B
-  beloteTeam, // "NONE"|"A"|"B"
+  bidder,
+  bid,
+  suit, // tracked, not used in math
+  coincheLevel,
+  capot,
+  bidderTrickPoints,
+  announceA,
+  announceB,
+  beloteTeam,
 }) {
   const BIDDER_IS_A = bidder === "A";
   const bidVal = Number(bid) || 0;
@@ -139,8 +126,9 @@ function computeFastCoincheScore({
   let scoreA = 0;
   let scoreB = 0;
 
+  // ✅ Capot scoring: contract value fixed at 250 (no double-count)
   if (capot) {
-    const winnerGets = 250 + aAnn + bAnn + belotePts + bidVal;
+    const winnerGets = 250 + aAnn + bAnn + belotePts;
     if (BIDDER_IS_A) {
       scoreA = winnerGets;
       scoreB = 0;
@@ -361,6 +349,14 @@ const styles = {
       "linear-gradient(90deg, rgba(99,102,241,0.95), rgba(59,130,246,0.9))",
   }),
 
+  // ✅ shorter fields
+  handGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: 10,
+    marginTop: 12,
+    alignItems: "start",
+  },
   handRow: {
     border: "1px solid rgba(148,163,184,0.16)",
     background: "rgba(2,6,23,0.35)",
@@ -391,7 +387,6 @@ const styles = {
       "0 0 20px rgba(34,197,94,0.35), 0 0 50px rgba(34,197,94,0.18)",
     border: "1px solid rgba(34,197,94,0.35)",
   },
-
   winnerGlow: {
     boxShadow:
       "0 0 28px rgba(34,197,94,0.55), 0 0 90px rgba(34,197,94,0.28), 0 0 140px rgba(34,197,94,0.16)",
@@ -414,7 +409,6 @@ const styles = {
     letterSpacing: "-0.02em",
     zIndex: 4,
   },
-
   trophyCircle: {
     width: 26,
     height: 26,
@@ -435,7 +429,6 @@ const styles = {
     borderRadius: 18,
     zIndex: 2,
   },
-
   confettiPiece: (i) => ({
     position: "absolute",
     left: `${(i * 11) % 100}%`,
@@ -445,22 +438,52 @@ const styles = {
     borderRadius: 3,
     background: `hsla(${(i * 37) % 360}, 90%, 60%, 0.95)`,
     transform: `rotate(${(i * 23) % 180}deg)`,
-    animation: `confettiDrop ${CELEBRATION_MS}ms ease-out forwards`,
-    animationDelay: `${(i % 10) * 25}ms`,
+    animation: `confettiDrop 3000ms ease-out forwards`, // ✅ 3 seconds
+    animationDelay: `${(i % 10) * 30}ms`,
     opacity: 0.95,
   }),
 
   fireworksWrap: {
     position: "absolute",
-    left: "50%",
-    top: "-8px",
-    transform: "translateX(-50%)",
+    left: 0,
+    right: 0,
+    top: -60,
+    height: 90,
     pointerEvents: "none",
-    width: "200px",
-    height: "140px",
     zIndex: 3,
     overflow: "visible",
   },
+  fireworksGlow: (xPct, delayMs) => ({
+    position: "absolute",
+    left: `${xPct}%`,
+    top: 48,
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    transform: "translate(-50%, -50%)",
+    background: "rgba(255,255,255,0.85)",
+    filter: "blur(0.4px)",
+    animation: `fireworkGlow 3000ms ease-out forwards`, // ✅ 3 seconds
+    animationDelay: `${delayMs}ms`,
+    boxShadow: "0 0 18px rgba(255,255,255,0.45)",
+    opacity: 0,
+  }),
+  fireworkParticle: (xPct, delayMs, dx, dy, hue) => ({
+    position: "absolute",
+    left: `${xPct}%`,
+    top: 48,
+    width: 6,
+    height: 6,
+    borderRadius: 999,
+    transform: "translate(-50%, -50%)",
+    background: `hsla(${hue}, 90%, 60%, 0.95)`,
+    animation: `fireworkParticle 3000ms ease-out forwards`, // ✅ 3 seconds
+    animationDelay: `${delayMs}ms`,
+    opacity: 0,
+    ["--dx"]: `${dx}px`,
+    ["--dy"]: `${dy}px`,
+    boxShadow: "0 0 10px rgba(255,255,255,0.22)",
+  }),
 
   bigTotal: {
     fontSize: 52,
@@ -485,63 +508,17 @@ function SuitIcon({ suit }) {
   );
 }
 
-/** ===== Fireworks Component ===== */
-function Fireworks({ on }) {
-  if (!on) return null;
-
-  // Create a few bursts
-  const bursts = [
-    { x: 55, y: 60, delay: 0 },
-    { x: 90, y: 75, delay: 220 },
-    { x: 20, y: 80, delay: 420 },
-  ];
-
-  return (
-    <div style={styles.fireworksWrap}>
-      {bursts.map((b, bi) => (
-        <div
-          key={bi}
-          style={{
-            position: "absolute",
-            left: `${b.x}%`,
-            top: `${b.y}%`,
-            width: 0,
-            height: 0,
-            animation: `fireworkRise ${CELEBRATION_MS}ms ease-out forwards`,
-            animationDelay: `${b.delay}ms`,
-            opacity: 0,
-          }}
-        >
-          {/* Sparks */}
-          {Array.from({ length: 12 }).map((_, i) => {
-            const angle = (Math.PI * 2 * i) / 12;
-            const dist = 56 + ((i * 9) % 22);
-            const dx = Math.round(Math.cos(angle) * dist);
-            const dy = Math.round(Math.sin(angle) * dist);
-            return (
-              <span
-                key={i}
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  top: 0,
-                  width: 6,
-                  height: 6,
-                  borderRadius: 999,
-                  background: `hsla(${(i * 35 + bi * 70) % 360}, 90%, 65%, 0.95)`,
-                  boxShadow: "0 0 10px rgba(255,255,255,0.35)",
-                  animation: `sparkBurst ${900}ms ease-out forwards`,
-                  animationDelay: `${b.delay + 520}ms`,
-                  ["--dx"]: `${dx}px`,
-                  ["--dy"]: `${dy}px`,
-                }}
-              />
-            );
-          })}
-        </div>
-      ))}
-    </div>
-  );
+function getDeviceId() {
+  try {
+    const k = "coinche_device_id";
+    const existing = localStorage.getItem(k);
+    if (existing) return existing;
+    const id = uid("dev");
+    localStorage.setItem(k, id);
+    return id;
+  } catch {
+    return `dev_${Date.now()}`;
+  }
 }
 
 /** ===== Main App ===== */
@@ -551,20 +528,6 @@ export default function App() {
 
   useEffect(() => {
     ensureGlobalCSS();
-  }, []);
-
-  // Device id
-  const deviceId = useMemo(() => {
-    try {
-      let v = localStorage.getItem(DEVICE_ID_KEY);
-      if (!v) {
-        v = uid("dev");
-        localStorage.setItem(DEVICE_ID_KEY, v);
-      }
-      return v;
-    } catch {
-      return uid("dev");
-    }
   }, []);
 
   // Core data
@@ -585,20 +548,20 @@ export default function App() {
 
   const inputRef = useRef(null);
 
-  // Backup UI state
+  // ✅ Backup status (per-hand to Google Sheet)
   const [backupState, setBackupState] = useState({
     lastOk: null,
     lastErr: null,
     queued: 0,
-    lastErrMsg: "",
-    lastOkMsg: "",
   });
 
-  // Hand backup queue (appendRow style)
-  const [handQueue, setHandQueue] = useState([]);
-  const flushingRef = useRef(false);
+  const deviceIdRef = useRef(getDeviceId());
 
-  // route listener
+  // queue + sent tracking
+  const backupQueueRef = useRef([]);
+  const backupSendingRef = useRef(false);
+  const sentHandKeysRef = useRef(new Set()); // avoids duplicate POSTs
+
   useEffect(() => {
     const onHash = () => setRoute(parseHashRoute());
     window.addEventListener("hashchange", onHash);
@@ -612,11 +575,9 @@ export default function App() {
       suit: "S",
       coincheLevel: "NONE",
       capot: false,
-
       bidderTrickPoints: "",
       nonBidderTrickPoints: "",
       trickSource: "", // "" | "BIDDER" | "NON"
-
       announceA: "0",
       announceB: "0",
       beloteTeam: "NONE",
@@ -725,6 +686,128 @@ export default function App() {
     return s;
   }, [teams]);
 
+  /** ===== ✅ Google Sheet backup after each hand =====
+   * Your Apps Script doPost expects:
+   *  - { secret, timestamp, tournamentName, matchCode, matchLabel, teamA, teamB, handIdx, scoreA, scoreB, bidder, bid, suit, coincheLevel, capot, bidderTrickPoints, announceA, announceB, beloteTeam, bidderSucceeded, totalA, totalB, deviceId }
+   *
+   * We queue per-hand rows and send sequentially with retry.
+   */
+  function enqueueHandBackup(row) {
+    backupQueueRef.current.push(row);
+    setBackupState((s) => ({ ...s, queued: (s.queued || 0) + 1 }));
+    void flushHandBackupQueue();
+  }
+
+  async function flushHandBackupQueue() {
+    if (backupSendingRef.current) return;
+    if (backupQueueRef.current.length === 0) return;
+    backupSendingRef.current = true;
+
+    try {
+      while (backupQueueRef.current.length > 0) {
+        const row = backupQueueRef.current[0];
+        await sendHandRow(row);
+        backupQueueRef.current.shift();
+        setBackupState((s) => ({
+          ...s,
+          lastOk: Date.now(),
+          lastErr: null,
+          queued: Math.max(0, (s.queued || 1) - 1),
+        }));
+      }
+    } catch (e) {
+      setBackupState((s) => ({
+        ...s,
+        lastErr: Date.now(),
+      }));
+      // retry soon
+      setTimeout(() => {
+        backupSendingRef.current = false;
+        void flushHandBackupQueue();
+      }, 2000);
+      return;
+    } finally {
+      backupSendingRef.current = false;
+    }
+  }
+
+  async function sendHandRow(row) {
+    const body = { ...row, secret: BACKUP_SECRET };
+    const res = await fetch(BACKUP_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    // Apps Script often returns 200 even on app errors; still handle non-OK
+    if (!res.ok) {
+      throw new Error(`Backup HTTP ${res.status}`);
+    }
+
+    // If your script returns JSON, this is safe; if not, it may throw, so wrap:
+    try {
+      const j = await res.json();
+      if (j && j.ok === false) throw new Error(j.error || "Backup failed");
+    } catch {
+      // ignore parse errors (Apps Script sometimes returns plain text)
+    }
+  }
+
+  // ✅ Detect newly created/edited hands and auto-backup them
+  useEffect(() => {
+    if (!loaded) return;
+
+    for (const m of matches) {
+      if (!m || !m.code) continue;
+      if (!m.teamAId || !m.teamBId) continue;
+
+      const teamAName = teamById.get(m.teamAId)?.name ?? "Team A";
+      const teamBName = teamById.get(m.teamBId)?.name ?? "Team B";
+
+      for (const h of m.hands || []) {
+        // unique key: if edited, we still want to send again (append-only sheet)
+        const editStamp = h.editedAt || 0;
+        const handKey = `${m.code}|${h.idx}|${h.createdAt || 0}|${editStamp}`;
+        if (sentHandKeysRef.current.has(handKey)) continue;
+
+        sentHandKeysRef.current.add(handKey);
+
+        const ds = h.draftSnapshot || {};
+        enqueueHandBackup({
+          timestamp: new Date().toISOString(),
+          tournamentName: appName || "Coinche Scorekeeper",
+          matchCode: m.code,
+          matchLabel: `${m.tableName || ""} • ${m.label || ""}`.trim(),
+          teamA: teamAName,
+          teamB: teamBName,
+          handIdx: h.idx ?? "",
+          scoreA: h.scoreA ?? "",
+          scoreB: h.scoreB ?? "",
+          bidder: ds.bidder || "",
+          bid: ds.bid ?? "",
+          suit: ds.suit || "",
+          coincheLevel: ds.coincheLevel || "",
+          capot: !!ds.capot,
+          bidderTrickPoints: ds.bidderTrickPoints ?? "",
+          announceA: ds.announceA ?? "",
+          announceB: ds.announceB ?? "",
+          beloteTeam: ds.beloteTeam || "",
+          bidderSucceeded: !!h.bidderSucceeded,
+          totalA: m.totalA ?? "",
+          totalB: m.totalB ?? "",
+          deviceId: deviceIdRef.current,
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, matches, teamById, appName]);
+
+  useEffect(() => {
+    const onOnline = () => void flushHandBackupQueue();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, []);
+
   /** ===== Players ===== */
   function addPlayer() {
     const name = newPlayerName.trim();
@@ -832,7 +915,10 @@ export default function App() {
     }
 
     const finalPairs = best?.pairs ?? [];
-    const nextTeams = teams.map((t) => ({ ...t, playerIds: [...(t.playerIds || [])] }));
+    const nextTeams = teams.map((t) => ({
+      ...t,
+      playerIds: [...(t.playerIds || [])],
+    }));
 
     let pairIdx = 0;
     for (let i = 0; i < nextTeams.length; i++) {
@@ -863,7 +949,7 @@ export default function App() {
     );
   }
 
-  /** ===== Matches / Tables ===== */
+  /** ===== Matches ===== */
   function addMatch() {
     if (!teams.length) return;
     setMatches((prev) => [
@@ -928,7 +1014,7 @@ export default function App() {
     );
   }
 
-  /** ===== Hand tracker for a match ===== */
+  /** ===== Hand tracker ===== */
   function updateDraft(matchId, patch) {
     setMatches((prev) =>
       prev.map((m) => {
@@ -957,11 +1043,9 @@ export default function App() {
             suit: d.suit ?? "S",
             coincheLevel: d.coincheLevel ?? "NONE",
             capot: Boolean(d.capot),
-
             bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
             nonBidderTrickPoints: String(d.nonBidderTrickPoints ?? ""),
             trickSource: d.trickSource ?? "",
-
             announceA: String(d.announceA ?? "0"),
             announceB: String(d.announceB ?? "0"),
             beloteTeam: d.beloteTeam ?? "NONE",
@@ -981,19 +1065,11 @@ export default function App() {
     );
   }
 
-  function queueHandBackup(payload) {
-    setHandQueue((prev) => [...prev, payload]);
-    setBackupState((s) => ({ ...s, queued: (s.queued || 0) + 1 }));
-  }
-
-  function normalizeBidAndCapot(d) {
-    // If user types "capot" in bid field => bid = 250 AND capot = true
-    const raw = String(d.bid ?? "").trim();
-    if (raw && raw.toLowerCase() === "capot") {
-      return { bidVal: 250, capotForced: true };
-    }
-    const bidVal = safeInt(raw);
-    return { bidVal, capotForced: false };
+  function parseBidValue(bidStr) {
+    const s = String(bidStr || "").trim().toLowerCase();
+    if (s === "capot") return 250; // ✅ accept the word capot as 250
+    const n = safeInt(bidStr);
+    return n;
   }
 
   function addOrSaveHand(matchId) {
@@ -1005,8 +1081,11 @@ export default function App() {
         if (!canPlay) return m;
 
         const d = m.fastDraft || defaultFastDraft();
+        const bidVal = parseBidValue(d.bid);
 
-        const { bidVal, capotForced } = normalizeBidAndCapot(d);
+        // capot via word "capot" OR via dropdown
+        const bidIsCapotWord = String(d.bid || "").trim().toLowerCase() === "capot";
+        const capotFlag = Boolean(d.capot) || bidIsCapotWord;
 
         // derive bidder trick points from whichever box is the source
         let trickVal = null;
@@ -1027,8 +1106,6 @@ export default function App() {
         if (bidVal === null || trickVal === null) return m;
         trickVal = clamp(trickVal, 0, 162);
 
-        const capotFlag = Boolean(d.capot) || capotForced;
-
         const res = computeFastCoincheScore({
           bidder: d.bidder,
           bid: bidVal,
@@ -1047,20 +1124,16 @@ export default function App() {
           suit: d.suit || "S",
           coincheLevel: d.coincheLevel || "NONE",
           capot: capotFlag,
-
           bidderTrickPoints: trickVal,
           nonBidderTrickPoints:
             d.trickSource === "NON"
               ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
               : clamp(162 - trickVal, 0, 162),
           trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
-
           announceA: safeInt(d.announceA) ?? 0,
           announceB: safeInt(d.announceB) ?? 0,
           beloteTeam: d.beloteTeam || "NONE",
         };
-
-        const base = recomputeMatch(m);
 
         // editing existing hand
         if (m.editingHandIdx) {
@@ -1072,48 +1145,20 @@ export default function App() {
               scoreA: res.scoreA,
               scoreB: res.scoreB,
               bidderSucceeded: res.bidderSucceeded,
+              editedAt: Date.now(), // ✅ makes backup send again (append-only)
             };
           });
 
-          const nextMatch = recomputeMatch({
+          return recomputeMatch({
             ...m,
             hands: nextHands,
             fastDraft: defaultFastDraft(),
             editingHandIdx: null,
           });
-
-          // queue backup (edited hand)
-          const ta = teamById.get(nextMatch.teamAId)?.name ?? "";
-          const tb = teamById.get(nextMatch.teamBId)?.name ?? "";
-          queueHandBackup({
-            timestamp: new Date().toISOString(),
-            tournamentName: appName,
-            matchCode: nextMatch.code,
-            matchLabel: nextMatch.label,
-            teamA: ta,
-            teamB: tb,
-            handIdx: m.editingHandIdx,
-            scoreA: res.scoreA,
-            scoreB: res.scoreB,
-            bidder: snap.bidder,
-            bid: snap.bid,
-            suit: snap.suit,
-            coincheLevel: snap.coincheLevel,
-            capot: snap.capot,
-            bidderTrickPoints: snap.bidderTrickPoints,
-            announceA: snap.announceA,
-            announceB: snap.announceB,
-            beloteTeam: snap.beloteTeam,
-            bidderSucceeded: res.bidderSucceeded,
-            totalA: nextMatch.totalA,
-            totalB: nextMatch.totalB,
-            deviceId,
-          });
-
-          return nextMatch;
         }
 
-        if (base.completed) return base;
+        const current = recomputeMatch(m);
+        if (current.completed) return current;
 
         const nextHand = {
           idx: (m.hands?.length || 0) + 1,
@@ -1124,41 +1169,11 @@ export default function App() {
           bidderSucceeded: res.bidderSucceeded,
         };
 
-        const nextMatch = recomputeMatch({
+        return recomputeMatch({
           ...m,
           hands: [...(m.hands || []), nextHand],
           fastDraft: defaultFastDraft(),
         });
-
-        // queue backup (new hand)
-        const ta = teamById.get(nextMatch.teamAId)?.name ?? "";
-        const tb = teamById.get(nextMatch.teamBId)?.name ?? "";
-        queueHandBackup({
-          timestamp: new Date().toISOString(),
-          tournamentName: appName,
-          matchCode: nextMatch.code,
-          matchLabel: nextMatch.label,
-          teamA: ta,
-          teamB: tb,
-          handIdx: nextHand.idx,
-          scoreA: res.scoreA,
-          scoreB: res.scoreB,
-          bidder: snap.bidder,
-          bid: snap.bid,
-          suit: snap.suit,
-          coincheLevel: snap.coincheLevel,
-          capot: snap.capot,
-          bidderTrickPoints: snap.bidderTrickPoints,
-          announceA: snap.announceA,
-          announceB: snap.announceB,
-          beloteTeam: snap.beloteTeam,
-          bidderSucceeded: res.bidderSucceeded,
-          totalA: nextMatch.totalA,
-          totalB: nextMatch.totalB,
-          deviceId,
-        });
-
-        return nextMatch;
       })
     );
   }
@@ -1179,129 +1194,7 @@ export default function App() {
     );
   }
 
-  /** ===== Google Sheets Hand Append Backup (matches your doPost schema) ===== */
-  async function postHandToSheets(handPayload) {
-    const body = {
-      secret: BACKUP_SECRET,
-      ...handPayload,
-    };
-
-    // 1) Try normal fetch (best: we can read response)
-    try {
-      const res = await fetch(BACKUP_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        redirect: "follow",
-        body: JSON.stringify(body),
-      });
-      const txt = await res.text().catch(() => "");
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${txt.slice(0, 200)}`);
-      return { ok: true, msg: txt?.slice(0, 120) || "OK" };
-    } catch (e) {
-      // 2) If CORS blocks reading response, still try to SEND the request:
-      //    - sendBeacon (fire-and-forget, usually succeeds)
-      //    - fallback fetch no-cors
-      const payloadStr = JSON.stringify(body);
-
-      try {
-        if (navigator.sendBeacon) {
-          const blob = new Blob([payloadStr], { type: "application/json" });
-          const ok = navigator.sendBeacon(BACKUP_URL, blob);
-          if (ok) return { ok: true, msg: "Sent via sendBeacon (no response)" };
-        }
-      } catch {
-        // ignore
-      }
-
-      try {
-        await fetch(BACKUP_URL, {
-          method: "POST",
-          mode: "no-cors",
-          headers: { "Content-Type": "application/json" },
-          body: payloadStr,
-        });
-        return { ok: true, msg: "Sent no-cors (no response)" };
-      } catch (e2) {
-        return { ok: false, err: String(e2 || e) };
-      }
-    }
-  }
-
-  async function flushHandQueue() {
-    if (flushingRef.current) return;
-    flushingRef.current = true;
-
-    try {
-      while (true) {
-        const next = handQueueRef.current?.[0];
-        if (!next) break;
-
-        const result = await postHandToSheets(next);
-
-        if (result.ok) {
-          setBackupState((s) => ({
-            ...s,
-            lastOk: Date.now(),
-            lastErr: null,
-            lastErrMsg: "",
-            lastOkMsg: result.msg || "OK",
-          }));
-          // dequeue 1
-          setHandQueue((prev) => prev.slice(1));
-          setBackupState((s) => ({
-            ...s,
-            queued: Math.max(0, (s.queued || 1) - 1),
-          }));
-        } else {
-          setBackupState((s) => ({
-            ...s,
-            lastErr: Date.now(),
-            lastErrMsg: result.err || "Backup failed",
-          }));
-          // stop and retry later
-          break;
-        }
-      }
-    } finally {
-      flushingRef.current = false;
-    }
-  }
-
-  const handQueueRef = useRef(handQueue);
-  useEffect(() => {
-    handQueueRef.current = handQueue;
-  }, [handQueue]);
-
-  // When queue changes, attempt flush
-  useEffect(() => {
-    if (!loaded) return;
-    if (handQueue.length === 0) return;
-    void flushHandQueue();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handQueue.length, loaded]);
-
-  // Retry periodically if there is an error and queued items exist
-  useEffect(() => {
-    if (!loaded) return;
-    if (handQueue.length === 0) return;
-
-    const t = setInterval(() => {
-      if (handQueueRef.current.length > 0) void flushHandQueue();
-    }, 2500);
-
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handQueue.length, loaded]);
-
-  useEffect(() => {
-    const onOnline = () => {
-      if (handQueueRef.current.length > 0) void flushHandQueue();
-    };
-    window.addEventListener("online", onOnline);
-    return () => window.removeEventListener("online", onOnline);
-  }, []);
-
-  /** ===== Scoreboard (aggregate across all matches) ===== */
+  /** ===== Scoreboard ===== */
   const scoreboardRows = useMemo(() => {
     const rows = teams.map((t) => ({
       teamId: t.id,
@@ -1348,6 +1241,141 @@ export default function App() {
       return x.name.localeCompare(y.name);
     });
   }, [teams, matches]);
+
+  /** ===== Fun stats ===== */
+  const funStats = useMemo(() => {
+    const completed = matches.filter((m) => m.completed && m.teamAId && m.teamBId);
+
+    let biggestBlowout = { diff: 0, label: "—" };
+    for (const m of completed) {
+      const diff = Math.abs((m.totalA || 0) - (m.totalB || 0));
+      if (diff > biggestBlowout.diff) {
+        const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+        const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+        biggestBlowout = { diff, label: `${ta} vs ${tb} (${m.label})` };
+      }
+    }
+
+    let closest = { diff: Infinity, label: "—" };
+    for (const m of completed) {
+      const diff = Math.abs((m.totalA || 0) - (m.totalB || 0));
+      if (diff > 0 && diff < closest.diff) {
+        const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+        const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+        closest = { diff, label: `${ta} vs ${tb} (${m.label})` };
+      }
+    }
+    if (!Number.isFinite(closest.diff)) closest = { diff: 0, label: "—" };
+
+    let bestComeback = { deficit: 0, label: "—" };
+    for (const m of completed) {
+      const diffs = m.timelineDiffs || [];
+      if (!diffs.length) continue;
+
+      const winnerIsA = m.winnerId === m.teamAId;
+      const deficit = winnerIsA ? Math.min(0, ...diffs) : Math.max(0, ...diffs);
+      const comebackSize = Math.abs(deficit);
+
+      if (comebackSize > bestComeback.deficit) {
+        const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+        const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+        bestComeback = { deficit: comebackSize, label: `${ta} vs ${tb} (${m.label})` };
+      }
+    }
+
+    let clutchFinish = { diff: Infinity, label: "—" };
+    for (const m of completed) {
+      const diffs = m.timelineDiffs || [];
+      if (diffs.length < 1) continue;
+      const startIdx = Math.max(0, diffs.length - 3);
+      for (let i = startIdx; i < diffs.length; i++) {
+        const absDiff = Math.abs(diffs[i]);
+        if (absDiff < clutchFinish.diff) {
+          const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+          const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+          clutchFinish = { diff: absDiff, label: `${ta} vs ${tb} (${m.label})` };
+        }
+      }
+    }
+    if (!Number.isFinite(clutchFinish.diff)) clutchFinish = { diff: 0, label: "—" };
+
+    let momentumMonster = { swing: 0, label: "—" };
+    for (const m of matches.filter((x) => x.teamAId && x.teamBId)) {
+      const diffs = m.timelineDiffs || [];
+      if (diffs.length < 3) continue;
+      for (let i = 2; i < diffs.length; i++) {
+        const swing = Math.abs(diffs[i] - diffs[i - 2]);
+        if (swing > momentumMonster.swing) {
+          const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+          const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+          momentumMonster = { swing, label: `${ta} vs ${tb} (${m.label})` };
+        }
+      }
+    }
+
+    const defenseCounts = new Map();
+    const bumpDefense = (teamId) => {
+      if (!teamId) return;
+      defenseCounts.set(teamId, (defenseCounts.get(teamId) || 0) + 1);
+    };
+    for (const m of matches.filter((x) => x.teamAId && x.teamBId)) {
+      for (const h of m.hands || []) {
+        const a = Number(h.scoreA) || 0;
+        const b = Number(h.scoreB) || 0;
+        if (a > 0 && b === 0) bumpDefense(m.teamAId);
+        if (b > 0 && a === 0) bumpDefense(m.teamBId);
+      }
+    }
+
+    let perfectDefense = { name: "—", count: 0 };
+    for (const [tid, count] of defenseCounts.entries()) {
+      if (count > perfectDefense.count) {
+        perfectDefense = { name: teamById.get(tid)?.name ?? "—", count };
+      }
+    }
+
+    const teamFun = new Map();
+    const bump = (tid, key, n = 1) => {
+      if (!tid) return;
+      const cur = teamFun.get(tid) || { coinches: 0, surcoinches: 0, capots: 0, belotes: 0 };
+      cur[key] = (cur[key] || 0) + n;
+      teamFun.set(tid, cur);
+    };
+
+    for (const m of completed) {
+      for (const h of m.hands || []) {
+        const d = h.draftSnapshot || {};
+        const bidderTeamId = d.bidder === "A" ? m.teamAId : m.teamBId;
+        if (d.coincheLevel === "COINCHE") bump(bidderTeamId, "coinches");
+        if (d.coincheLevel === "SURCOINCHE") bump(bidderTeamId, "surcoinches");
+        if (d.capot) bump(bidderTeamId, "capots");
+        if (d.beloteTeam === "A") bump(m.teamAId, "belotes");
+        if (d.beloteTeam === "B") bump(m.teamBId, "belotes");
+      }
+    }
+
+    const leader = (key) => {
+      let best = null;
+      for (const [tid, obj] of teamFun.entries()) {
+        const v = obj[key] || 0;
+        if (!best || v > best.v) best = { tid, v };
+      }
+      if (!best || best.v === 0) return { name: "—", v: 0 };
+      return { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
+    };
+
+    return {
+      biggestBlowout,
+      bestComeback,
+      closest,
+      clutchFinish,
+      momentumMonster,
+      perfectDefense,
+      coincheKing: leader("coinches"),
+      capotHero: leader("capots"),
+      beloteMagnet: leader("belotes"),
+    };
+  }, [matches, teamById]);
 
   /** ===== Links ===== */
   const publicLink = useMemo(
@@ -1396,8 +1424,8 @@ export default function App() {
   /** ===== Public View ===== */
   if (path === "/public") {
     const liveMatches = matches
-      .filter((m) => m.teamAId && m.teamBId)
-      .filter((m) => !m.completed);
+      .filter((m) => m.teamAId && m.teamBId && !m.completed)
+      .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
 
     return (
       <div style={styles.page}>
@@ -1417,56 +1445,131 @@ export default function App() {
               <ScoreboardTable rows={scoreboardRows} />
             </Section>
 
-            <Section
-              title="Live Matches (in progress)"
-              right={<span style={styles.small}>{liveMatches.length} live</span>}
-            >
-              {liveMatches.length === 0 ? (
-                <div style={styles.small}>No matches currently in progress.</div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {liveMatches.map((m) => {
-                    const ta = teamById.get(m.teamAId)?.name ?? "Team A";
-                    const tb = teamById.get(m.teamBId)?.name ?? "Team B";
-                    const pctA = Math.min(
-                      100,
-                      Math.round(((m.totalA || 0) / TARGET_SCORE) * 100)
-                    );
-                    const pctB = Math.min(
-                      100,
-                      Math.round(((m.totalB || 0) / TARGET_SCORE) * 100)
-                    );
-                    return (
-                      <div key={m.id} style={styles.card}>
-                        <div style={{ fontWeight: 950, marginBottom: 8 }}>
-                          {m.tableName} • {m.label}{" "}
-                          <span style={styles.small}>({m.code})</span>
-                        </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                          <div>
-                            <div style={{ fontWeight: 900, marginBottom: 6 }}>
-                              {ta}: <span style={{ color: "#e5e7eb" }}>{m.totalA}</span>
-                            </div>
-                            <div style={styles.progressWrap}>
-                              <div style={styles.progressFillA(pctA)} />
-                            </div>
-                          </div>
-                          <div>
-                            <div style={{ fontWeight: 900, marginBottom: 6 }}>
-                              {tb}: <span style={{ color: "#e5e7eb" }}>{m.totalB}</span>
-                            </div>
-                            <div style={styles.progressWrap}>
-                              <div style={styles.progressFillB(pctB)} />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+            <Section title="Fun Facts">
+              <div style={styles.grid3}>
+                <StatCard
+                  label="Biggest Blowout"
+                  value={`${funStats.biggestBlowout.diff} pts`}
+                  sub={funStats.biggestBlowout.label}
+                />
+                <StatCard
+                  label="Best Comeback"
+                  value={`${funStats.bestComeback.deficit} pts`}
+                  sub={funStats.bestComeback.label}
+                />
+                <StatCard
+                  label="Closest Match"
+                  value={`${funStats.closest.diff} pts`}
+                  sub={funStats.closest.label}
+                />
+                <StatCard
+                  label="Clutch Finish (last 3 hands)"
+                  value={`${funStats.clutchFinish.diff} pts`}
+                  sub={funStats.clutchFinish.label}
+                />
+                <StatCard
+                  label="Momentum Monster"
+                  value={`${funStats.momentumMonster.swing} pts`}
+                  sub={funStats.momentumMonster.label}
+                />
+                <StatCard
+                  label="Perfect Defense"
+                  value={funStats.perfectDefense.name}
+                  sub={`${funStats.perfectDefense.count} shutout hands`}
+                />
+                <StatCard
+                  label="Coinche King"
+                  value={funStats.coincheKing.name}
+                  sub={`${funStats.coincheKing.v} coinches`}
+                />
+                <StatCard
+                  label="Capot Hero"
+                  value={funStats.capotHero.name}
+                  sub={`${funStats.capotHero.v} capots`}
+                />
+                <StatCard
+                  label="Belote Magnet"
+                  value={funStats.beloteMagnet.name}
+                  sub={`${funStats.beloteMagnet.v} belotes`}
+                />
+              </div>
             </Section>
           </div>
+
+          <Section title="Live Matches (Now Playing)">
+            {liveMatches.length === 0 ? (
+              <div style={styles.small}>No matches currently in progress.</div>
+            ) : (
+              <div style={styles.grid3}>
+                {liveMatches.map((m) => {
+                  const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+                  const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+                  const pctA = Math.min(
+                    100,
+                    Math.round(((m.totalA || 0) / TARGET_SCORE) * 100)
+                  );
+                  const pctB = Math.min(
+                    100,
+                    Math.round(((m.totalB || 0) / TARGET_SCORE) * 100)
+                  );
+                  return (
+                    <div key={m.id} style={styles.card}>
+                      <div style={{ fontWeight: 950, marginBottom: 6 }}>
+                        {m.tableName} • {m.label}
+                      </div>
+
+                      <div style={{ marginTop: 8 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: 10,
+                            fontWeight: 900,
+                          }}
+                        >
+                          <span style={{ color: "#e5e7eb" }}>{ta}</span>
+                          <span>{m.totalA}</span>
+                        </div>
+                        <div style={{ marginTop: 6, ...styles.progressWrap }}>
+                          <div style={styles.progressFillA(pctA)} />
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 10 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: 10,
+                            fontWeight: 900,
+                          }}
+                        >
+                          <span style={{ color: "#e5e7eb" }}>{tb}</span>
+                          <span>{m.totalB}</span>
+                        </div>
+                        <div style={{ marginTop: 6, ...styles.progressWrap }}>
+                          <div style={styles.progressFillB(pctB)} />
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 10 }}>
+                        <a
+                          href={`#/table?code=${m.code}`}
+                          style={{
+                            ...styles.btnSecondary,
+                            textDecoration: "none",
+                            display: "inline-block",
+                          }}
+                        >
+                          Open Table
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Section>
 
           <Section title="Table Entry Links">
             <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
@@ -1509,7 +1612,9 @@ export default function App() {
           <div style={styles.topbar}>
             <div>
               <h1 style={styles.title}>{appName}</h1>
-              <div style={styles.subtitle}>Table View • Enter hands for your match only</div>
+              <div style={styles.subtitle}>
+                Table View • Enter hands for your match only
+              </div>
             </div>
             <NavPills showAdmin={true} />
           </div>
@@ -1564,7 +1669,7 @@ export default function App() {
           <div>
             <h1 style={styles.title}>{appName}</h1>
             <div style={styles.subtitle}>
-              Admin • Setup players/teams • Create table matches • Share links • Google Sheet per-hand backup
+              Admin • Setup players/teams • Create table matches • Share links • Auto-backup to Google Sheet
             </div>
           </div>
           <NavPills showAdmin={false} />
@@ -1593,15 +1698,12 @@ export default function App() {
             Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span>
           </div>
           <div style={{ marginTop: 8, ...styles.small }}>
-            Backup status:{" "}
-            {backupState.lastOk ? "✅ OK" : "—"}{" "}
-            {backupState.lastErr ? "• ❌ error (retrying…)" : ""}{" "}
+            GoogleSheet backup: {backupState.lastOk ? "✅ OK" : "—"}{" "}
+            {backupState.lastErr ? "• retrying…" : ""}{" "}
             {backupState.queued ? `• queued: ${backupState.queued}` : ""}
-            {backupState.lastErrMsg ? (
-              <div style={{ marginTop: 6, color: "#fca5a5" }}>
-                Last error: {backupState.lastErrMsg}
-              </div>
-            ) : null}
+          </div>
+          <div style={{ marginTop: 6, ...styles.small }}>
+            Device: <span style={{ color: "#e5e7eb" }}>{deviceIdRef.current}</span>
           </div>
         </Section>
 
@@ -1621,11 +1723,12 @@ export default function App() {
               <button
                 style={styles.btnSecondary}
                 onClick={() => {
-                  if (handQueueRef.current.length > 0) void flushHandQueue();
-                  else alert("No pending hand backups in queue.");
+                  // Force retry any queued items
+                  void flushHandBackupQueue();
+                  alert("Backup retry triggered (if anything is queued).");
                 }}
               >
-                Retry Backup Now
+                Backup Now
               </button>
 
               <button
@@ -1637,8 +1740,8 @@ export default function App() {
                   setTeams([]);
                   setPairHistory([]);
                   setMatches([]);
-                  setHandQueue([]);
-                  setBackupState({ lastOk: null, lastErr: null, queued: 0, lastErrMsg: "", lastOkMsg: "" });
+                  // also clear sent-hand cache so you don't block future backups
+                  sentHandKeysRef.current = new Set();
                 }}
               >
                 Full Reset
@@ -1664,18 +1767,8 @@ export default function App() {
 
             <div style={styles.card}>
               <div style={styles.small}>Backup endpoint</div>
-              <div
-                style={{
-                  fontWeight: 900,
-                  fontSize: 12,
-                  color: "#cbd5e1",
-                  wordBreak: "break-all",
-                }}
-              >
+              <div style={{ fontWeight: 900, fontSize: 12, color: "#cbd5e1", wordBreak: "break-all" }}>
                 {BACKUP_URL}
-              </div>
-              <div style={{ marginTop: 6, ...styles.small }}>
-                Device ID: <span style={{ color: "#e5e7eb" }}>{deviceId.slice(-10)}</span>
               </div>
             </div>
           </div>
@@ -1701,21 +1794,8 @@ export default function App() {
           <div style={{ marginTop: 12, ...styles.grid4 }}>
             {players.map((p) => (
               <div key={p.id} style={styles.card}>
-                <div
-                  style={{
-                    fontWeight: 950,
-                    display: "flex",
-                    justifyContent: "space-between",
-                    gap: 10,
-                  }}
-                >
-                  <span
-                    style={{
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
+                <div style={{ fontWeight: 950, display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {p.name}
                   </span>
                   <button style={{ ...styles.btnGhost, padding: 0 }} onClick={() => removePlayer(p.id)}>
@@ -1758,31 +1838,11 @@ export default function App() {
             <div style={styles.grid2}>
               {teams.map((t, idx) => (
                 <div key={t.id} style={styles.card}>
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: 10,
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                    }}
-                  >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <div style={{ fontWeight: 950 }}>Team #{idx + 1}</div>
                     <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      <label
-                        style={{
-                          display: "flex",
-                          gap: 8,
-                          alignItems: "center",
-                          fontWeight: 900,
-                          color: t.locked ? "#34d399" : "#94a3b8",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={!!t.locked}
-                          onChange={(e) => toggleTeamLock(t.id, e.target.checked)}
-                        />
+                      <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900, color: t.locked ? "#34d399" : "#94a3b8" }}>
+                        <input type="checkbox" checked={!!t.locked} onChange={(e) => toggleTeamLock(t.id, e.target.checked)} />
                         Lock
                       </label>
                       <button style={styles.btnGhost} onClick={() => removeTeam(t.id)}>
@@ -1811,8 +1871,7 @@ export default function App() {
                       >
                         <option value="">— Select —</option>
                         {players.map((p) => {
-                          const taken =
-                            usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
+                          const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
                           return (
                             <option key={p.id} value={p.id} disabled={taken}>
                               {p.name}
@@ -1832,8 +1891,7 @@ export default function App() {
                       >
                         <option value="">— Select —</option>
                         {players.map((p) => {
-                          const taken =
-                            usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
+                          const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
                           return (
                             <option key={p.id} value={p.id} disabled={taken}>
                               {p.name}
@@ -1886,24 +1944,12 @@ export default function App() {
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {matches.map((m) => (
                 <div key={m.id} style={styles.card}>
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: 10,
-                      flexWrap: "wrap",
-                      alignItems: "baseline",
-                    }}
-                  >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
                     <div style={{ fontWeight: 950 }}>
-                      {m.tableName} • {m.label}{" "}
-                      <span style={styles.small}>• Code {m.code}</span>
+                      {m.tableName} • {m.label} <span style={styles.small}>• Code {m.code}</span>
                     </div>
                     <div style={styles.row}>
-                      <a
-                        href={`#/table?code=${m.code}`}
-                        style={{ ...styles.btnSecondary, textDecoration: "none" }}
-                      >
+                      <a href={`#/table?code=${m.code}`} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
                         Open Table
                       </a>
                       <button
@@ -1942,9 +1988,7 @@ export default function App() {
                     <div style={styles.card}>
                       <div style={styles.small}>Quick status</div>
                       <div style={{ fontWeight: 950, color: m.completed ? "#34d399" : "#94a3b8" }}>
-                        {m.completed
-                          ? `Completed • Winner: ${teamById.get(m.winnerId)?.name ?? "—"}`
-                          : "In progress"}
+                        {m.completed ? `Completed • Winner: ${teamById.get(m.winnerId)?.name ?? "—"}` : "In progress"}
                       </div>
                       <div style={styles.small}>
                         Score: {m.totalA} – {m.totalB}
@@ -2004,6 +2048,58 @@ export default function App() {
             </div>
           )}
         </Section>
+
+        <Section title="Scoreboard + Fun Facts (Live)">
+          <div style={styles.grid2}>
+            <div style={styles.card}>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Live Scoreboard</div>
+              <ScoreboardTable rows={scoreboardRows} />
+            </div>
+
+            <div style={styles.card}>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Fun Facts</div>
+              <div style={styles.grid3}>
+                <StatCard label="Biggest Blowout" value={`${funStats.biggestBlowout.diff} pts`} sub={funStats.biggestBlowout.label} />
+                <StatCard label="Best Comeback" value={`${funStats.bestComeback.deficit} pts`} sub={funStats.bestComeback.label} />
+                <StatCard label="Closest Match" value={`${funStats.closest.diff} pts`} sub={funStats.closest.label} />
+                <StatCard label="Clutch Finish (last 3 hands)" value={`${funStats.clutchFinish.diff} pts`} sub={funStats.clutchFinish.label} />
+                <StatCard label="Momentum Monster" value={`${funStats.momentumMonster.swing} pts`} sub={funStats.momentumMonster.label} />
+                <StatCard label="Perfect Defense" value={funStats.perfectDefense.name} sub={`${funStats.perfectDefense.count} shutout hands`} />
+                <StatCard label="Coinche King" value={funStats.coincheKing.name} sub={`${funStats.coincheKing.v} coinches`} />
+                <StatCard label="Capot Hero" value={funStats.capotHero.name} sub={`${funStats.capotHero.v} capots`} />
+                <StatCard label="Belote Magnet" value={funStats.beloteMagnet.name} sub={`${funStats.beloteMagnet.v} belotes`} />
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        <Section title="Table Links (share to each table)">
+          <div style={styles.small}>
+            Each match has a unique code + link. Teams should open their match link to enter hands.
+          </div>
+          <div style={{ marginTop: 10, ...styles.grid3 }}>
+            {tableLinks.map((t) => (
+              <div key={t.code} style={styles.card}>
+                <div style={{ fontWeight: 950, marginBottom: 6 }}>{t.label}</div>
+                <div style={styles.small}>Code: {t.code}</div>
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <a href={t.href} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                    Open
+                  </a>
+                  <button
+                    style={styles.btnSecondary}
+                    onClick={() => {
+                      navigator.clipboard?.writeText(t.href);
+                      alert(`Copied link for ${t.label}`);
+                    }}
+                  >
+                    Copy Link
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
       </div>
     </div>
   );
@@ -2019,6 +2115,16 @@ function Section({ title, right, children }) {
         <div>{right}</div>
       </div>
       {children}
+    </div>
+  );
+}
+
+function StatCard({ label, value, sub }) {
+  return (
+    <div style={styles.card}>
+      <div style={styles.small}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 950 }}>{value ?? "—"}</div>
+      {sub ? <div style={{ marginTop: 6, ...styles.small }}>{sub}</div> : null}
     </div>
   );
 }
@@ -2108,6 +2214,43 @@ function AnimatedNumber({ value }) {
   );
 }
 
+function Fireworks({ seed = 0 }) {
+  // deterministic-ish burst positions
+  const bursts = [
+    { x: 25 + (seed % 7) * 2, delay: 0 },
+    { x: 50 + (seed % 5) * 2, delay: 140 },
+    { x: 75 - (seed % 6) * 2, delay: 260 },
+  ];
+
+  const particlesPerBurst = 14;
+  const radius = 46;
+
+  return (
+    <div style={styles.fireworksWrap}>
+      {bursts.map((b, bi) => {
+        const hueBase = (seed * 53 + bi * 70) % 360;
+        return (
+          <React.Fragment key={bi}>
+            <span style={styles.fireworksGlow(b.x, b.delay)} />
+            {Array.from({ length: particlesPerBurst }).map((_, pi) => {
+              const ang = (Math.PI * 2 * pi) / particlesPerBurst;
+              const dx = Math.cos(ang) * (radius + (pi % 3) * 10);
+              const dy = Math.sin(ang) * (radius + (pi % 4) * 8);
+              const hue = (hueBase + pi * 18) % 360;
+              return (
+                <span
+                  key={`${bi}_${pi}`}
+                  style={styles.fireworkParticle(b.x, b.delay + (pi % 6) * 35, dx, dy, hue)}
+                />
+              );
+            })}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
 function TableMatchPanel({
   match,
   teamById,
@@ -2129,21 +2272,23 @@ function TableMatchPanel({
   const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
   const pctB = Math.min(100, Math.round(((match.totalB || 0) / TARGET_SCORE) * 100));
 
-  const d = match.fastDraft || {
-    bidder: "A",
-    bid: "",
-    suit: "S",
-    coincheLevel: "NONE",
-    capot: false,
-    bidderTrickPoints: "",
-    nonBidderTrickPoints: "",
-    trickSource: "",
-    announceA: "0",
-    announceB: "0",
-    beloteTeam: "NONE",
-  };
+  const d =
+    match.fastDraft || {
+      bidder: "A",
+      bid: "",
+      suit: "S",
+      coincheLevel: "NONE",
+      capot: false,
+      bidderTrickPoints: "",
+      nonBidderTrickPoints: "",
+      trickSource: "",
+      announceA: "0",
+      announceB: "0",
+      beloteTeam: "NONE",
+    };
 
   const canPlay = !!match.teamAId && !!match.teamBId;
+
   const leader =
     match.totalA === match.totalB ? null : match.totalA > match.totalB ? "A" : "B";
 
@@ -2163,7 +2308,7 @@ function TableMatchPanel({
     const prev = prevWinnerRef.current;
     if (!prev && winnerSide) {
       setCelebrateOn(true);
-      const t = setTimeout(() => setCelebrateOn(false), CELEBRATION_MS);
+      const t = setTimeout(() => setCelebrateOn(false), 3000); // ✅ 3 seconds
       prevWinnerRef.current = winnerSide;
       return () => clearTimeout(t);
     }
@@ -2173,37 +2318,21 @@ function TableMatchPanel({
   const suitLabel =
     d.suit === "H" ? "Hearts" : d.suit === "D" ? "Diamonds" : d.suit === "C" ? "Clubs" : "Spades";
 
-  // Hand-tracker label style (+6 font size)
+  // ✅ Bigger labels over fields (+6)
   const fieldLabelStyle = {
+    fontSize: (styles.small?.fontSize || 12) + 6,
     color: "#cbd5e1",
-    fontSize: 18,
-    fontWeight: 900,
+    fontWeight: 950,
     marginBottom: 6,
   };
 
-  // Shorter fields (visual half-length)
-  const handInput = {
-    ...styles.input("100%"),
-    padding: "8px 10px",
-    borderRadius: 12,
-  };
-  const handSelect = {
-    ...styles.select("100%"),
-    padding: "8px 10px",
-    borderRadius: 12,
-  };
+  // ✅ Smaller input/select just for Hand Tracker
+  const handInput = { ...styles.input("100%"), padding: "8px 10px" };
+  const handSelect = { ...styles.select("100%"), padding: "8px 10px" };
 
   return (
     <div style={{ ...styles.card, borderRadius: 18 }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          gap: 10,
-          flexWrap: "wrap",
-          alignItems: "baseline",
-        }}
-      >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
         <div style={{ fontWeight: 950 }}>
           {match.tableName} • {match.label}
         </div>
@@ -2229,9 +2358,10 @@ function TableMatchPanel({
             </div>
           ) : null}
 
+          {/* ✅ Confetti + Fireworks (3 seconds) */}
           {celebrateOn && winnerSide === "A" ? (
             <>
-              <Fireworks on />
+              <Fireworks seed={(match.id || "").length + (match.totalA || 0)} />
               <div style={styles.confettiWrap}>
                 {Array.from({ length: 30 }).map((_, i) => (
                   <span key={i} style={styles.confettiPiece(i)} />
@@ -2273,9 +2403,10 @@ function TableMatchPanel({
             </div>
           ) : null}
 
+          {/* ✅ Confetti + Fireworks (3 seconds) */}
           {celebrateOn && winnerSide === "B" ? (
             <>
-              <Fireworks on />
+              <Fireworks seed={(match.id || "").length + (match.totalB || 0) + 7} />
               <div style={styles.confettiWrap}>
                 {Array.from({ length: 30 }).map((_, i) => (
                   <span key={i} style={styles.confettiPiece(i)} />
@@ -2308,15 +2439,7 @@ function TableMatchPanel({
 
       {/* Hand Tracker form */}
       <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 10,
-            flexWrap: "wrap",
-            alignItems: "baseline",
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
           <div style={{ fontWeight: 950 }}>Hand Tracker</div>
           {match.editingHandIdx ? (
             <span style={styles.tag}>Editing Hand {match.editingHandIdx}</span>
@@ -2325,209 +2448,178 @@ function TableMatchPanel({
           )}
         </div>
 
-        {/* ✅ EXACT layout requested: 3 rows */}
-        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12 }}>
-          {/* Row 1: Bidder, Bid, Suit, Coinche, Capot */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(5, minmax(140px, 1fr))",
-              gap: 10,
-              alignItems: "start",
-            }}
-          >
-            <div>
-              <div style={fieldLabelStyle}>Bidder</div>
-              <select
-                style={handSelect}
-                value={d.bidder}
-                onChange={(e) => onDraftPatch({ bidder: e.target.value })}
-                disabled={!canPlay}
-              >
-                <option value="A">{`Team #${numA} — ${ta}`}</option>
-                <option value="B">{`Team #${numB} — ${tb}`}</option>
-              </select>
-            </div>
-
-            <div>
-              <div style={fieldLabelStyle}>Bid</div>
-              <input
-                style={handInput}
-                value={d.bid}
-                onChange={(e) => onDraftPatch({ bid: e.target.value })}
-                placeholder='80, 90, 110... or "capot"'
-                disabled={!canPlay}
-              />
-            </div>
-
-            <div>
-              <div style={fieldLabelStyle}>Suit</div>
-              <select
-                style={handSelect}
-                value={d.suit || "S"}
-                onChange={(e) => onDraftPatch({ suit: e.target.value })}
-                disabled={!canPlay}
-              >
-                <option value="H">♥ Hearts</option>
-                <option value="D">♦ Diamonds</option>
-                <option value="C">♣ Clubs</option>
-                <option value="S">♠ Spades</option>
-              </select>
-            </div>
-
-            <div>
-              <div style={fieldLabelStyle}>Coinche</div>
-              <select
-                style={handSelect}
-                value={d.coincheLevel}
-                onChange={(e) => onDraftPatch({ coincheLevel: e.target.value })}
-                disabled={!canPlay}
-              >
-                <option value="NONE">None</option>
-                <option value="COINCHE">Coinche (x2)</option>
-                <option value="SURCOINCHE">Surcoinche (x4)</option>
-              </select>
-            </div>
-
-            <div>
-              <div style={fieldLabelStyle}>Capot</div>
-              <select
-                style={handSelect}
-                value={d.capot ? "YES" : "NO"}
-                onChange={(e) => onDraftPatch({ capot: e.target.value === "YES" })}
-                disabled={!canPlay}
-              >
-                <option value="NO">No</option>
-                <option value="YES">Yes</option>
-              </select>
-            </div>
+        {/* ✅ Re-ordered fields + shorter widths + larger labels */}
+        <div style={styles.handGrid}>
+          {/* Line 1: Bidder, Bid, Suit, Coinche, Capot */}
+          <div>
+            <div style={fieldLabelStyle}>Bidder</div>
+            <select
+              style={handSelect}
+              value={d.bidder}
+              onChange={(e) => onDraftPatch({ bidder: e.target.value })}
+              disabled={!canPlay}
+            >
+              <option value="A">{`Team #${numA} — ${ta}`}</option>
+              <option value="B">{`Team #${numB} — ${tb}`}</option>
+            </select>
           </div>
 
-          {/* Row 2: Announces A/B */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(2, minmax(180px, 1fr))",
-              gap: 10,
-              alignItems: "start",
-            }}
-          >
-            <div>
-              <div style={fieldLabelStyle}>Announces Team A (non-belote)</div>
-              <input
-                style={handInput}
-                value={d.announceA}
-                onChange={(e) => onDraftPatch({ announceA: e.target.value })}
-                inputMode="numeric"
-                disabled={!canPlay}
-              />
-            </div>
-
-            <div>
-              <div style={fieldLabelStyle}>Announces Team B (non-belote)</div>
-              <input
-                style={handInput}
-                value={d.announceB}
-                onChange={(e) => onDraftPatch({ announceB: e.target.value })}
-                inputMode="numeric"
-                disabled={!canPlay}
-              />
-            </div>
+          <div>
+            <div style={fieldLabelStyle}>Bid</div>
+            <input
+              style={handInput}
+              value={d.bid}
+              onChange={(e) => onDraftPatch({ bid: e.target.value })}
+              placeholder='80, 90, 110... or "capot"'
+              disabled={!canPlay}
+            />
           </div>
 
-          {/* Row 3: Belote + trick points */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, minmax(180px, 1fr))",
-              gap: 10,
-              alignItems: "start",
-            }}
-          >
-            <div>
-              <div style={fieldLabelStyle}>Belote</div>
-              <select
-                style={handSelect}
-                value={d.beloteTeam}
-                onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })}
-                disabled={!canPlay}
-              >
-                <option value="NONE">None</option>
-                <option value="A">{`Team #${numA}`}</option>
-                <option value="B">{`Team #${numB}`}</option>
-              </select>
-            </div>
+          <div>
+            <div style={fieldLabelStyle}>Suit</div>
+            <select
+              style={handSelect}
+              value={d.suit || "S"}
+              onChange={(e) => onDraftPatch({ suit: e.target.value })}
+              disabled={!canPlay}
+            >
+              <option value="H">♥ Hearts</option>
+              <option value="D">♦ Diamonds</option>
+              <option value="C">♣ Clubs</option>
+              <option value="S">♠ Spades</option>
+            </select>
+          </div>
 
-            <div>
-              <div style={fieldLabelStyle}>Bidder trick points (0–162)</div>
-              <input
-                style={handInput}
-                value={d.bidderTrickPoints}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw.trim() === "") {
-                    onDraftPatch({
-                      bidderTrickPoints: "",
-                      nonBidderTrickPoints: "",
-                      trickSource: "",
-                    });
-                    return;
-                  }
-                  const n = safeInt(raw);
-                  if (n === null) {
-                    onDraftPatch({ bidderTrickPoints: raw, trickSource: "BIDDER" });
-                    return;
-                  }
-                  const v = clamp(n, 0, 162);
-                  onDraftPatch({
-                    bidderTrickPoints: String(v),
-                    nonBidderTrickPoints: String(162 - v),
-                    trickSource: "BIDDER",
-                  });
-                }}
-                placeholder="ex: 81"
-                inputMode="numeric"
-                disabled={!canPlay || d.trickSource === "NON"}
-              />
-            </div>
+          <div>
+            <div style={fieldLabelStyle}>Coinche</div>
+            <select
+              style={handSelect}
+              value={d.coincheLevel}
+              onChange={(e) => onDraftPatch({ coincheLevel: e.target.value })}
+              disabled={!canPlay}
+            >
+              <option value="NONE">None</option>
+              <option value="COINCHE">Coinche (x2)</option>
+              <option value="SURCOINCHE">Surcoinche (x4)</option>
+            </select>
+          </div>
 
-            <div>
-              <div style={fieldLabelStyle}>Non-bidder trick points (0–162)</div>
-              <input
-                style={handInput}
-                value={d.nonBidderTrickPoints}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw.trim() === "") {
-                    onDraftPatch({
-                      bidderTrickPoints: "",
-                      nonBidderTrickPoints: "",
-                      trickSource: "",
-                    });
-                    return;
-                  }
-                  const n = safeInt(raw);
-                  if (n === null) {
-                    onDraftPatch({ nonBidderTrickPoints: raw, trickSource: "NON" });
-                    return;
-                  }
-                  const v = clamp(n, 0, 162);
-                  onDraftPatch({
-                    nonBidderTrickPoints: String(v),
-                    bidderTrickPoints: String(162 - v),
-                    trickSource: "NON",
-                  });
-                }}
-                placeholder="ex: 81"
-                inputMode="numeric"
-                disabled={!canPlay || d.trickSource === "BIDDER"}
-              />
-            </div>
+          <div>
+            <div style={fieldLabelStyle}>Capot</div>
+            <select
+              style={handSelect}
+              value={d.capot ? "YES" : "NO"}
+              onChange={(e) => onDraftPatch({ capot: e.target.value === "YES" })}
+              disabled={!canPlay}
+            >
+              <option value="NO">No</option>
+              <option value="YES">Yes</option>
+            </select>
+          </div>
+
+          {/* Line 2: Announces A / B */}
+          <div>
+            <div style={fieldLabelStyle}>Announces Team A (non-belote)</div>
+            <input
+              style={handInput}
+              value={d.announceA}
+              onChange={(e) => onDraftPatch({ announceA: e.target.value })}
+              inputMode="numeric"
+              disabled={!canPlay}
+            />
+          </div>
+
+          <div>
+            <div style={fieldLabelStyle}>Announces Team B (non-belote)</div>
+            <input
+              style={handInput}
+              value={d.announceB}
+              onChange={(e) => onDraftPatch({ announceB: e.target.value })}
+              inputMode="numeric"
+              disabled={!canPlay}
+            />
+          </div>
+
+          {/* Line 3: Belote, Bidder tricks, Non-bidder tricks */}
+          <div>
+            <div style={fieldLabelStyle}>Belote</div>
+            <select
+              style={handSelect}
+              value={d.beloteTeam}
+              onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })}
+              disabled={!canPlay}
+            >
+              <option value="NONE">None</option>
+              <option value="A">{`Team #${numA}`}</option>
+              <option value="B">{`Team #${numB}`}</option>
+            </select>
+          </div>
+
+          <div>
+            <div style={fieldLabelStyle}>Bidder trick points (0–162)</div>
+            <input
+              style={handInput}
+              value={d.bidderTrickPoints}
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw.trim() === "") {
+                  onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "" });
+                  return;
+                }
+                const n = safeInt(raw);
+                if (n === null) {
+                  onDraftPatch({ bidderTrickPoints: raw, trickSource: "BIDDER" });
+                  return;
+                }
+                const v = clamp(n, 0, 162);
+                onDraftPatch({
+                  bidderTrickPoints: String(v),
+                  nonBidderTrickPoints: String(162 - v),
+                  trickSource: "BIDDER",
+                });
+              }}
+              placeholder="ex: 81"
+              inputMode="numeric"
+              disabled={!canPlay || d.trickSource === "NON"}
+            />
+          </div>
+
+          <div>
+            <div style={fieldLabelStyle}>Non-bidder trick points (0–162)</div>
+            <input
+              style={handInput}
+              value={d.nonBidderTrickPoints}
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw.trim() === "") {
+                  onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "" });
+                  return;
+                }
+                const n = safeInt(raw);
+                if (n === null) {
+                  onDraftPatch({ nonBidderTrickPoints: raw, trickSource: "NON" });
+                  return;
+                }
+                const v = clamp(n, 0, 162);
+                onDraftPatch({
+                  nonBidderTrickPoints: String(v),
+                  bidderTrickPoints: String(162 - v),
+                  trickSource: "NON",
+                });
+              }}
+              placeholder="ex: 81"
+              inputMode="numeric"
+              disabled={!canPlay || d.trickSource === "BIDDER"}
+            />
           </div>
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
-          <button style={{ ...styles.btnPrimary, ...(canPlay ? {} : styles.disabled) }} onClick={onAddHand} disabled={!canPlay}>
+          <button
+            style={{ ...styles.btnPrimary, ...(canPlay ? {} : styles.disabled) }}
+            onClick={onAddHand}
+            disabled={!canPlay}
+          >
             {match.editingHandIdx ? `Save Changes (Hand ${match.editingHandIdx})` : "Add Hand"}
           </button>
 
@@ -2570,17 +2662,16 @@ function TableMatchPanel({
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {(match.hands || []).map((h) => {
               const ds = h.draftSnapshot || {};
-              const nonBidder =
-                typeof ds.nonBidderTrickPoints !== "undefined" && ds.nonBidderTrickPoints !== ""
-                  ? ds.nonBidderTrickPoints
-                  : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162);
               return (
                 <div key={h.idx} style={styles.handRow}>
                   <div style={{ minWidth: 200 }}>
                     <div style={{ fontWeight: 950 }}>Hand {h.idx}</div>
                     <div style={styles.small}>
                       Bid {ds.bid} <SuitIcon suit={ds.suit || "S"} /> • Bidder {ds.bidder} • {ds.coincheLevel}
-                      {ds.capot ? " • Capot" : ""} • Bidder tricks {ds.bidderTrickPoints} • Non-bidder tricks {nonBidder}
+                      {ds.capot ? " • Capot" : ""} • Bidder tricks {ds.bidderTrickPoints} • Non-bidder tricks{" "}
+                      {typeof ds.nonBidderTrickPoints !== "undefined" && ds.nonBidderTrickPoints !== ""
+                        ? ds.nonBidderTrickPoints
+                        : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162)}
                     </div>
                   </div>
 
