@@ -16,7 +16,6 @@ const BACKUP_URL =
   "https://script.google.com/macros/s/AKfycbz-ok_dxCTExzV6LA8NixK6nYnw03MhOBZ3M6SgP_Na5-hlrhnMLX3bIUYqqq5laguSHw/exec";
 
 // ✅ MUST match Apps Script SECRET
-// Put your real secret string here (same as in Apps Script)
 const BACKUP_SECRET = "CHANGE_ME_TO_A_LONG_RANDOM_STRING";
 
 function uid(prefix = "id") {
@@ -47,6 +46,32 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, x));
 }
 
+/** ===== NEW: image helpers (camera scan) ===== */
+function dataURLtoBlob(dataUrl) {
+  const [meta, b64] = String(dataUrl).split(",");
+  const mime = (meta.match(/data:(.*?);base64/) || [])[1] || "image/jpeg";
+  const binStr = atob(b64);
+  const len = binStr.length;
+  const arr = new Uint8Array(len);
+  for (let i = 0; i < len; i++) arr[i] = binStr.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+async function postScanToApi({ imageDataUrl, trumpSuit, pileSide, lastTrick }) {
+  const form = new FormData();
+  form.append("image", dataURLtoBlob(imageDataUrl), "hand.jpg");
+  form.append("trumpSuit", trumpSuit || "S");
+  form.append("pileSide", pileSide || "BIDDER");
+  form.append("lastTrick", lastTrick ? "1" : "0");
+
+  const res = await fetch("/api/scan-cards", { method: "POST", body: form });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Scan failed (${res.status}) ${t}`);
+  }
+  return await res.json();
+}
+
 /** ===== Global CSS (confetti + fireworks) ===== */
 function ensureGlobalCSS() {
   if (typeof document === "undefined") return;
@@ -58,12 +83,10 @@ function ensureGlobalCSS() {
   0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
   100% { transform: translateY(420px) rotate(520deg); opacity: 0; }
 }
-
 @keyframes fireworkParticle {
   0%   { transform: translate(0px, 0px) scale(1); opacity: 1; }
   100% { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; }
 }
-
 @keyframes fireworkGlow {
   0%   { transform: scale(0.4); opacity: 0; }
   15%  { transform: scale(1); opacity: 1; }
@@ -349,7 +372,6 @@ const styles = {
       "linear-gradient(90deg, rgba(99,102,241,0.95), rgba(59,130,246,0.9))",
   }),
 
-  // ✅ shorter fields
   handGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
@@ -358,7 +380,6 @@ const styles = {
     alignItems: "start",
   },
 
-  // ✅ NEW: explicit 3-row layout for hand tracker
   handRow1: {
     display: "grid",
     gridTemplateColumns: "repeat(5, minmax(160px, 1fr))",
@@ -462,7 +483,7 @@ const styles = {
     borderRadius: 3,
     background: `hsla(${(i * 37) % 360}, 90%, 60%, 0.95)`,
     transform: `rotate(${(i * 23) % 180}deg)`,
-    animation: `confettiDrop 6000ms ease-out forwards`, // ✅ 6 seconds
+    animation: `confettiDrop 6000ms ease-out forwards`,
     animationDelay: `${(i % 10) * 30}ms`,
     opacity: 0.95,
   }),
@@ -487,7 +508,7 @@ const styles = {
     transform: "translate(-50%, -50%)",
     background: "rgba(255,255,255,0.85)",
     filter: "blur(0.4px)",
-    animation: `fireworkGlow 6000ms ease-out forwards`, // ✅ 6 seconds
+    animation: `fireworkGlow 6000ms ease-out forwards`,
     animationDelay: `${delayMs}ms`,
     boxShadow: "0 0 18px rgba(255,255,255,0.45)",
     opacity: 0,
@@ -501,7 +522,7 @@ const styles = {
     borderRadius: 999,
     transform: "translate(-50%, -50%)",
     background: `hsla(${hue}, 90%, 60%, 0.95)`,
-    animation: `fireworkParticle 6000ms ease-out forwards`, // ✅ 6 seconds
+    animation: `fireworkParticle 6000ms ease-out forwards`,
     animationDelay: `${delayMs}ms`,
     opacity: 0,
     ["--dx"]: `${dx}px`,
@@ -739,7 +760,6 @@ export default function App() {
         ...s,
         lastErr: Date.now(),
       }));
-      // retry soon
       setTimeout(() => {
         backupSendingRef.current = false;
         void flushHandBackupQueue();
@@ -758,9 +778,7 @@ export default function App() {
       body: JSON.stringify(body),
     });
 
-    if (!res.ok) {
-      throw new Error(`Backup HTTP ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`Backup HTTP ${res.status}`);
 
     try {
       const j = await res.json();
@@ -1159,7 +1177,7 @@ export default function App() {
               scoreA: res.scoreA,
               scoreB: res.scoreB,
               bidderSucceeded: res.bidderSucceeded,
-              editedAt: Date.now(), // ✅ makes backup send again (append-only)
+              editedAt: Date.now(),
             };
           });
 
@@ -2262,6 +2280,283 @@ function Fireworks({ seed = 0 }) {
   );
 }
 
+/** ===== NEW: Scan Points Modal (camera) ===== */
+function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+
+  const [pileSide, setPileSide] = useState("BIDDER"); // BIDDER | NON
+  const [lastTrick, setLastTrick] = useState(false);
+  const [captured, setCaptured] = useState(null); // dataURL
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [result, setResult] = useState(null); // {points,cards,warnings}
+
+  useEffect(() => {
+    if (!open) return;
+
+    setErr("");
+    setCaptured(null);
+    setResult(null);
+    setBusy(false);
+
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "environment",
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        });
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+      } catch (e) {
+        setErr("Camera permission denied or not available in this browser.");
+      }
+    })();
+
+    return () => {
+      try {
+        const s = streamRef.current;
+        if (s) s.getTracks().forEach((t) => t.stop());
+      } catch {}
+      streamRef.current = null;
+    };
+  }, [open]);
+
+  function captureFrame() {
+    setErr("");
+    setResult(null);
+
+    const v = videoRef.current;
+    if (!v) return;
+
+    const canvas = document.createElement("canvas");
+    const w = v.videoWidth || 1280;
+    const h = v.videoHeight || 720;
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(v, 0, 0, w, h);
+
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    setCaptured(dataUrl);
+  }
+
+  async function submitToScan() {
+    if (!captured) {
+      setErr("Please capture a photo first.");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    setResult(null);
+
+    try {
+      const j = await postScanToApi({
+        imageDataUrl: captured,
+        trumpSuit: trumpSuit || "S",
+        pileSide,
+        lastTrick,
+      });
+
+      if (!j || j.ok === false) throw new Error(j?.error || "Scan error");
+      setResult(j);
+
+      if (typeof j.points === "number" && Number.isFinite(j.points)) {
+        onApplyPoints?.({ pileSide, points: j.points });
+      }
+    } catch (e) {
+      setErr(e?.message || "Scan failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) return null;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.65)",
+        zIndex: 9999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 14,
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose?.();
+      }}
+    >
+      <div
+        style={{
+          width: "min(980px, 96vw)",
+          background: "rgba(2,6,23,0.95)",
+          border: "1px solid rgba(148,163,184,0.22)",
+          borderRadius: 18,
+          boxShadow: "0 18px 60px rgba(0,0,0,0.45)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            padding: 12,
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 10,
+            alignItems: "center",
+            borderBottom: "1px solid rgba(148,163,184,0.18)",
+          }}
+        >
+          <div style={{ fontWeight: 950 }}>
+            Scan cards → compute trick points{" "}
+            <span style={{ color: "#94a3b8", fontWeight: 800 }}>
+              (Trump: <SuitIcon suit={trumpSuit || "S"} />)
+            </span>
+          </div>
+          <button style={styles.btnSecondary} onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div style={{ padding: 12, display: "grid", gridTemplateColumns: "1fr 340px", gap: 12 }}>
+          <div style={{ ...styles.card, borderRadius: 16 }}>
+            {!captured ? (
+              <>
+                <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 8 }}>
+                  Tip: lay cards flat, avoid glare, keep all cards visible.
+                </div>
+                <video
+                  ref={videoRef}
+                  playsInline
+                  muted
+                  style={{
+                    width: "100%",
+                    borderRadius: 14,
+                    background: "rgba(0,0,0,0.35)",
+                    maxHeight: "62vh",
+                    objectFit: "cover",
+                  }}
+                />
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button style={styles.btnPrimary} onClick={captureFrame} disabled={!!err}>
+                    Capture Photo
+                  </button>
+                  <button style={styles.btnSecondary} onClick={onClose}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <img
+                  src={captured}
+                  alt="Captured"
+                  style={{
+                    width: "100%",
+                    borderRadius: 14,
+                    maxHeight: "62vh",
+                    objectFit: "contain",
+                    background: "rgba(0,0,0,0.25)",
+                  }}
+                />
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button style={styles.btnSecondary} onClick={() => setCaptured(null)} disabled={busy}>
+                    Retake
+                  </button>
+                  <button style={styles.btnPrimary} onClick={submitToScan} disabled={busy}>
+                    {busy ? "Scanning…" : "Use Photo & Calculate"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {err ? (
+              <div style={{ marginTop: 10, color: "#fb7185", fontWeight: 900 }}>{err}</div>
+            ) : null}
+          </div>
+
+          <div style={{ ...styles.card, borderRadius: 16 }}>
+            <div style={{ fontWeight: 950, marginBottom: 10 }}>Scan options</div>
+
+            <div style={{ marginBottom: 10 }}>
+              <div style={styles.small}>Which pile is this photo?</div>
+              <select
+                style={styles.select("100%")}
+                value={pileSide}
+                onChange={(e) => setPileSide(e.target.value)}
+                disabled={busy}
+              >
+                <option value="BIDDER">Bidder pile</option>
+                <option value="NON">Non-bidder pile</option>
+              </select>
+            </div>
+
+            <label style={{ display: "flex", gap: 10, alignItems: "center", fontWeight: 900 }}>
+              <input
+                type="checkbox"
+                checked={lastTrick}
+                onChange={(e) => setLastTrick(e.target.checked)}
+                disabled={busy}
+              />
+              This pile includes last trick (+10)
+            </label>
+
+            <div style={{ marginTop: 12, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Result</div>
+
+              {!result ? (
+                <div style={styles.small}>No scan result yet.</div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 20, fontWeight: 1000 }}>
+                    Points: <span style={{ color: "#34d399" }}>{result.points}</span>
+                  </div>
+
+                  {Array.isArray(result.warnings) && result.warnings.length ? (
+                    <div style={{ marginTop: 8 }}>
+                      {result.warnings.map((w, i) => (
+                        <div key={i} style={{ color: "#fbbf24", fontWeight: 900, fontSize: 12 }}>
+                          ⚠ {w}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {Array.isArray(result.cards) && result.cards.length ? (
+                    <div style={{ marginTop: 10, fontSize: 12, color: "#94a3b8" }}>
+                      Detected cards ({result.cards.length}):{" "}
+                      <span style={{ color: "#e5e7eb", fontWeight: 900 }}>
+                        {result.cards
+                          .slice(0, 24)
+                          .map((c) => `${c.rank}${c.suit}`)
+                          .join(" ")}
+                        {result.cards.length > 24 ? " …" : ""}
+                      </span>
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </div>
+
+            <div style={{ marginTop: 12, ...styles.small }}>
+              Note: This MVP uses a mock recognizer (API). We’ll swap in real card detection next.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TableMatchPanel({
   match,
   teamById,
@@ -2315,11 +2610,14 @@ function TableMatchPanel({
   const [celebrateOn, setCelebrateOn] = useState(false);
   const prevWinnerRef = useRef(null);
 
+  // ✅ NEW: scan modal open/close
+  const [scanOpen, setScanOpen] = useState(false);
+
   useEffect(() => {
     const prev = prevWinnerRef.current;
     if (!prev && winnerSide) {
       setCelebrateOn(true);
-      const t = setTimeout(() => setCelebrateOn(false), 6000); // ✅ 6 seconds
+      const t = setTimeout(() => setCelebrateOn(false), 6000);
       prevWinnerRef.current = winnerSide;
       return () => clearTimeout(t);
     }
@@ -2327,7 +2625,13 @@ function TableMatchPanel({
   }, [winnerSide]);
 
   const suitLabel =
-    d.suit === "H" ? "Hearts" : d.suit === "D" ? "Diamonds" : d.suit === "C" ? "Clubs" : "Spades";
+    d.suit === "H"
+      ? "Hearts"
+      : d.suit === "D"
+      ? "Diamonds"
+      : d.suit === "C"
+      ? "Clubs"
+      : "Spades";
 
   const fieldLabelStyle = {
     fontSize: (styles.small?.fontSize || 12) + 6,
@@ -2455,8 +2759,7 @@ function TableMatchPanel({
           )}
         </div>
 
-        {/* ✅ 3 explicit rows */}
-        {/* Row 1: Bidder / Bid / Suit / Coinche / Capot */}
+        {/* Row 1 */}
         <div style={styles.handRow1}>
           <div>
             <div style={fieldLabelStyle}>Bidder</div>
@@ -2525,7 +2828,7 @@ function TableMatchPanel({
           </div>
         </div>
 
-        {/* Row 2: Announces Team A / Announces Team B */}
+        {/* Row 2 */}
         <div style={styles.handRow2}>
           <div>
             <div style={fieldLabelStyle}>Announces Team A (non-belote)</div>
@@ -2550,7 +2853,7 @@ function TableMatchPanel({
           </div>
         </div>
 
-        {/* Row 3: Belote / Bidder trick points / Non-bidder trick points */}
+        {/* Row 3 */}
         <div style={styles.handRow3}>
           <div>
             <div style={fieldLabelStyle}>Belote</div>
@@ -2640,6 +2943,15 @@ function TableMatchPanel({
             </button>
           ) : null}
 
+          {/* ✅ NEW button */}
+          <button
+            style={{ ...styles.btnSecondary, ...(canPlay ? {} : styles.disabled) }}
+            onClick={() => setScanOpen(true)}
+            disabled={!canPlay}
+          >
+            Calculate points with picture
+          </button>
+
           <button style={styles.btnSecondary} onClick={onClearHands}>
             Clear Match Hands
           </button>
@@ -2700,6 +3012,29 @@ function TableMatchPanel({
           </div>
         )}
       </div>
+
+      {/* ✅ Scan modal */}
+      <ScanPointsModal
+        open={scanOpen}
+        onClose={() => setScanOpen(false)}
+        trumpSuit={d.suit || "S"}
+        onApplyPoints={({ pileSide, points }) => {
+          const p = clamp(Number(points) || 0, 0, 162);
+          if (pileSide === "BIDDER") {
+            onDraftPatch({
+              bidderTrickPoints: String(p),
+              nonBidderTrickPoints: String(162 - p),
+              trickSource: "BIDDER",
+            });
+          } else {
+            onDraftPatch({
+              nonBidderTrickPoints: String(p),
+              bidderTrickPoints: String(162 - p),
+              trickSource: "NON",
+            });
+          }
+        }}
+      />
     </div>
   );
 }
