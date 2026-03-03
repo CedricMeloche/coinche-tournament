@@ -7,6 +7,53 @@ export const config = {
   },
 };
 
+/**
+ * Parse multipart/form-data with Busboy in a way that guarantees
+ * file buffers are ready before resolving.
+ */
+function parseMultipart(req) {
+  return new Promise((resolve, reject) => {
+    const bb = Busboy({ headers: req.headers });
+
+    const fields = {};
+    let imageBuffer = null;
+    let imageInfo = { filename: "", mimeType: "" };
+
+    const filePromises = [];
+
+    bb.on("field", (name, value) => {
+      fields[name] = value;
+    });
+
+    bb.on("file", (name, file, info) => {
+      if (name !== "image") {
+        file.resume();
+        return;
+      }
+
+      imageInfo = info; // { filename, mimeType }
+      const p = streamToBuffer(file).then((buf) => {
+        imageBuffer = buf;
+      });
+
+      filePromises.push(p);
+    });
+
+    bb.on("error", reject);
+
+    bb.on("finish", async () => {
+      try {
+        await Promise.all(filePromises);
+        resolve({ fields, imageBuffer, imageInfo });
+      } catch (e) {
+        reject(e);
+      }
+    });
+
+    req.pipe(bb);
+  });
+}
+
 // Helper: read a stream into a Buffer
 function streamToBuffer(stream) {
   return new Promise((resolve, reject) => {
@@ -17,68 +64,118 @@ function streamToBuffer(stream) {
   });
 }
 
-// Parse multipart/form-data with Busboy and WAIT for file buffers to finish
-function parseMultipart(req) {
-  return new Promise((resolve, reject) => {
-    const bb = Busboy({ headers: req.headers });
+/**
+ * ✅ Belote/Coinche TRICK POINTS (as per your chart)
+ * Trump:    J 20, 9 14, A 11, 10 10, K 4, Q 3, 8 0, 7 0
+ * NonTrump: A 11, 10 10, K 4, Q 3, J 2,  9 0, 8 0, 7 0
+ */
+const TRUMP_POINTS = { J: 20, 9: 14, A: 11, "10": 10, K: 4, Q: 3, 8: 0, 7: 0 };
+const NON_TRUMP_POINTS = { A: 11, "10": 10, K: 4, Q: 3, J: 2, 9: 0, 8: 0, 7: 0 };
 
-    const fields = {};
-    const files = {}; // { fieldName: { buffer, info } }
-    const filePromises = [];
-
-    bb.on("field", (name, value) => {
-      fields[name] = value;
-    });
-
-    bb.on("file", (name, file, info) => {
-      // Always drain streams; but if it's the image we store it.
-      const p = streamToBuffer(file)
-        .then((buffer) => {
-          files[name] = { buffer, info };
-        })
-        .catch((err) => {
-          // Ensure the stream is drained on error too
-          try {
-            file.resume();
-          } catch {}
-          throw err;
-        });
-
-      filePromises.push(p);
-    });
-
-    bb.on("error", (err) => reject(err));
-
-    bb.on("finish", () => {
-      Promise.all(filePromises)
-        .then(() => resolve({ fields, files }))
-        .catch(reject);
-    });
-
-    req.pipe(bb);
-  });
+function normalizeRank(r) {
+  const s = String(r ?? "").toUpperCase().trim();
+  if (s === "1" || s === "T") return "10";
+  return s;
+}
+function normalizeSuit(s) {
+  return String(s ?? "").toUpperCase().trim(); // H D C S
 }
 
-// MVP mock "points" calculator (placeholder)
-function mockComputePoints({ trumpSuit, pileSide, lastTrick }) {
-  let base = pileSide === "BIDDER" ? 90 : 72;
+function scoreCard(card, trumpSuit) {
+  const suit = normalizeSuit(card?.suit);
+  const rank = normalizeRank(card?.rank);
 
-  const suitBump = { H: 2, D: 4, C: 6, S: 8 }[trumpSuit] ?? 0;
-  base += suitBump;
+  const isTrump = suit === normalizeSuit(trumpSuit);
+  const table = isTrump ? TRUMP_POINTS : NON_TRUMP_POINTS;
 
-  if (lastTrick) base += 10;
-
-  base = Math.max(0, Math.min(162, base));
-  return base;
+  // if unknown rank, treat as 0 but warn upstream
+  return Number(table[rank] ?? 0);
 }
 
-// MVP mock "detected cards"
-function mockCards() {
+function computeTrickPoints({ cards, trumpSuit, lastTrick }) {
+  const warnings = [];
+  const seen = new Set();
+
+  let total = 0;
+  const breakdown = [];
+
+  for (const c of Array.isArray(cards) ? cards : []) {
+    const suit = normalizeSuit(c?.suit);
+    const rank = normalizeRank(c?.rank);
+    const key = `${rank}${suit}`;
+
+    // Basic validation
+    if (!["H", "D", "C", "S"].includes(suit)) warnings.push(`Unknown suit: "${c?.suit}"`);
+    if (!["7", "8", "9", "J", "Q", "K", "10", "A"].includes(rank))
+      warnings.push(`Unknown rank: "${c?.rank}"`);
+
+    // Duplicate detection (helps debug recognizer)
+    if (seen.has(key)) warnings.push(`Duplicate card detected: ${key}`);
+    seen.add(key);
+
+    const pts = scoreCard({ rank, suit }, trumpSuit);
+    total += pts;
+
+    breakdown.push({
+      rank,
+      suit,
+      trump: suit === normalizeSuit(trumpSuit),
+      points: pts,
+    });
+  }
+
+  if (lastTrick) total += 10;
+
+  // Clamp per pile (0..162)
+  total = Math.max(0, Math.min(162, total));
+
+  return { points: total, breakdown, warnings };
+}
+
+/**
+ * TEMP (until real CV): produce a deterministic mock set of cards based on the image
+ * so points vary from photo to photo, but remain stable for the same image.
+ */
+function hashBuffer(buf) {
+  // small fast hash (not crypto)
+  let h = 2166136261;
+  for (let i = 0; i < buf.length; i++) {
+    h ^= buf[i];
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function mulberry32(seed) {
+  return function () {
+    let t = (seed += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function fullDeck32() {
   const suits = ["H", "D", "C", "S"];
   const ranks = ["7", "8", "9", "J", "Q", "K", "10", "A"];
   const out = [];
-  for (let s of suits) for (let r of ranks) out.push({ rank: r, suit: s });
-  return out.slice(0, 32);
+  for (const s of suits) for (const r of ranks) out.push({ rank: r, suit: s });
+  return out; // 32
+}
+function pickMockCardsFromImage(imageBuffer) {
+  const seed = hashBuffer(imageBuffer);
+  const rand = mulberry32(seed);
+
+  const deck = fullDeck32();
+  // Fisher-Yates shuffle using seeded RNG
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+
+  // pile size should be multiple of 4, between 4 and 32
+  const pileTricks = (seed % 8) + 1; // 1..8
+  const pileSize = pileTricks * 4;
+
+  return deck.slice(0, pileSize);
 }
 
 export default async function handler(req, res) {
@@ -87,58 +184,47 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Helpful guard: ensure multipart/form-data
-  const ct = (req.headers["content-type"] || "").toLowerCase();
-  if (!ct.includes("multipart/form-data")) {
-    res.status(400).json({
-      ok: false,
-      error:
-        "Expected multipart/form-data. Make sure you are sending FormData with an 'image' field.",
-    });
-    return;
-  }
-
   try {
-    const { fields, files } = await parseMultipart(req);
-
-    const img = files.image; // MUST match frontend: form.append("image", ...)
-    const imageBuffer = img?.buffer || null;
-    const imageInfo = img?.info || { filename: "", mimeType: "" };
+    const { fields, imageBuffer, imageInfo } = await parseMultipart(req);
 
     if (!imageBuffer || imageBuffer.length < 10) {
-      res.status(400).json({
-        ok: false,
-        error:
-          "Missing image. Ensure the FormData field is named 'image' and you captured a photo before submitting.",
-        debug: {
-          receivedFileFields: Object.keys(files),
-          receivedTextFields: Object.keys(fields),
-        },
-      });
+      res.status(400).json({ ok: false, error: "Missing image" });
       return;
     }
 
-    const trumpSuit = String(fields.trumpSuit || "S").toUpperCase();
+    const trumpSuit = normalizeSuit(fields.trumpSuit || "S");
     const pileSide = String(fields.pileSide || "BIDDER").toUpperCase(); // BIDDER | NON
     const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
 
-    const points = mockComputePoints({ trumpSuit, pileSide, lastTrick });
+    // ✅ TEMP: mock detected cards (replace this with real recognition later)
+    const cards = pickMockCardsFromImage(imageBuffer);
 
-    const warnings = [];
-    if (imageBuffer.length < 50_000)
+    const { points, breakdown, warnings } = computeTrickPoints({
+      cards,
+      trumpSuit,
+      lastTrick,
+    });
+
+    // Extra warnings
+    if (imageBuffer.length < 50_000) {
       warnings.push("Image looks low-res—try closer / better lighting.");
-    if (!["H", "D", "C", "S"].includes(trumpSuit))
+    }
+    if (!["H", "D", "C", "S"].includes(trumpSuit)) {
       warnings.push("Unknown trump suit received.");
+    }
+    if (!["BIDDER", "NON"].includes(pileSide)) {
+      warnings.push("Unknown pileSide received.");
+    }
 
     res.status(200).json({
       ok: true,
       points,
-      cards: mockCards(),
+      cards, // detected cards (mock for now)
+      breakdown, // points per card (super useful to debug)
       warnings,
       meta: {
         receivedBytes: imageBuffer.length,
-        mimeType: imageInfo.mimeType || "",
-        filename: imageInfo.filename || "",
+        mimeType: imageInfo?.mimeType || "",
       },
     });
   } catch (e) {
