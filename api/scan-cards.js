@@ -17,34 +17,67 @@ function streamToBuffer(stream) {
   });
 }
 
+// Parse multipart/form-data with Busboy and WAIT for file buffers to finish
+function parseMultipart(req) {
+  return new Promise((resolve, reject) => {
+    const bb = Busboy({ headers: req.headers });
+
+    const fields = {};
+    const files = {}; // { fieldName: { buffer, info } }
+    const filePromises = [];
+
+    bb.on("field", (name, value) => {
+      fields[name] = value;
+    });
+
+    bb.on("file", (name, file, info) => {
+      // Always drain streams; but if it's the image we store it.
+      const p = streamToBuffer(file)
+        .then((buffer) => {
+          files[name] = { buffer, info };
+        })
+        .catch((err) => {
+          // Ensure the stream is drained on error too
+          try {
+            file.resume();
+          } catch {}
+          throw err;
+        });
+
+      filePromises.push(p);
+    });
+
+    bb.on("error", (err) => reject(err));
+
+    bb.on("finish", () => {
+      Promise.all(filePromises)
+        .then(() => resolve({ fields, files }))
+        .catch(reject);
+    });
+
+    req.pipe(bb);
+  });
+}
+
 // MVP mock "points" calculator (placeholder)
-// Later we'll replace this with actual card recognition + belote scoring rules.
 function mockComputePoints({ trumpSuit, pileSide, lastTrick }) {
-  // Give deterministic-ish points so you can test end-to-end.
-  // Example: bidder pile tends to have more points.
   let base = pileSide === "BIDDER" ? 90 : 72;
 
-  // Slight change by trump just to prove it flows through.
   const suitBump = { H: 2, D: 4, C: 6, S: 8 }[trumpSuit] ?? 0;
   base += suitBump;
 
-  // Add last trick (+10) if checked
   if (lastTrick) base += 10;
 
-  // Clamp to 0..162
   base = Math.max(0, Math.min(162, base));
   return base;
 }
 
 // MVP mock "detected cards"
 function mockCards() {
-  // Not real detection, just a plausible sample structure
   const suits = ["H", "D", "C", "S"];
   const ranks = ["7", "8", "9", "J", "Q", "K", "10", "A"];
   const out = [];
-  for (let s of suits) {
-    for (let r of ranks) out.push({ rank: r, suit: s });
-  }
+  for (let s of suits) for (let r of ranks) out.push({ rank: r, suit: s });
   return out.slice(0, 32);
 }
 
@@ -54,61 +87,60 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Helpful guard: ensure multipart/form-data
+  const ct = (req.headers["content-type"] || "").toLowerCase();
+  if (!ct.includes("multipart/form-data")) {
+    res.status(400).json({
+      ok: false,
+      error:
+        "Expected multipart/form-data. Make sure you are sending FormData with an 'image' field.",
+    });
+    return;
+  }
+
   try {
-    const bb = Busboy({ headers: req.headers });
+    const { fields, files } = await parseMultipart(req);
 
-    const fields = {};
-    let imageBuffer = null;
-    let imageInfo = { filename: "", mimeType: "" };
+    const img = files.image; // MUST match frontend: form.append("image", ...)
+    const imageBuffer = img?.buffer || null;
+    const imageInfo = img?.info || { filename: "", mimeType: "" };
 
-    bb.on("field", (name, value) => {
-      fields[name] = value;
-    });
-
-    bb.on("file", async (name, file, info) => {
-      if (name !== "image") {
-        // Drain unknown file fields
-        file.resume();
-        return;
-      }
-      imageInfo = info; // { filename, mimeType }
-      imageBuffer = await streamToBuffer(file);
-    });
-
-    bb.on("error", (err) => {
-      throw err;
-    });
-
-    bb.on("finish", () => {
-      if (!imageBuffer || imageBuffer.length < 10) {
-        res.status(400).json({ ok: false, error: "Missing image" });
-        return;
-      }
-
-      const trumpSuit = (fields.trumpSuit || "S").toUpperCase();
-      const pileSide = (fields.pileSide || "BIDDER").toUpperCase(); // BIDDER | NON
-      const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
-
-      // In MVP we don’t actually use imageBuffer yet — we just prove upload works.
-      const points = mockComputePoints({ trumpSuit, pileSide, lastTrick });
-
-      const warnings = [];
-      if (imageBuffer.length < 50_000) warnings.push("Image looks low-res—try closer / better lighting.");
-      if (!["H", "D", "C", "S"].includes(trumpSuit)) warnings.push("Unknown trump suit received.");
-
-      res.status(200).json({
-        ok: true,
-        points,
-        cards: mockCards(), // later: real detected cards
-        warnings,
-        meta: {
-          receivedBytes: imageBuffer.length,
-          mimeType: imageInfo.mimeType || "",
+    if (!imageBuffer || imageBuffer.length < 10) {
+      res.status(400).json({
+        ok: false,
+        error:
+          "Missing image. Ensure the FormData field is named 'image' and you captured a photo before submitting.",
+        debug: {
+          receivedFileFields: Object.keys(files),
+          receivedTextFields: Object.keys(fields),
         },
       });
-    });
+      return;
+    }
 
-    req.pipe(bb);
+    const trumpSuit = String(fields.trumpSuit || "S").toUpperCase();
+    const pileSide = String(fields.pileSide || "BIDDER").toUpperCase(); // BIDDER | NON
+    const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
+
+    const points = mockComputePoints({ trumpSuit, pileSide, lastTrick });
+
+    const warnings = [];
+    if (imageBuffer.length < 50_000)
+      warnings.push("Image looks low-res—try closer / better lighting.");
+    if (!["H", "D", "C", "S"].includes(trumpSuit))
+      warnings.push("Unknown trump suit received.");
+
+    res.status(200).json({
+      ok: true,
+      points,
+      cards: mockCards(),
+      warnings,
+      meta: {
+        receivedBytes: imageBuffer.length,
+        mimeType: imageInfo.mimeType || "",
+        filename: imageInfo.filename || "",
+      },
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || "Server error" });
   }
