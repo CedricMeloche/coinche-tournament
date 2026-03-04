@@ -17,15 +17,12 @@ function streamToBuffer(stream) {
 
 function normalizeSuit(s) {
   const up = String(s || "").toUpperCase();
-  if (["H", "D", "C", "S"].includes(up)) return up;
-  return "S";
+  return ["H", "D", "C", "S"].includes(up) ? up : "S";
 }
 
 function normalizePileSide(s) {
   const up = String(s || "").toUpperCase();
-  // Accept BIDDER | NON | NON_BIDDER
-  if (up === "BIDDER") return "BIDDER";
-  return "NON";
+  return up === "BIDDER" ? "BIDDER" : "NON";
 }
 
 function parseCardLabel(label) {
@@ -38,7 +35,6 @@ function parseCardLabel(label) {
 
   if (!["H", "D", "C", "S"].includes(suit)) return null;
 
-  // rank allowed: 7,8,9,10,J,Q,K,A
   const ok = ["7", "8", "9", "10", "J", "Q", "K", "A"];
   if (!ok.includes(rank)) return null;
 
@@ -81,8 +77,8 @@ function computeBelotePoints(cards16, trumpSuit, lastTrick) {
 }
 
 /**
- * Robustly extract predictions from a Roboflow workflow response.
- * We search for objects with a "class" (or "label") and "confidence".
+ * Extract predictions from Roboflow responses.
+ * We search deep for arrays/objects containing { class/label, confidence }.
  */
 function extractPredictionsDeep(obj) {
   const out = [];
@@ -95,7 +91,6 @@ function extractPredictionsDeep(obj) {
     }
     if (typeof node !== "object") return;
 
-    // Common inference shapes
     const cls = node.class ?? node.label ?? node.predicted_class ?? node.name;
     const conf = node.confidence ?? node.conf ?? node.score;
 
@@ -103,7 +98,6 @@ function extractPredictionsDeep(obj) {
       out.push({
         class: cls,
         confidence: conf,
-        // keep bbox if present
         x: node.x,
         y: node.y,
         width: node.width,
@@ -118,9 +112,9 @@ function extractPredictionsDeep(obj) {
   return out;
 }
 
-// ---------- roboflow call ----------
+// ---------- roboflow call (WORKFLOW) ----------
 async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
-  const apiUrl = process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com";
+  const apiUrl = (process.env.ROBOFLOW_API_URL || "https://detect.roboflow.com").replace(/\/$/, "");
   const apiKey = process.env.ROBOFLOW_API_KEY;
   const workspace = process.env.ROBOFLOW_WORKSPACE;
   const workflowId = process.env.ROBOFLOW_WORKFLOW_ID;
@@ -131,23 +125,23 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     );
   }
 
-  // Endpoint format: https://serverless.roboflow.com/<workspace>/workflows/<workflow_id>
-  const url = `${apiUrl.replace(/\/$/, "")}/${workspace}/workflows/${workflowId}?api_key=${encodeURIComponent(
-    apiKey
-  )}`;
+  // Correct workflow endpoint:
+  // https://detect.roboflow.com/infer/workflows/{workspace}/{workflowId}?api_key=...
+  const url = `${apiUrl}/infer/workflows/${encodeURIComponent(
+    workspace
+  )}/${encodeURIComponent(workflowId)}?api_key=${encodeURIComponent(apiKey)}`;
 
-  // Send as multipart form-data (works well with image pipelines)
-  const form = new FormData();
-  const blob = new Blob([imageBuffer], { type: mimeType || "image/jpeg" });
-  form.append("image", blob, "upload.jpg");
+  // Base64 payload is very reliable in serverless
+  const base64 = imageBuffer.toString("base64");
+  const dataUri = `data:${mimeType || "image/jpeg"};base64,${base64}`;
 
   const resp = await fetch(url, {
     method: "POST",
-    body: form,
-    headers: {
-      // Some setups accept header auth too (harmless if unused):
-      "x-api-key": apiKey,
-    },
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      // Roboflow accepts "image" as a base64 data URI for hosted inference
+      image: dataUri,
+    }),
   });
 
   const text = await resp.text();
@@ -199,7 +193,6 @@ export default async function handler(req, res) {
       });
 
       bb.on("error", reject);
-
       bb.on("finish", resolve);
     });
 
@@ -212,7 +205,7 @@ export default async function handler(req, res) {
     }
 
     const trumpSuit = normalizeSuit(fields.trumpSuit || "S");
-    const pileSide = normalizePileSide(fields.pileSide || "BIDDER"); // kept for future use
+    const pileSide = normalizePileSide(fields.pileSide || "BIDDER");
     const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
 
     // 1) call workflow
@@ -226,10 +219,7 @@ export default async function handler(req, res) {
 
     // 3) convert labels to cards
     const cards = preds
-      .map((p) => ({
-        ...p,
-        parsed: parseCardLabel(p.class),
-      }))
+      .map((p) => ({ ...p, parsed: parseCardLabel(p.class) }))
       .filter((x) => x.parsed)
       .map((x) => ({
         rank: x.parsed.rank,
@@ -239,7 +229,7 @@ export default async function handler(req, res) {
       }))
       .sort((a, b) => b.confidence - a.confidence);
 
-    // 4) choose 16 cards (best confidence)
+    // 4) choose 16 cards
     const cards16 = cards.slice(0, 16);
 
     // 5) compute points
@@ -262,9 +252,10 @@ export default async function handler(req, res) {
         receivedBytes: imageBuffer.length,
         mimeType: imageInfo?.mimeType || "",
       },
-      // helpful for debugging:
       debug: {
         totalPredictionsFound: preds.length,
+        roboflowApiUrl: process.env.ROBOFLOW_API_URL || "https://detect.roboflow.com",
+        roboflowWorkflowId: process.env.ROBOFLOW_WORKFLOW_ID || "",
       },
     });
   } catch (e) {
