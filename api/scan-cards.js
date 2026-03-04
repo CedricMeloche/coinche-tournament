@@ -94,7 +94,7 @@ function extractPredictionsDeep(obj) {
   return out;
 }
 
-// ---------- roboflow call (WORKFLOW = JSON inputs + base64) ----------
+// ---------- roboflow call ----------
 async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
   const apiUrl = process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com";
   const apiKey = process.env.ROBOFLOW_API_KEY;
@@ -107,40 +107,42 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     );
   }
 
-  // Workflow endpoint:
-  // https://serverless.roboflow.com/<workspace>/workflows/<workflow_id>?api_key=...
-  const url = `${apiUrl.replace(/\/$/, "")}/${workspace}/workflows/${workflowId}?api_key=${encodeURIComponent(
-    apiKey
-  )}`;
+  // Roboflow Workflows REST endpoint:
+  // POST https://serverless.roboflow.com/{workspace_name}/workflows/{workflow_id}
+  const url = `${apiUrl.replace(/\/$/, "")}/${workspace}/workflows/${workflowId}`;
 
-  const mt = mimeType || "image/jpeg";
-  const b64 = imageBuffer.toString("base64");
-  const dataUrl = `data:${mt};base64,${b64}`;
+  // Encode image as a data URL for workflow "inputs.image"
+  const safeMime = mimeType && mimeType.includes("/") ? mimeType : "image/jpeg";
+  const base64 = Buffer.from(imageBuffer).toString("base64");
+  const dataUrl = `data:${safeMime};base64,${base64}`;
+
+  const body = {
+    api_key: apiKey,
+    use_cache: true,
+    inputs: {
+      image: dataUrl, // MUST be inside inputs
+    },
+  };
 
   const resp = await fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
+      "accept": "application/json",
     },
-    body: JSON.stringify({
-      inputs: {
-        image: dataUrl,
-      },
-    }),
+    body: JSON.stringify(body),
   });
 
   const text = await resp.text();
-
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    // This is what you saw before: "Internal Server Error" text instead of JSON
-    throw new Error(`Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 300)}`);
+    throw new Error(`Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`);
   }
 
   if (!resp.ok) {
-    const msg = json?.error || json?.message || JSON.stringify(json).slice(0, 300);
+    const msg = json?.error || json?.message || JSON.stringify(json);
     throw new Error(`Roboflow error ${resp.status}: ${msg}`);
   }
 
