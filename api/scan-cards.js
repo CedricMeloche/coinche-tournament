@@ -2,59 +2,10 @@
 import Busboy from "busboy";
 
 export const config = {
-  api: {
-    bodyParser: false, // IMPORTANT: we parse multipart ourselves
-  },
+  api: { bodyParser: false },
 };
 
-/**
- * Parse multipart/form-data with Busboy in a way that guarantees
- * file buffers are ready before resolving.
- */
-function parseMultipart(req) {
-  return new Promise((resolve, reject) => {
-    const bb = Busboy({ headers: req.headers });
-
-    const fields = {};
-    let imageBuffer = null;
-    let imageInfo = { filename: "", mimeType: "" };
-
-    const filePromises = [];
-
-    bb.on("field", (name, value) => {
-      fields[name] = value;
-    });
-
-    bb.on("file", (name, file, info) => {
-      if (name !== "image") {
-        file.resume();
-        return;
-      }
-
-      imageInfo = info; // { filename, mimeType }
-      const p = streamToBuffer(file).then((buf) => {
-        imageBuffer = buf;
-      });
-
-      filePromises.push(p);
-    });
-
-    bb.on("error", reject);
-
-    bb.on("finish", async () => {
-      try {
-        await Promise.all(filePromises);
-        resolve({ fields, imageBuffer, imageInfo });
-      } catch (e) {
-        reject(e);
-      }
-    });
-
-    req.pipe(bb);
-  });
-}
-
-// Helper: read a stream into a Buffer
+// ---------- helpers ----------
 function streamToBuffer(stream) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -64,120 +15,158 @@ function streamToBuffer(stream) {
   });
 }
 
-/**
- * ✅ Belote/Coinche TRICK POINTS (as per your chart)
- * Trump:    J 20, 9 14, A 11, 10 10, K 4, Q 3, 8 0, 7 0
- * NonTrump: A 11, 10 10, K 4, Q 3, J 2,  9 0, 8 0, 7 0
- */
-const TRUMP_POINTS = { J: 20, 9: 14, A: 11, "10": 10, K: 4, Q: 3, 8: 0, 7: 0 };
-const NON_TRUMP_POINTS = { A: 11, "10": 10, K: 4, Q: 3, J: 2, 9: 0, 8: 0, 7: 0 };
-
-function normalizeRank(r) {
-  const s = String(r ?? "").toUpperCase().trim();
-  if (s === "1" || s === "T") return "10";
-  return s;
-}
 function normalizeSuit(s) {
-  return String(s ?? "").toUpperCase().trim(); // H D C S
+  const up = String(s || "").toUpperCase();
+  if (["H", "D", "C", "S"].includes(up)) return up;
+  return "S";
 }
 
-function scoreCard(card, trumpSuit) {
-  const suit = normalizeSuit(card?.suit);
-  const rank = normalizeRank(card?.rank);
-
-  const isTrump = suit === normalizeSuit(trumpSuit);
-  const table = isTrump ? TRUMP_POINTS : NON_TRUMP_POINTS;
-
-  // if unknown rank, treat as 0 but warn upstream
-  return Number(table[rank] ?? 0);
+function normalizePileSide(s) {
+  const up = String(s || "").toUpperCase();
+  // Accept BIDDER | NON | NON_BIDDER
+  if (up === "BIDDER") return "BIDDER";
+  return "NON";
 }
 
-function computeTrickPoints({ cards, trumpSuit, lastTrick }) {
-  const warnings = [];
-  const seen = new Set();
+function parseCardLabel(label) {
+  // expects like: "10S", "9H", "QD", "JS", "AS", "7C"
+  const raw = String(label || "").trim().toUpperCase();
+  if (!raw) return null;
 
+  const suit = raw.slice(-1);
+  const rank = raw.slice(0, -1);
+
+  if (!["H", "D", "C", "S"].includes(suit)) return null;
+
+  // rank allowed: 7,8,9,10,J,Q,K,A
+  const ok = ["7", "8", "9", "10", "J", "Q", "K", "A"];
+  if (!ok.includes(rank)) return null;
+
+  return { rank, suit, code: `${rank}${suit}` };
+}
+
+const TRUMP_POINTS = {
+  J: 20,
+  9: 14,
+  A: 11,
+  "10": 10,
+  K: 4,
+  Q: 3,
+  8: 0,
+  7: 0,
+};
+
+const NON_TRUMP_POINTS = {
+  A: 11,
+  "10": 10,
+  K: 4,
+  Q: 3,
+  J: 2,
+  9: 0,
+  8: 0,
+  7: 0,
+};
+
+function computeBelotePoints(cards16, trumpSuit, lastTrick) {
+  const trump = normalizeSuit(trumpSuit);
   let total = 0;
-  const breakdown = [];
 
-  for (const c of Array.isArray(cards) ? cards : []) {
-    const suit = normalizeSuit(c?.suit);
-    const rank = normalizeRank(c?.rank);
-    const key = `${rank}${suit}`;
-
-    // Basic validation
-    if (!["H", "D", "C", "S"].includes(suit)) warnings.push(`Unknown suit: "${c?.suit}"`);
-    if (!["7", "8", "9", "J", "Q", "K", "10", "A"].includes(rank))
-      warnings.push(`Unknown rank: "${c?.rank}"`);
-
-    // Duplicate detection (helps debug recognizer)
-    if (seen.has(key)) warnings.push(`Duplicate card detected: ${key}`);
-    seen.add(key);
-
-    const pts = scoreCard({ rank, suit }, trumpSuit);
-    total += pts;
-
-    breakdown.push({
-      rank,
-      suit,
-      trump: suit === normalizeSuit(trumpSuit),
-      points: pts,
-    });
+  for (const c of cards16) {
+    const table = c.suit === trump ? TRUMP_POINTS : NON_TRUMP_POINTS;
+    total += table[c.rank] ?? 0;
   }
 
   if (lastTrick) total += 10;
-
-  // Clamp per pile (0..162)
-  total = Math.max(0, Math.min(162, total));
-
-  return { points: total, breakdown, warnings };
+  return total;
 }
 
 /**
- * TEMP (until real CV): produce a deterministic mock set of cards based on the image
- * so points vary from photo to photo, but remain stable for the same image.
+ * Robustly extract predictions from a Roboflow workflow response.
+ * We search for objects with a "class" (or "label") and "confidence".
  */
-function hashBuffer(buf) {
-  // small fast hash (not crypto)
-  let h = 2166136261;
-  for (let i = 0; i < buf.length; i++) {
-    h ^= buf[i];
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-function mulberry32(seed) {
-  return function () {
-    let t = (seed += 0x6d2b79f5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-function fullDeck32() {
-  const suits = ["H", "D", "C", "S"];
-  const ranks = ["7", "8", "9", "J", "Q", "K", "10", "A"];
+function extractPredictionsDeep(obj) {
   const out = [];
-  for (const s of suits) for (const r of ranks) out.push({ rank: r, suit: s });
-  return out; // 32
-}
-function pickMockCardsFromImage(imageBuffer) {
-  const seed = hashBuffer(imageBuffer);
-  const rand = mulberry32(seed);
 
-  const deck = fullDeck32();
-  // Fisher-Yates shuffle using seeded RNG
-  for (let i = deck.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [deck[i], deck[j]] = [deck[j], deck[i]];
+  const visit = (node) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      for (const x of node) visit(x);
+      return;
+    }
+    if (typeof node !== "object") return;
+
+    // Common inference shapes
+    const cls = node.class ?? node.label ?? node.predicted_class ?? node.name;
+    const conf = node.confidence ?? node.conf ?? node.score;
+
+    if (typeof cls === "string" && typeof conf === "number") {
+      out.push({
+        class: cls,
+        confidence: conf,
+        // keep bbox if present
+        x: node.x,
+        y: node.y,
+        width: node.width,
+        height: node.height,
+      });
+    }
+
+    for (const k of Object.keys(node)) visit(node[k]);
+  };
+
+  visit(obj);
+  return out;
+}
+
+// ---------- roboflow call ----------
+async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
+  const apiUrl = process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com";
+  const apiKey = process.env.ROBOFLOW_API_KEY;
+  const workspace = process.env.ROBOFLOW_WORKSPACE;
+  const workflowId = process.env.ROBOFLOW_WORKFLOW_ID;
+
+  if (!apiKey || !workspace || !workflowId) {
+    throw new Error(
+      "Missing Roboflow env vars. Set ROBOFLOW_API_KEY, ROBOFLOW_WORKSPACE, ROBOFLOW_WORKFLOW_ID."
+    );
   }
 
-  // pile size should be multiple of 4, between 4 and 32
-  const pileTricks = (seed % 8) + 1; // 1..8
-  const pileSize = pileTricks * 4;
+  // Endpoint format: https://serverless.roboflow.com/<workspace>/workflows/<workflow_id>
+  const url = `${apiUrl.replace(/\/$/, "")}/${workspace}/workflows/${workflowId}?api_key=${encodeURIComponent(
+    apiKey
+  )}`;
 
-  return deck.slice(0, pileSize);
+  // Send as multipart form-data (works well with image pipelines)
+  const form = new FormData();
+  const blob = new Blob([imageBuffer], { type: mimeType || "image/jpeg" });
+  form.append("image", blob, "upload.jpg");
+
+  const resp = await fetch(url, {
+    method: "POST",
+    body: form,
+    headers: {
+      // Some setups accept header auth too (harmless if unused):
+      "x-api-key": apiKey,
+    },
+  });
+
+  const text = await resp.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`);
+  }
+
+  if (!resp.ok) {
+    const msg = json?.error || json?.message || text;
+    throw new Error(`Roboflow error ${resp.status}: ${msg}`);
+  }
+
+  return json;
 }
 
+// ---------- handler ----------
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.status(405).json({ ok: false, error: "Use POST" });
@@ -185,7 +174,37 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { fields, imageBuffer, imageInfo } = await parseMultipart(req);
+    const bb = Busboy({ headers: req.headers });
+
+    const fields = {};
+    let imageBuffer = null;
+    let imageInfo = { filename: "", mimeType: "" };
+
+    const done = new Promise((resolve, reject) => {
+      bb.on("field", (name, value) => {
+        fields[name] = value;
+      });
+
+      bb.on("file", async (name, file, info) => {
+        try {
+          if (name !== "image") {
+            file.resume();
+            return;
+          }
+          imageInfo = info;
+          imageBuffer = await streamToBuffer(file);
+        } catch (e) {
+          reject(e);
+        }
+      });
+
+      bb.on("error", reject);
+
+      bb.on("finish", resolve);
+    });
+
+    req.pipe(bb);
+    await done;
 
     if (!imageBuffer || imageBuffer.length < 10) {
       res.status(400).json({ ok: false, error: "Missing image" });
@@ -193,38 +212,59 @@ export default async function handler(req, res) {
     }
 
     const trumpSuit = normalizeSuit(fields.trumpSuit || "S");
-    const pileSide = String(fields.pileSide || "BIDDER").toUpperCase(); // BIDDER | NON
+    const pileSide = normalizePileSide(fields.pileSide || "BIDDER"); // kept for future use
     const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
 
-    // ✅ TEMP: mock detected cards (replace this with real recognition later)
-    const cards = pickMockCardsFromImage(imageBuffer);
-
-    const { points, breakdown, warnings } = computeTrickPoints({
-      cards,
-      trumpSuit,
-      lastTrick,
+    // 1) call workflow
+    const rf = await callRoboflowWorkflow({
+      imageBuffer,
+      mimeType: imageInfo?.mimeType || "image/jpeg",
     });
 
-    // Extra warnings
-    if (imageBuffer.length < 50_000) {
-      warnings.push("Image looks low-res—try closer / better lighting.");
-    }
-    if (!["H", "D", "C", "S"].includes(trumpSuit)) {
-      warnings.push("Unknown trump suit received.");
-    }
-    if (!["BIDDER", "NON"].includes(pileSide)) {
-      warnings.push("Unknown pileSide received.");
+    // 2) extract predictions
+    const preds = extractPredictionsDeep(rf);
+
+    // 3) convert labels to cards
+    const cards = preds
+      .map((p) => ({
+        ...p,
+        parsed: parseCardLabel(p.class),
+      }))
+      .filter((x) => x.parsed)
+      .map((x) => ({
+        rank: x.parsed.rank,
+        suit: x.parsed.suit,
+        code: x.parsed.code,
+        confidence: x.confidence,
+      }))
+      .sort((a, b) => b.confidence - a.confidence);
+
+    // 4) choose 16 cards (best confidence)
+    const cards16 = cards.slice(0, 16);
+
+    // 5) compute points
+    const points = computeBelotePoints(cards16, trumpSuit, lastTrick);
+
+    const warnings = [];
+    if (cards16.length !== 16) {
+      warnings.push(`Detected ${cards16.length} cards (expected 16). Try better lighting / less overlap.`);
     }
 
     res.status(200).json({
       ok: true,
+      trumpSuit,
+      pileSide,
+      lastTrick,
       points,
-      cards, // detected cards (mock for now)
-      breakdown, // points per card (super useful to debug)
+      cards: cards16,
       warnings,
       meta: {
         receivedBytes: imageBuffer.length,
         mimeType: imageInfo?.mimeType || "",
+      },
+      // helpful for debugging:
+      debug: {
+        totalPredictionsFound: preds.length,
       },
     });
   } catch (e) {
