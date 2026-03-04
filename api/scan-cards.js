@@ -17,12 +17,14 @@ function streamToBuffer(stream) {
 
 function normalizeSuit(s) {
   const up = String(s || "").toUpperCase();
-  return ["H", "D", "C", "S"].includes(up) ? up : "S";
+  if (["H", "D", "C", "S"].includes(up)) return up;
+  return "S";
 }
 
 function normalizePileSide(s) {
   const up = String(s || "").toUpperCase();
-  return up === "BIDDER" ? "BIDDER" : "NON";
+  if (up === "BIDDER") return "BIDDER";
+  return "NON";
 }
 
 function parseCardLabel(label) {
@@ -41,44 +43,24 @@ function parseCardLabel(label) {
   return { rank, suit, code: `${rank}${suit}` };
 }
 
-const TRUMP_POINTS = {
-  J: 20,
-  9: 14,
-  A: 11,
-  "10": 10,
-  K: 4,
-  Q: 3,
-  8: 0,
-  7: 0,
-};
-
-const NON_TRUMP_POINTS = {
-  A: 11,
-  "10": 10,
-  K: 4,
-  Q: 3,
-  J: 2,
-  9: 0,
-  8: 0,
-  7: 0,
-};
+// Belote/Coinche points
+const TRUMP_POINTS = { J: 20, 9: 14, A: 11, "10": 10, K: 4, Q: 3, 8: 0, 7: 0 };
+const NON_TRUMP_POINTS = { A: 11, "10": 10, K: 4, Q: 3, J: 2, 9: 0, 8: 0, 7: 0 };
 
 function computeBelotePoints(cards16, trumpSuit, lastTrick) {
   const trump = normalizeSuit(trumpSuit);
   let total = 0;
-
   for (const c of cards16) {
     const table = c.suit === trump ? TRUMP_POINTS : NON_TRUMP_POINTS;
     total += table[c.rank] ?? 0;
   }
-
   if (lastTrick) total += 10;
   return total;
 }
 
 /**
- * Extract predictions from Roboflow responses.
- * We search deep for arrays/objects containing { class/label, confidence }.
+ * Robustly extract predictions from a Roboflow workflow response.
+ * We search for objects with a "class" (or "label") and "confidence".
  */
 function extractPredictionsDeep(obj) {
   const out = [];
@@ -112,9 +94,9 @@ function extractPredictionsDeep(obj) {
   return out;
 }
 
-// ---------- roboflow call (WORKFLOW) ----------
+// ---------- roboflow call (WORKFLOW = JSON inputs + base64) ----------
 async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
-  const apiUrl = (process.env.ROBOFLOW_API_URL || "https://detect.roboflow.com").replace(/\/$/, "");
+  const apiUrl = process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com";
   const apiKey = process.env.ROBOFLOW_API_KEY;
   const workspace = process.env.ROBOFLOW_WORKSPACE;
   const workflowId = process.env.ROBOFLOW_WORKFLOW_ID;
@@ -125,35 +107,40 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     );
   }
 
-  // Correct workflow endpoint:
-  // https://detect.roboflow.com/infer/workflows/{workspace}/{workflowId}?api_key=...
-  const url = `${apiUrl}/infer/workflows/${encodeURIComponent(
-    workspace
-  )}/${encodeURIComponent(workflowId)}?api_key=${encodeURIComponent(apiKey)}`;
+  // Workflow endpoint:
+  // https://serverless.roboflow.com/<workspace>/workflows/<workflow_id>?api_key=...
+  const url = `${apiUrl.replace(/\/$/, "")}/${workspace}/workflows/${workflowId}?api_key=${encodeURIComponent(
+    apiKey
+  )}`;
 
-  // Base64 payload is very reliable in serverless
-  const base64 = imageBuffer.toString("base64");
-  const dataUri = `data:${mimeType || "image/jpeg"};base64,${base64}`;
+  const mt = mimeType || "image/jpeg";
+  const b64 = imageBuffer.toString("base64");
+  const dataUrl = `data:${mt};base64,${b64}`;
 
   const resp = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+    },
     body: JSON.stringify({
-      // Roboflow accepts "image" as a base64 data URI for hosted inference
-      image: dataUri,
+      inputs: {
+        image: dataUrl,
+      },
     }),
   });
 
   const text = await resp.text();
+
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    throw new Error(`Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`);
+    // This is what you saw before: "Internal Server Error" text instead of JSON
+    throw new Error(`Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 300)}`);
   }
 
   if (!resp.ok) {
-    const msg = json?.error || json?.message || text;
+    const msg = json?.error || json?.message || JSON.stringify(json).slice(0, 300);
     throw new Error(`Roboflow error ${resp.status}: ${msg}`);
   }
 
@@ -217,9 +204,12 @@ export default async function handler(req, res) {
     // 2) extract predictions
     const preds = extractPredictionsDeep(rf);
 
-    // 3) convert labels to cards
-    const cards = preds
-      .map((p) => ({ ...p, parsed: parseCardLabel(p.class) }))
+    // 3) parse to cards
+    const parsedCards = preds
+      .map((p) => ({
+        ...p,
+        parsed: parseCardLabel(p.class),
+      }))
       .filter((x) => x.parsed)
       .map((x) => ({
         rank: x.parsed.rank,
@@ -229,15 +219,25 @@ export default async function handler(req, res) {
       }))
       .sort((a, b) => b.confidence - a.confidence);
 
-    // 4) choose 16 cards
-    const cards16 = cards.slice(0, 16);
+    // 4) de-dupe by exact card code (keep best confidence)
+    const bestByCode = new Map();
+    for (const c of parsedCards) {
+      const prev = bestByCode.get(c.code);
+      if (!prev || c.confidence > prev.confidence) bestByCode.set(c.code, c);
+    }
+    const deduped = Array.from(bestByCode.values()).sort((a, b) => b.confidence - a.confidence);
 
-    // 5) compute points
+    // 5) choose 16 cards
+    const cards16 = deduped.slice(0, 16);
+
+    // 6) compute points
     const points = computeBelotePoints(cards16, trumpSuit, lastTrick);
 
     const warnings = [];
     if (cards16.length !== 16) {
-      warnings.push(`Detected ${cards16.length} cards (expected 16). Try better lighting / less overlap.`);
+      warnings.push(
+        `Detected ${cards16.length} unique cards (expected 16). Try better lighting / less overlap.`
+      );
     }
 
     res.status(200).json({
@@ -254,8 +254,6 @@ export default async function handler(req, res) {
       },
       debug: {
         totalPredictionsFound: preds.length,
-        roboflowApiUrl: process.env.ROBOFLOW_API_URL || "https://detect.roboflow.com",
-        roboflowWorkflowId: process.env.ROBOFLOW_WORKFLOW_ID || "",
       },
     });
   } catch (e) {
