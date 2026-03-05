@@ -28,15 +28,35 @@ function normalizePileSide(s) {
   return "NON";
 }
 
+/**
+ * Parse card label coming from the model.
+ * Supports:
+ * - Standard: "10S", "9H", "QD", "JS", "AS", "7C"
+ * - French ranks: "RS" (Roi=K), "DS" (Dame=Q), "VS" (Valet=J)
+ * Also tolerates separators/spaces like "V-H", "D_C", "10 S"
+ */
 function parseCardLabel(label) {
-  // expects like: "10S", "9H", "QD", "JS", "AS", "7C"
-  const raw = String(label || "").trim().toUpperCase();
+  let raw = String(label || "").trim().toUpperCase();
   if (!raw) return null;
 
+  // Remove common separators (keep only A-Z / 0-9)
+  raw = raw.replace(/[^A-Z0-9]/g, "");
+  if (raw.length < 2) return null;
+
   const suit = raw.slice(-1);
-  const rank = raw.slice(0, -1);
+  let rank = raw.slice(0, -1);
 
   if (!["H", "D", "C", "S"].includes(suit)) return null;
+
+  // Map French face letters -> standard ranks
+  // R = Roi = King (K)
+  // D = Dame = Queen (Q)
+  // V = Valet = Jack (J)
+  const FR_MAP = { R: "K", D: "Q", V: "J" };
+  if (FR_MAP[rank]) rank = FR_MAP[rank];
+
+  // optional tolerance if something outputs "1" for Ace
+  if (rank === "1") rank = "A";
 
   // rank allowed: 7,8,9,10,J,Q,K,A
   const ok = ["7", "8", "9", "10", "J", "Q", "K", "A"];
@@ -81,7 +101,7 @@ function computeBelotePoints(cards16, trumpSuit, lastTrick) {
 }
 
 /**
- * Robustly extract predictions from a Roboflow workflow response.
+ * Extract predictions from a Roboflow workflow response.
  * We search for objects with a "class" (or "label") and "confidence".
  */
 function extractPredictionsDeep(obj) {
@@ -95,7 +115,6 @@ function extractPredictionsDeep(obj) {
     }
     if (typeof node !== "object") return;
 
-    // Common inference shapes
     const cls = node.class ?? node.label ?? node.predicted_class ?? node.name;
     const conf = node.confidence ?? node.conf ?? node.score;
 
@@ -103,7 +122,6 @@ function extractPredictionsDeep(obj) {
       out.push({
         class: cls,
         confidence: conf,
-        // keep bbox if present
         x: node.x,
         y: node.y,
         width: node.width,
@@ -118,60 +136,23 @@ function extractPredictionsDeep(obj) {
   return out;
 }
 
-// Build the canonical 32-card Belote deck
-function buildBeloteDeck32() {
-  const suits = ["H", "D", "C", "S"];
-  const ranks = ["7", "8", "9", "10", "J", "Q", "K", "A"];
-  const deck = [];
-  for (const s of suits) {
-    for (const r of ranks) {
-      deck.push({ rank: r, suit: s, code: `${r}${s}` });
-    }
-  }
-  return deck;
-}
-
-const DECK32 = buildBeloteDeck32();
-
-function pickBestUniqueCards(cards, target = 16) {
-  // cards is expected sorted by confidence desc already
-  const seen = new Set();
-  const out = [];
-
+/**
+ * Pick best 16 UNIQUE cards by confidence.
+ * If duplicates appear, keep the highest confidence for that card code.
+ */
+function pickBestUniqueCards(cards, n = 16) {
+  const byCode = new Map(); // code -> best card
   for (const c of cards) {
     if (!c?.code) continue;
-    if (seen.has(c.code)) continue;
-    seen.add(c.code);
-    out.push(c);
-    if (out.length === target) break;
+    const prev = byCode.get(c.code);
+    if (!prev || (c.confidence ?? 0) > (prev.confidence ?? 0)) {
+      byCode.set(c.code, c);
+    }
   }
 
-  return out;
-}
-
-function fillMissingFromDeck(cardsUnique, target = 16) {
-  // If we detected < target, we can optionally fill with "unknown" cards
-  // (so scoring isn't wildly wrong). We'll mark them as filled.
-  // NOTE: This is a fallback; best is to improve capture quality.
-  if (cardsUnique.length >= target) return { cards: cardsUnique, filled: [] };
-
-  const have = new Set(cardsUnique.map((c) => c.code));
-  const missing = DECK32.filter((c) => !have.has(c.code));
-
-  const filled = [];
-  const out = [...cardsUnique];
-
-  while (out.length < target && missing.length > 0) {
-    const m = missing.shift();
-    out.push({
-      ...m,
-      confidence: 0,
-      filled: true,
-    });
-    filled.push(m.code);
-  }
-
-  return { cards: out, filled };
+  return Array.from(byCode.values())
+    .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+    .slice(0, n);
 }
 
 // ---------- roboflow call ----------
@@ -187,11 +168,11 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     );
   }
 
-  // Endpoint format: https://serverless.roboflow.com/<workspace>/workflows/<workflow_id>
   const url = `${apiUrl.replace(/\/$/, "")}/${workspace}/workflows/${workflowId}?api_key=${encodeURIComponent(
     apiKey
   )}`;
 
+  // NOTE: In Vercel Node runtime, FormData/Blob are available in modern runtimes.
   const form = new FormData();
   const blob = new Blob([imageBuffer], { type: mimeType || "image/jpeg" });
   form.append("image", blob, "upload.jpg");
@@ -200,7 +181,6 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     method: "POST",
     body: form,
     headers: {
-      // Some setups accept header auth too:
       "x-api-key": apiKey,
     },
   });
@@ -246,7 +226,7 @@ export default async function handler(req, res) {
             file.resume();
             return;
           }
-          imageInfo = info;
+          imageInfo = info; // { filename, mimeType }
           imageBuffer = await streamToBuffer(file);
         } catch (e) {
           reject(e);
@@ -266,12 +246,8 @@ export default async function handler(req, res) {
     }
 
     const trumpSuit = normalizeSuit(fields.trumpSuit || "S");
-    const pileSide = normalizePileSide(fields.pileSide || "BIDDER"); // kept for future use
+    const pileSide = normalizePileSide(fields.pileSide || "BIDDER");
     const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
-
-    // optional: allow UI to choose whether we auto-fill missing cards
-    const allowFill =
-      fields.allowFill === "1" || fields.allowFill === "true" || fields.allowFill === "yes";
 
     // 1) call workflow
     const rf = await callRoboflowWorkflow({
@@ -282,8 +258,8 @@ export default async function handler(req, res) {
     // 2) extract predictions
     const preds = extractPredictionsDeep(rf);
 
-    // 3) convert labels to cards + sort by confidence
-    const cards = preds
+    // 3) convert labels to cards
+    const cardsAll = preds
       .map((p) => ({
         ...p,
         parsed: parseCardLabel(p.class),
@@ -294,38 +270,21 @@ export default async function handler(req, res) {
         suit: x.parsed.suit,
         code: x.parsed.code,
         confidence: x.confidence,
+        rawClass: x.class, // helpful debug
       }))
-      .sort((a, b) => b.confidence - a.confidence);
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
 
-    // 4) choose best 16 UNIQUE cards (not just top 16 predictions)
-    const unique = pickBestUniqueCards(cards, 16);
+    // 4) pick best 16 unique
+    const cards16 = pickBestUniqueCards(cardsAll, 16);
 
-    let cards16 = unique;
-    let filledCodes = [];
-
-    if (allowFill && unique.length < 16) {
-      const filled = fillMissingFromDeck(unique, 16);
-      cards16 = filled.cards;
-      filledCodes = filled.filled;
-    }
-
-    // 5) compute points (we only score detected cards, not filled placeholders)
-    // If you enabled allowFill, you PROBABLY do NOT want placeholders affecting score,
-    // so we'll score only non-filled.
-    const scoredCards = cards16.filter((c) => !c.filled);
-    const points = computeBelotePoints(scoredCards, trumpSuit, lastTrick);
+    // 5) compute points
+    const points = computeBelotePoints(cards16, trumpSuit, lastTrick);
 
     const warnings = [];
-    const uniqueCount = unique.length;
-
-    if (uniqueCount !== 16) {
+    if (cards16.length !== 16) {
       warnings.push(
-        `Detected ${uniqueCount} unique cards (expected 16). Try better lighting / less overlap / keep corners visible.`
+        `Detected ${cards16.length} unique cards (expected 16). Try less overlap, more light, less glare, zoom in.`
       );
-    }
-
-    if (allowFill && filledCodes.length > 0) {
-      warnings.push(`Filled ${filledCodes.length} missing cards with placeholders (not counted in points).`);
     }
 
     res.status(200).json({
@@ -342,9 +301,7 @@ export default async function handler(req, res) {
       },
       debug: {
         totalPredictionsFound: preds.length,
-        totalParsedPredictions: cards.length,
-        uniqueCardsFound: uniqueCount,
-        filledCodes,
+        parsedCardsFound: cardsAll.length,
       },
     });
   } catch (e) {
