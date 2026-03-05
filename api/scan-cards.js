@@ -236,17 +236,13 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     );
   }
 
-  // ✅ Correct workflow inference endpoint
+  // ✅ Robust endpoint for Workflows inference
+  const base = apiUrl.replace(/\/$/, "");
   const url =
-    `${apiUrl.replace(/\/$/, "")}` +
-    `/infer/workflows/${encodeURIComponent(workspace)}/${encodeURIComponent(workflowId)}` +
+    `${base}/infer/workflows/${encodeURIComponent(workspace)}/${encodeURIComponent(workflowId)}` +
     `?api_key=${encodeURIComponent(apiKey)}`;
 
-  // Convert image to base64 (Roboflow expects inputs JSON)
   const base64 = imageBuffer.toString("base64");
-
-  // Some endpoints accept plain base64; others want a data URL.
-  // We'll send a data URL to be safest:
   const dataUrl = `data:${mimeType || "image/jpeg"};base64,${base64}`;
 
   const body = {
@@ -257,7 +253,12 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
 
   const resp = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      // ✅ Add Bearer auth too (some setups require it)
+      Authorization: `Bearer ${apiKey}`,
+      "x-api-key": apiKey,
+    },
     body: JSON.stringify(body),
   });
 
@@ -271,7 +272,7 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
   }
 
   if (!resp.ok) {
-    const msg = json?.error || json?.message || text;
+    const msg = json?.error || json?.message || JSON.stringify(json).slice(0, 300);
     throw new Error(`Roboflow error ${resp.status}: ${msg}`);
   }
 
