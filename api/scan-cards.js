@@ -225,7 +225,7 @@ function pickBestUniqueCards(predsParsed, target = 16) {
 
 // ---------- roboflow call ----------
 async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
-  const apiUrl = (process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com").replace(/\/$/, "");
+  const apiUrl = process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com";
   const apiKey = process.env.ROBOFLOW_API_KEY;
   const workspace = process.env.ROBOFLOW_WORKSPACE;
   const workflowId = process.env.ROBOFLOW_WORKFLOW_ID;
@@ -236,22 +236,33 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     );
   }
 
-  const url = `${apiUrl}/${workspace}/workflows/${workflowId}?api_key=${encodeURIComponent(apiKey)}`;
+  // ✅ Correct workflow inference endpoint
+  const url =
+    `${apiUrl.replace(/\/$/, "")}` +
+    `/infer/workflows/${encodeURIComponent(workspace)}/${encodeURIComponent(workflowId)}` +
+    `?api_key=${encodeURIComponent(apiKey)}`;
 
+  // Convert image to base64 (Roboflow expects inputs JSON)
   const base64 = imageBuffer.toString("base64");
+
+  // Some endpoints accept plain base64; others want a data URL.
+  // We'll send a data URL to be safest:
   const dataUrl = `data:${mimeType || "image/jpeg"};base64,${base64}`;
+
+  const body = {
+    inputs: {
+      image: { type: "base64", value: dataUrl },
+    },
+  };
 
   const resp = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      inputs: {
-        image: dataUrl,
-      },
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
   });
 
   const text = await resp.text();
+
   let json;
   try {
     json = JSON.parse(text);
