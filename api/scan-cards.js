@@ -27,36 +27,27 @@ function normalizePileSide(s) {
   return "NON";
 }
 
-// ---- Card label parsing (supports French ranks + French Ace shown as "1") ----
+// French rank mapping: R=Roi(K), D=Dame(Q), V=Valet(J), 1=As(A)
 function normalizeRank(rankRaw) {
   const r = String(rankRaw || "").trim().toUpperCase();
-
-  // French face letters + Ace shown as 1:
-  // R = Roi = King (K)
-  // D = Dame = Queen (Q)
-  // V = Valet = Jack (J)
-  // 1 = Ace (A)
   const map = { R: "K", D: "Q", V: "J", "1": "A" };
-  const mapped = map[r] || r;
+  const normalized = map[r] ?? r;
 
+  // allowed in belote 32-card deck
   const ok = ["7", "8", "9", "10", "J", "Q", "K", "A"];
-  if (!ok.includes(mapped)) return null;
-  return mapped;
+  return ok.includes(normalized) ? normalized : null;
 }
 
 function parseCardLabel(label) {
-  // parses: "10S", "9H", "QD", "JS", "AS", "7C", also "1H" etc.
-  // also tolerates separators like "10_S", "10-S", "10 S"
+  // expects like: "10S", "9H", "QD", "JS", "AS", "7C"
+  // supports French ranks: "RS"(K), "DS"(Q), "VS"(J), "1S"(A)
   const raw = String(label || "").trim().toUpperCase();
-  if (!raw) return null;
+  if (!raw || raw.length < 2) return null;
 
-  const suitMatch = raw.match(/([HDCS])\s*$/);
-  if (!suitMatch) return null;
-  const suit = suitMatch[1];
+  const suit = raw.slice(-1);
+  const rankPart = raw.slice(0, -1);
 
-  const rankPart = raw
-    .slice(0, suitMatch.index)
-    .replace(/[^0-9AJQKRDV]/g, ""); // allow French letters + digits
+  if (!["H", "D", "C", "S"].includes(suit)) return null;
 
   const rank = normalizeRank(rankPart);
   if (!rank) return null;
@@ -64,7 +55,6 @@ function parseCardLabel(label) {
   return { rank, suit, code: `${rank}${suit}` };
 }
 
-// ---- Point tables (Belote/Coinche trick points) ----
 const TRUMP_POINTS = {
   J: 20,
   9: 14,
@@ -87,11 +77,11 @@ const NON_TRUMP_POINTS = {
   7: 0,
 };
 
-function computeBelotePoints(cards16, trumpSuit, lastTrick) {
+function computeBelotePoints(cards, trumpSuit, lastTrick) {
   const trump = normalizeSuit(trumpSuit);
   let total = 0;
 
-  for (const c of cards16) {
+  for (const c of cards) {
     const table = c.suit === trump ? TRUMP_POINTS : NON_TRUMP_POINTS;
     total += table[c.rank] ?? 0;
   }
@@ -101,8 +91,8 @@ function computeBelotePoints(cards16, trumpSuit, lastTrick) {
 }
 
 /**
- * Extract predictions from Roboflow workflow response.
- * We look for {class/label, confidence, x, y, width, height}
+ * Robustly extract predictions from a Roboflow workflow response.
+ * We search for objects with a "class" (or similar) and "confidence".
  */
 function extractPredictionsDeep(obj) {
   const out = [];
@@ -118,19 +108,14 @@ function extractPredictionsDeep(obj) {
     const cls = node.class ?? node.label ?? node.predicted_class ?? node.name;
     const conf = node.confidence ?? node.conf ?? node.score;
 
-    const x = node.x ?? node.center_x ?? node.cx;
-    const y = node.y ?? node.center_y ?? node.cy;
-    const width = node.width ?? node.w;
-    const height = node.height ?? node.h;
-
     if (typeof cls === "string" && typeof conf === "number") {
       out.push({
         class: cls,
         confidence: conf,
-        x: typeof x === "number" ? x : null,
-        y: typeof y === "number" ? y : null,
-        width: typeof width === "number" ? width : null,
-        height: typeof height === "number" ? height : null,
+        x: node.x,
+        y: node.y,
+        width: node.width,
+        height: node.height,
       });
     }
 
@@ -141,107 +126,105 @@ function extractPredictionsDeep(obj) {
   return out;
 }
 
-// ---- Bounding box utilities (IoU + NMS) ----
+// ---------- bbox / duplicate filtering ----------
 function toXYXY(p) {
-  if (
-    typeof p.x !== "number" ||
-    typeof p.y !== "number" ||
-    typeof p.width !== "number" ||
-    typeof p.height !== "number"
-  ) {
-    return null;
-  }
-  const x1 = p.x - p.width / 2;
-  const y1 = p.y - p.height / 2;
-  const x2 = p.x + p.width / 2;
-  const y2 = p.y + p.height / 2;
-  return { x1, y1, x2, y2 };
-}
-
-function iou(a, b) {
-  const A = toXYXY(a);
-  const B = toXYXY(b);
-  if (!A || !B) return 0;
-
-  const ix1 = Math.max(A.x1, B.x1);
-  const iy1 = Math.max(A.y1, B.y1);
-  const ix2 = Math.min(A.x2, B.x2);
-  const iy2 = Math.min(A.y2, B.y2);
-
-  const iw = Math.max(0, ix2 - ix1);
-  const ih = Math.max(0, iy2 - iy1);
-  const inter = iw * ih;
-
-  const areaA = Math.max(0, A.x2 - A.x1) * Math.max(0, A.y2 - A.y1);
-  const areaB = Math.max(0, B.x2 - B.x1) * Math.max(0, B.y2 - B.y1);
-  const union = areaA + areaB - inter;
-
-  if (union <= 0) return 0;
-  return inter / union;
-}
-
-function nms(preds, iouThreshold = 0.5) {
-  const sorted = [...preds].sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
-  const kept = [];
-
-  for (const p of sorted) {
-    let overlapped = false;
-    for (const k of kept) {
-      if (iou(p, k) >= iouThreshold) {
-        overlapped = true;
-        break;
-      }
-    }
-    if (!overlapped) kept.push(p);
-  }
-  return kept;
-}
-
-function pickBest16Unique(predsRaw, { iouThreshold = 0.5, minConf = 0.2 } = {}) {
-  const preds = predsRaw.filter((p) => (p.confidence ?? 0) >= minConf);
-
-  const afterNms = nms(preds, iouThreshold);
-
-  const parsed = afterNms
-    .map((p) => {
-      const parsedCard = parseCardLabel(p.class);
-      if (!parsedCard) return null;
-      return {
-        rank: parsedCard.rank,
-        suit: parsedCard.suit,
-        code: parsedCard.code,
-        confidence: p.confidence,
-        bbox: { x: p.x, y: p.y, width: p.width, height: p.height },
-        rawClass: p.class,
-      };
-    })
-    .filter(Boolean);
-
-  const byCode = new Map();
-  for (const c of parsed) {
-    const prev = byCode.get(c.code);
-    if (!prev || c.confidence > prev.confidence) byCode.set(c.code, c);
-  }
-
-  const uniqueSorted = [...byCode.values()].sort((a, b) => b.confidence - a.confidence);
-  const cards16 = uniqueSorted.slice(0, 16);
-
+  const x = Number(p.x);
+  const y = Number(p.y);
+  const w = Number(p.width);
+  const h = Number(p.height);
+  if (![x, y, w, h].every((n) => Number.isFinite(n))) return null;
   return {
-    cards16,
-    debug: {
-      predsIn: predsRaw.length,
-      predsAfterMinConf: preds.length,
-      predsAfterNms: afterNms.length,
-      parsedCards: parsed.length,
-      uniqueCards: uniqueSorted.length,
-      picked: cards16.length,
-    },
+    x1: x - w / 2,
+    y1: y - h / 2,
+    x2: x + w / 2,
+    y2: y + h / 2,
   };
 }
 
-// ---------- roboflow call (JSON base64 - more reliable for workflows) ----------
+function iou(a, b) {
+  const interX1 = Math.max(a.x1, b.x1);
+  const interY1 = Math.max(a.y1, b.y1);
+  const interX2 = Math.min(a.x2, b.x2);
+  const interY2 = Math.min(a.y2, b.y2);
+
+  const interW = Math.max(0, interX2 - interX1);
+  const interH = Math.max(0, interY2 - interY1);
+  const interArea = interW * interH;
+
+  const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
+  const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+  const union = areaA + areaB - interArea;
+
+  return union > 0 ? interArea / union : 0;
+}
+
+/**
+ * NMS-like filter: keep only one box per physical card region.
+ * We don't require same class; we just drop high-overlap boxes.
+ */
+function filterOverlappingBoxes(preds, iouThreshold = 0.65) {
+  const sorted = [...preds].sort((a, b) => b.confidence - a.confidence);
+  const kept = [];
+
+  for (const p of sorted) {
+    const bb = toXYXY(p);
+    // If no bbox info, keep it (can't dedupe)
+    if (!bb) {
+      kept.push(p);
+      continue;
+    }
+
+    let overlaps = false;
+    for (const k of kept) {
+      const kb = toXYXY(k);
+      if (!kb) continue;
+      if (iou(bb, kb) >= iouThreshold) {
+        overlaps = true;
+        break;
+      }
+    }
+    if (!overlaps) kept.push(p);
+  }
+
+  return kept;
+}
+
+/**
+ * Pick best 16 UNIQUE cards.
+ * 1) bbox-dedupe (removes duplicate detections)
+ * 2) unique-by-card-code (since a belote deck has no duplicates)
+ * 3) stop at 16
+ */
+function pickBestUniqueCards(predsParsed, target = 16) {
+  const seen = new Set();
+  const out = [];
+
+  for (const p of predsParsed.sort((a, b) => b.confidence - a.confidence)) {
+    if (!p.parsed) continue;
+    const code = p.parsed.code;
+    if (seen.has(code)) continue;
+
+    seen.add(code);
+    out.push({
+      rank: p.parsed.rank,
+      suit: p.parsed.suit,
+      code,
+      confidence: p.confidence,
+      x: p.x,
+      y: p.y,
+      width: p.width,
+      height: p.height,
+      rawClass: p.class,
+    });
+
+    if (out.length >= target) break;
+  }
+
+  return out;
+}
+
+// ---------- roboflow call ----------
 async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
-  const apiUrl = process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com";
   const apiKey = process.env.ROBOFLOW_API_KEY;
   const workspace = process.env.ROBOFLOW_WORKSPACE;
   const workflowId = process.env.ROBOFLOW_WORKFLOW_ID;
@@ -252,34 +235,33 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     );
   }
 
+  // IMPORTANT: workflows run on serverless.roboflow.com
+  // If you accidentally set ROBOFLOW_API_URL to detect.roboflow.com, you'll get 401/500.
+  let apiUrl = process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com";
+  if (!apiUrl.includes("serverless.roboflow.com")) {
+    apiUrl = "https://serverless.roboflow.com";
+  }
+
+  // Endpoint format that matches "Deploy Workflow" (serverless):
+  // POST https://serverless.roboflow.com/<workspace>/workflows/<workflow_id>?api_key=...
   const url = `${apiUrl.replace(/\/$/, "")}/${workspace}/workflows/${workflowId}?api_key=${encodeURIComponent(
     apiKey
   )}`;
 
-  const b64 = Buffer.from(imageBuffer).toString("base64");
-  const type = mimeType || "image/jpeg";
-  const dataUrl = `data:${type};base64,${b64}`;
+  const form = new FormData();
+  const blob = new Blob([imageBuffer], { type: mimeType || "image/jpeg" });
+  form.append("image", blob, "upload.jpg");
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-    },
-    body: JSON.stringify({
-      inputs: {
-        image: dataUrl,
-      },
-    }),
-  });
-
+  const resp = await fetch(url, { method: "POST", body: form });
   const text = await resp.text();
 
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    throw new Error(`Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`);
+    throw new Error(
+      `Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 300)}`
+    );
   }
 
   if (!resp.ok) {
@@ -338,27 +320,31 @@ export default async function handler(req, res) {
     const pileSide = normalizePileSide(fields.pileSide || "BIDDER");
     const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
 
-    const IOU_THRESHOLD = Number(process.env.IOU_THRESHOLD ?? 0.5);
-    const MIN_CONF = Number(process.env.MIN_CONF ?? 0.2);
-
+    // 1) call workflow
     const rf = await callRoboflowWorkflow({
       imageBuffer,
       mimeType: imageInfo?.mimeType || "image/jpeg",
     });
 
+    // 2) extract predictions (deep)
     const preds = extractPredictionsDeep(rf);
 
-    const { cards16, debug } = pickBest16Unique(preds, {
-      iouThreshold: IOU_THRESHOLD,
-      minConf: MIN_CONF,
-    });
+    // 3) bbox dedupe first (removes “same card” duplicates)
+    const predsDedup = filterOverlappingBoxes(preds, 0.65);
 
+    // 4) parse labels to cards (supports French ranks)
+    const parsed = predsDedup.map((p) => ({ ...p, parsed: parseCardLabel(p.class) }));
+
+    // 5) pick best 16 UNIQUE by card code
+    const cards16 = pickBestUniqueCards(parsed, 16);
+
+    // 6) compute points
     const points = computeBelotePoints(cards16, trumpSuit, lastTrick);
 
     const warnings = [];
     if (cards16.length !== 16) {
       warnings.push(
-        `Detected ${cards16.length} unique cards (expected 16). Try: brighter light, less overlap, less glare, tighter framing.`
+        `Detected ${cards16.length} unique cards (expected 16). Try: brighter light, less glare, fan slightly wider, keep corners visible.`
       );
     }
 
@@ -375,10 +361,8 @@ export default async function handler(req, res) {
         mimeType: imageInfo?.mimeType || "",
       },
       debug: {
-        ...debug,
-        iouThreshold: IOU_THRESHOLD,
-        minConf: MIN_CONF,
         totalPredictionsFound: preds.length,
+        afterBoxDedup: predsDedup.length,
       },
     });
   } catch (e) {
