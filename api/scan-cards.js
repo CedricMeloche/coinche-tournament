@@ -225,6 +225,7 @@ function pickBestUniqueCards(predsParsed, target = 16) {
 
 // ---------- roboflow call ----------
 async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
+  const apiUrl = (process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com").replace(/\/$/, "");
   const apiKey = process.env.ROBOFLOW_API_KEY;
   const workspace = process.env.ROBOFLOW_WORKSPACE;
   const workflowId = process.env.ROBOFLOW_WORKFLOW_ID;
@@ -235,33 +236,27 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     );
   }
 
-  // IMPORTANT: workflows run on serverless.roboflow.com
-  // If you accidentally set ROBOFLOW_API_URL to detect.roboflow.com, you'll get 401/500.
-  let apiUrl = process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com";
-  if (!apiUrl.includes("serverless.roboflow.com")) {
-    apiUrl = "https://serverless.roboflow.com";
-  }
+  const url = `${apiUrl}/${workspace}/workflows/${workflowId}?api_key=${encodeURIComponent(apiKey)}`;
 
-  // Endpoint format that matches "Deploy Workflow" (serverless):
-  // POST https://serverless.roboflow.com/<workspace>/workflows/<workflow_id>?api_key=...
-  const url = `${apiUrl.replace(/\/$/, "")}/${workspace}/workflows/${workflowId}?api_key=${encodeURIComponent(
-    apiKey
-  )}`;
+  const base64 = imageBuffer.toString("base64");
+  const dataUrl = `data:${mimeType || "image/jpeg"};base64,${base64}`;
 
-  const form = new FormData();
-  const blob = new Blob([imageBuffer], { type: mimeType || "image/jpeg" });
-  form.append("image", blob, "upload.jpg");
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      inputs: {
+        image: dataUrl,
+      },
+    }),
+  });
 
-  const resp = await fetch(url, { method: "POST", body: form });
   const text = await resp.text();
-
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    throw new Error(
-      `Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 300)}`
-    );
+    throw new Error(`Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`);
   }
 
   if (!resp.ok) {
