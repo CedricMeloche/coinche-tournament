@@ -23,6 +23,7 @@ function normalizeSuit(s) {
 
 function normalizePileSide(s) {
   const up = String(s || "").toUpperCase();
+  // Accept BIDDER | NON | NON_BIDDER
   if (up === "BIDDER") return "BIDDER";
   return "NON";
 }
@@ -37,23 +38,44 @@ function parseCardLabel(label) {
 
   if (!["H", "D", "C", "S"].includes(suit)) return null;
 
+  // rank allowed: 7,8,9,10,J,Q,K,A
   const ok = ["7", "8", "9", "10", "J", "Q", "K", "A"];
   if (!ok.includes(rank)) return null;
 
   return { rank, suit, code: `${rank}${suit}` };
 }
 
-// Belote/Coinche points
-const TRUMP_POINTS = { J: 20, 9: 14, A: 11, "10": 10, K: 4, Q: 3, 8: 0, 7: 0 };
-const NON_TRUMP_POINTS = { A: 11, "10": 10, K: 4, Q: 3, J: 2, 9: 0, 8: 0, 7: 0 };
+const TRUMP_POINTS = {
+  J: 20,
+  9: 14,
+  A: 11,
+  "10": 10,
+  K: 4,
+  Q: 3,
+  8: 0,
+  7: 0,
+};
+
+const NON_TRUMP_POINTS = {
+  A: 11,
+  "10": 10,
+  K: 4,
+  Q: 3,
+  J: 2,
+  9: 0,
+  8: 0,
+  7: 0,
+};
 
 function computeBelotePoints(cards16, trumpSuit, lastTrick) {
   const trump = normalizeSuit(trumpSuit);
   let total = 0;
+
   for (const c of cards16) {
     const table = c.suit === trump ? TRUMP_POINTS : NON_TRUMP_POINTS;
     total += table[c.rank] ?? 0;
   }
+
   if (lastTrick) total += 10;
   return total;
 }
@@ -73,6 +95,7 @@ function extractPredictionsDeep(obj) {
     }
     if (typeof node !== "object") return;
 
+    // Common inference shapes
     const cls = node.class ?? node.label ?? node.predicted_class ?? node.name;
     const conf = node.confidence ?? node.conf ?? node.score;
 
@@ -80,6 +103,7 @@ function extractPredictionsDeep(obj) {
       out.push({
         class: cls,
         confidence: conf,
+        // keep bbox if present
         x: node.x,
         y: node.y,
         width: node.width,
@@ -92,6 +116,62 @@ function extractPredictionsDeep(obj) {
 
   visit(obj);
   return out;
+}
+
+// Build the canonical 32-card Belote deck
+function buildBeloteDeck32() {
+  const suits = ["H", "D", "C", "S"];
+  const ranks = ["7", "8", "9", "10", "J", "Q", "K", "A"];
+  const deck = [];
+  for (const s of suits) {
+    for (const r of ranks) {
+      deck.push({ rank: r, suit: s, code: `${r}${s}` });
+    }
+  }
+  return deck;
+}
+
+const DECK32 = buildBeloteDeck32();
+
+function pickBestUniqueCards(cards, target = 16) {
+  // cards is expected sorted by confidence desc already
+  const seen = new Set();
+  const out = [];
+
+  for (const c of cards) {
+    if (!c?.code) continue;
+    if (seen.has(c.code)) continue;
+    seen.add(c.code);
+    out.push(c);
+    if (out.length === target) break;
+  }
+
+  return out;
+}
+
+function fillMissingFromDeck(cardsUnique, target = 16) {
+  // If we detected < target, we can optionally fill with "unknown" cards
+  // (so scoring isn't wildly wrong). We'll mark them as filled.
+  // NOTE: This is a fallback; best is to improve capture quality.
+  if (cardsUnique.length >= target) return { cards: cardsUnique, filled: [] };
+
+  const have = new Set(cardsUnique.map((c) => c.code));
+  const missing = DECK32.filter((c) => !have.has(c.code));
+
+  const filled = [];
+  const out = [...cardsUnique];
+
+  while (out.length < target && missing.length > 0) {
+    const m = missing.shift();
+    out.push({
+      ...m,
+      confidence: 0,
+      filled: true,
+    });
+    filled.push(m.code);
+  }
+
+  return { cards: out, filled };
 }
 
 // ---------- roboflow call ----------
@@ -107,30 +187,22 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     );
   }
 
-  // Roboflow Workflows REST endpoint:
-  // POST https://serverless.roboflow.com/{workspace_name}/workflows/{workflow_id}
-  const url = `${apiUrl.replace(/\/$/, "")}/${workspace}/workflows/${workflowId}`;
+  // Endpoint format: https://serverless.roboflow.com/<workspace>/workflows/<workflow_id>
+  const url = `${apiUrl.replace(/\/$/, "")}/${workspace}/workflows/${workflowId}?api_key=${encodeURIComponent(
+    apiKey
+  )}`;
 
-  // Encode image as a data URL for workflow "inputs.image"
-  const safeMime = mimeType && mimeType.includes("/") ? mimeType : "image/jpeg";
-  const base64 = Buffer.from(imageBuffer).toString("base64");
-  const dataUrl = `data:${safeMime};base64,${base64}`;
-
-  const body = {
-    api_key: apiKey,
-    use_cache: true,
-    inputs: {
-      image: dataUrl, // MUST be inside inputs
-    },
-  };
+  const form = new FormData();
+  const blob = new Blob([imageBuffer], { type: mimeType || "image/jpeg" });
+  form.append("image", blob, "upload.jpg");
 
   const resp = await fetch(url, {
     method: "POST",
+    body: form,
     headers: {
-      "content-type": "application/json",
-      "accept": "application/json",
+      // Some setups accept header auth too:
+      "x-api-key": apiKey,
     },
-    body: JSON.stringify(body),
   });
 
   const text = await resp.text();
@@ -142,7 +214,7 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
   }
 
   if (!resp.ok) {
-    const msg = json?.error || json?.message || JSON.stringify(json);
+    const msg = json?.error || json?.message || text;
     throw new Error(`Roboflow error ${resp.status}: ${msg}`);
   }
 
@@ -194,8 +266,12 @@ export default async function handler(req, res) {
     }
 
     const trumpSuit = normalizeSuit(fields.trumpSuit || "S");
-    const pileSide = normalizePileSide(fields.pileSide || "BIDDER");
+    const pileSide = normalizePileSide(fields.pileSide || "BIDDER"); // kept for future use
     const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
+
+    // optional: allow UI to choose whether we auto-fill missing cards
+    const allowFill =
+      fields.allowFill === "1" || fields.allowFill === "true" || fields.allowFill === "yes";
 
     // 1) call workflow
     const rf = await callRoboflowWorkflow({
@@ -206,8 +282,8 @@ export default async function handler(req, res) {
     // 2) extract predictions
     const preds = extractPredictionsDeep(rf);
 
-    // 3) parse to cards
-    const parsedCards = preds
+    // 3) convert labels to cards + sort by confidence
+    const cards = preds
       .map((p) => ({
         ...p,
         parsed: parseCardLabel(p.class),
@@ -221,25 +297,35 @@ export default async function handler(req, res) {
       }))
       .sort((a, b) => b.confidence - a.confidence);
 
-    // 4) de-dupe by exact card code (keep best confidence)
-    const bestByCode = new Map();
-    for (const c of parsedCards) {
-      const prev = bestByCode.get(c.code);
-      if (!prev || c.confidence > prev.confidence) bestByCode.set(c.code, c);
+    // 4) choose best 16 UNIQUE cards (not just top 16 predictions)
+    const unique = pickBestUniqueCards(cards, 16);
+
+    let cards16 = unique;
+    let filledCodes = [];
+
+    if (allowFill && unique.length < 16) {
+      const filled = fillMissingFromDeck(unique, 16);
+      cards16 = filled.cards;
+      filledCodes = filled.filled;
     }
-    const deduped = Array.from(bestByCode.values()).sort((a, b) => b.confidence - a.confidence);
 
-    // 5) choose 16 cards
-    const cards16 = deduped.slice(0, 16);
-
-    // 6) compute points
-    const points = computeBelotePoints(cards16, trumpSuit, lastTrick);
+    // 5) compute points (we only score detected cards, not filled placeholders)
+    // If you enabled allowFill, you PROBABLY do NOT want placeholders affecting score,
+    // so we'll score only non-filled.
+    const scoredCards = cards16.filter((c) => !c.filled);
+    const points = computeBelotePoints(scoredCards, trumpSuit, lastTrick);
 
     const warnings = [];
-    if (cards16.length !== 16) {
+    const uniqueCount = unique.length;
+
+    if (uniqueCount !== 16) {
       warnings.push(
-        `Detected ${cards16.length} unique cards (expected 16). Try better lighting / less overlap.`
+        `Detected ${uniqueCount} unique cards (expected 16). Try better lighting / less overlap / keep corners visible.`
       );
+    }
+
+    if (allowFill && filledCodes.length > 0) {
+      warnings.push(`Filled ${filledCodes.length} missing cards with placeholders (not counted in points).`);
     }
 
     res.status(200).json({
@@ -256,6 +342,9 @@ export default async function handler(req, res) {
       },
       debug: {
         totalPredictionsFound: preds.length,
+        totalParsedPredictions: cards.length,
+        uniqueCardsFound: uniqueCount,
+        filledCodes,
       },
     });
   } catch (e) {
