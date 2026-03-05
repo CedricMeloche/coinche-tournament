@@ -23,48 +23,48 @@ function normalizeSuit(s) {
 
 function normalizePileSide(s) {
   const up = String(s || "").toUpperCase();
-  // Accept BIDDER | NON | NON_BIDDER
   if (up === "BIDDER") return "BIDDER";
   return "NON";
 }
 
-/**
- * Parse card label coming from the model.
- * Supports:
- * - Standard: "10S", "9H", "QD", "JS", "AS", "7C"
- * - French ranks: "RS" (Roi=K), "DS" (Dame=Q), "VS" (Valet=J)
- * Also tolerates separators/spaces like "V-H", "D_C", "10 S"
- */
-function parseCardLabel(label) {
-  let raw = String(label || "").trim().toUpperCase();
-  if (!raw) return null;
+// ---- Card label parsing (supports French ranks: R, D, V) ----
+function normalizeRank(rankRaw) {
+  const r = String(rankRaw || "").trim().toUpperCase();
 
-  // Remove common separators (keep only A-Z / 0-9)
-  raw = raw.replace(/[^A-Z0-9]/g, "");
-  if (raw.length < 2) return null;
-
-  const suit = raw.slice(-1);
-  let rank = raw.slice(0, -1);
-
-  if (!["H", "D", "C", "S"].includes(suit)) return null;
-
-  // Map French face letters -> standard ranks
+  // French face letters:
   // R = Roi = King (K)
   // D = Dame = Queen (Q)
   // V = Valet = Jack (J)
-  const FR_MAP = { R: "K", D: "Q", V: "J" };
-  if (FR_MAP[rank]) rank = FR_MAP[rank];
+  const map = { R: "K", D: "Q", V: "J" };
+  const mapped = map[r] || r;
 
-  // optional tolerance if something outputs "1" for Ace
-  if (rank === "1") rank = "A";
-
-  // rank allowed: 7,8,9,10,J,Q,K,A
   const ok = ["7", "8", "9", "10", "J", "Q", "K", "A"];
-  if (!ok.includes(rank)) return null;
+  if (!ok.includes(mapped)) return null;
+  return mapped;
+}
+
+function parseCardLabel(label) {
+  // tries to parse common formats:
+  // "10S", "9H", "QD", "JS", "AS", "7C"
+  // also tolerates separators like "10_S", "10-S", "10 S"
+  const raw = String(label || "").trim().toUpperCase();
+  if (!raw) return null;
+
+  // Extract suit (last suit letter seen)
+  const suitMatch = raw.match(/([HDCS])\s*$/);
+  if (!suitMatch) return null;
+  const suit = suitMatch[1];
+
+  // Everything before suit is rank
+  const rankPart = raw.slice(0, suitMatch.index).replace(/[^0-9AJQKRDV]/g, "");
+  // rankPart might be "10" or "A" or "R" etc.
+  const rank = normalizeRank(rankPart);
+  if (!rank) return null;
 
   return { rank, suit, code: `${rank}${suit}` };
 }
 
+// ---- Point tables (Belote/Coinche trick points) ----
 const TRUMP_POINTS = {
   J: 20,
   9: 14,
@@ -101,8 +101,8 @@ function computeBelotePoints(cards16, trumpSuit, lastTrick) {
 }
 
 /**
- * Extract predictions from a Roboflow workflow response.
- * We search for objects with a "class" (or "label") and "confidence".
+ * Extract predictions from Roboflow workflow response.
+ * We look for {class/label, confidence, x, y, width, height}
  */
 function extractPredictionsDeep(obj) {
   const out = [];
@@ -118,14 +118,20 @@ function extractPredictionsDeep(obj) {
     const cls = node.class ?? node.label ?? node.predicted_class ?? node.name;
     const conf = node.confidence ?? node.conf ?? node.score;
 
+    // bbox names sometimes vary; handle common shapes
+    const x = node.x ?? node.center_x ?? node.cx;
+    const y = node.y ?? node.center_y ?? node.cy;
+    const width = node.width ?? node.w;
+    const height = node.height ?? node.h;
+
     if (typeof cls === "string" && typeof conf === "number") {
       out.push({
         class: cls,
         confidence: conf,
-        x: node.x,
-        y: node.y,
-        width: node.width,
-        height: node.height,
+        x: typeof x === "number" ? x : null,
+        y: typeof y === "number" ? y : null,
+        width: typeof width === "number" ? width : null,
+        height: typeof height === "number" ? height : null,
       });
     }
 
@@ -136,23 +142,120 @@ function extractPredictionsDeep(obj) {
   return out;
 }
 
+// ---- Bounding box utilities (IoU + NMS) ----
+function toXYXY(p) {
+  // Roboflow typically gives center x/y + width/height
+  if (
+    typeof p.x !== "number" ||
+    typeof p.y !== "number" ||
+    typeof p.width !== "number" ||
+    typeof p.height !== "number"
+  ) {
+    return null;
+  }
+  const x1 = p.x - p.width / 2;
+  const y1 = p.y - p.height / 2;
+  const x2 = p.x + p.width / 2;
+  const y2 = p.y + p.height / 2;
+  return { x1, y1, x2, y2 };
+}
+
+function iou(a, b) {
+  const A = toXYXY(a);
+  const B = toXYXY(b);
+  if (!A || !B) return 0;
+
+  const ix1 = Math.max(A.x1, B.x1);
+  const iy1 = Math.max(A.y1, B.y1);
+  const ix2 = Math.min(A.x2, B.x2);
+  const iy2 = Math.min(A.y2, B.y2);
+
+  const iw = Math.max(0, ix2 - ix1);
+  const ih = Math.max(0, iy2 - iy1);
+  const inter = iw * ih;
+
+  const areaA = Math.max(0, A.x2 - A.x1) * Math.max(0, A.y2 - A.y1);
+  const areaB = Math.max(0, B.x2 - B.x1) * Math.max(0, B.y2 - B.y1);
+  const union = areaA + areaB - inter;
+
+  if (union <= 0) return 0;
+  return inter / union;
+}
+
 /**
- * Pick best 16 UNIQUE cards by confidence.
- * If duplicates appear, keep the highest confidence for that card code.
+ * Non-Maximum Suppression:
+ * keeps highest-confidence detections and removes overlaps (same physical card)
  */
-function pickBestUniqueCards(cards, n = 16) {
-  const byCode = new Map(); // code -> best card
-  for (const c of cards) {
-    if (!c?.code) continue;
-    const prev = byCode.get(c.code);
-    if (!prev || (c.confidence ?? 0) > (prev.confidence ?? 0)) {
-      byCode.set(c.code, c);
+function nms(preds, iouThreshold = 0.5) {
+  const sorted = [...preds].sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+  const kept = [];
+
+  for (const p of sorted) {
+    let overlapped = false;
+    for (const k of kept) {
+      if (iou(p, k) >= iouThreshold) {
+        overlapped = true;
+        break;
+      }
     }
+    if (!overlapped) kept.push(p);
+  }
+  return kept;
+}
+
+/**
+ * Choose best 16 unique card codes (JS, 10H, etc.)
+ * Steps:
+ * 1) NMS by bounding boxes
+ * 2) parse labels -> cards
+ * 3) dedupe by code (keep highest confidence per code)
+ * 4) pick top 16 by confidence
+ */
+function pickBest16Unique(predsRaw, { iouThreshold = 0.5, minConf = 0.2 } = {}) {
+  // 1) filter low confidence early
+  const preds = predsRaw.filter((p) => (p.confidence ?? 0) >= minConf);
+
+  // 2) NMS (bbox duplicate remover)
+  const afterNms = nms(preds, iouThreshold);
+
+  // 3) parse to card objects
+  const parsed = afterNms
+    .map((p) => {
+      const parsedCard = parseCardLabel(p.class);
+      if (!parsedCard) return null;
+      return {
+        rank: parsedCard.rank,
+        suit: parsedCard.suit,
+        code: parsedCard.code,
+        confidence: p.confidence,
+        bbox: { x: p.x, y: p.y, width: p.width, height: p.height },
+        rawClass: p.class,
+      };
+    })
+    .filter(Boolean);
+
+  // 4) dedupe by card code (keep highest confidence)
+  const byCode = new Map();
+  for (const c of parsed) {
+    const prev = byCode.get(c.code);
+    if (!prev || c.confidence > prev.confidence) byCode.set(c.code, c);
   }
 
-  return Array.from(byCode.values())
-    .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
-    .slice(0, n);
+  // 5) choose top 16
+  const uniqueSorted = [...byCode.values()].sort((a, b) => b.confidence - a.confidence);
+  const cards16 = uniqueSorted.slice(0, 16);
+
+  return {
+    cards16,
+    debug: {
+      predsIn: predsRaw.length,
+      predsAfterMinConf: preds.length,
+      predsAfterNms: afterNms.length,
+      parsedCards: parsed.length,
+      uniqueCards: uniqueSorted.length,
+      picked: cards16.length,
+    },
+  };
 }
 
 // ---------- roboflow call ----------
@@ -172,7 +275,6 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     apiKey
   )}`;
 
-  // NOTE: In Vercel Node runtime, FormData/Blob are available in modern runtimes.
   const form = new FormData();
   const blob = new Blob([imageBuffer], { type: mimeType || "image/jpeg" });
   form.append("image", blob, "upload.jpg");
@@ -226,7 +328,7 @@ export default async function handler(req, res) {
             file.resume();
             return;
           }
-          imageInfo = info; // { filename, mimeType }
+          imageInfo = info;
           imageBuffer = await streamToBuffer(file);
         } catch (e) {
           reject(e);
@@ -249,6 +351,10 @@ export default async function handler(req, res) {
     const pileSide = normalizePileSide(fields.pileSide || "BIDDER");
     const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
 
+    // (optional) tune these from env if you want
+    const IOU_THRESHOLD = Number(process.env.IOU_THRESHOLD ?? 0.5);
+    const MIN_CONF = Number(process.env.MIN_CONF ?? 0.2);
+
     // 1) call workflow
     const rf = await callRoboflowWorkflow({
       imageBuffer,
@@ -258,34 +364,22 @@ export default async function handler(req, res) {
     // 2) extract predictions
     const preds = extractPredictionsDeep(rf);
 
-    // 3) convert labels to cards
-    const cardsAll = preds
-      .map((p) => ({
-        ...p,
-        parsed: parseCardLabel(p.class),
-      }))
-      .filter((x) => x.parsed)
-      .map((x) => ({
-        rank: x.parsed.rank,
-        suit: x.parsed.suit,
-        code: x.parsed.code,
-        confidence: x.confidence,
-        rawClass: x.class, // helpful debug
-      }))
-      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+    // 3) pick best 16 unique using NMS + dedupe
+    const { cards16, debug } = pickBest16Unique(preds, {
+      iouThreshold: IOU_THRESHOLD,
+      minConf: MIN_CONF,
+    });
 
-    // 4) pick best 16 unique
-    const cards16 = pickBestUniqueCards(cardsAll, 16);
-
-    // 5) compute points
+    // 4) compute points
     const points = computeBelotePoints(cards16, trumpSuit, lastTrick);
 
     const warnings = [];
     if (cards16.length !== 16) {
       warnings.push(
-        `Detected ${cards16.length} unique cards (expected 16). Try less overlap, more light, less glare, zoom in.`
+        `Detected ${cards16.length} unique cards (expected 16). Try: brighter light, less overlap, less glare, tighter framing.`
       );
     }
+    if (!["H", "D", "C", "S"].includes(trumpSuit)) warnings.push("Unknown trump suit received.");
 
     res.status(200).json({
       ok: true,
@@ -300,8 +394,10 @@ export default async function handler(req, res) {
         mimeType: imageInfo?.mimeType || "",
       },
       debug: {
+        ...debug,
+        iouThreshold: IOU_THRESHOLD,
+        minConf: MIN_CONF,
         totalPredictionsFound: preds.length,
-        parsedCardsFound: cardsAll.length,
       },
     });
   } catch (e) {
