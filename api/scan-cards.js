@@ -27,15 +27,16 @@ function normalizePileSide(s) {
   return "NON";
 }
 
-// ---- Card label parsing (supports French ranks: R, D, V) ----
+// ---- Card label parsing (supports French ranks + French Ace shown as "1") ----
 function normalizeRank(rankRaw) {
   const r = String(rankRaw || "").trim().toUpperCase();
 
-  // French face letters:
+  // French face letters + Ace shown as 1:
   // R = Roi = King (K)
   // D = Dame = Queen (Q)
   // V = Valet = Jack (J)
-  const map = { R: "K", D: "Q", V: "J" };
+  // 1 = Ace (A)
+  const map = { R: "K", D: "Q", V: "J", "1": "A" };
   const mapped = map[r] || r;
 
   const ok = ["7", "8", "9", "10", "J", "Q", "K", "A"];
@@ -44,20 +45,19 @@ function normalizeRank(rankRaw) {
 }
 
 function parseCardLabel(label) {
-  // tries to parse common formats:
-  // "10S", "9H", "QD", "JS", "AS", "7C"
+  // parses: "10S", "9H", "QD", "JS", "AS", "7C", also "1H" etc.
   // also tolerates separators like "10_S", "10-S", "10 S"
   const raw = String(label || "").trim().toUpperCase();
   if (!raw) return null;
 
-  // Extract suit (last suit letter seen)
   const suitMatch = raw.match(/([HDCS])\s*$/);
   if (!suitMatch) return null;
   const suit = suitMatch[1];
 
-  // Everything before suit is rank
-  const rankPart = raw.slice(0, suitMatch.index).replace(/[^0-9AJQKRDV]/g, "");
-  // rankPart might be "10" or "A" or "R" etc.
+  const rankPart = raw
+    .slice(0, suitMatch.index)
+    .replace(/[^0-9AJQKRDV]/g, ""); // allow French letters + digits
+
   const rank = normalizeRank(rankPart);
   if (!rank) return null;
 
@@ -118,7 +118,6 @@ function extractPredictionsDeep(obj) {
     const cls = node.class ?? node.label ?? node.predicted_class ?? node.name;
     const conf = node.confidence ?? node.conf ?? node.score;
 
-    // bbox names sometimes vary; handle common shapes
     const x = node.x ?? node.center_x ?? node.cx;
     const y = node.y ?? node.center_y ?? node.cy;
     const width = node.width ?? node.w;
@@ -144,7 +143,6 @@ function extractPredictionsDeep(obj) {
 
 // ---- Bounding box utilities (IoU + NMS) ----
 function toXYXY(p) {
-  // Roboflow typically gives center x/y + width/height
   if (
     typeof p.x !== "number" ||
     typeof p.y !== "number" ||
@@ -182,10 +180,6 @@ function iou(a, b) {
   return inter / union;
 }
 
-/**
- * Non-Maximum Suppression:
- * keeps highest-confidence detections and removes overlaps (same physical card)
- */
 function nms(preds, iouThreshold = 0.5) {
   const sorted = [...preds].sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
   const kept = [];
@@ -203,22 +197,11 @@ function nms(preds, iouThreshold = 0.5) {
   return kept;
 }
 
-/**
- * Choose best 16 unique card codes (JS, 10H, etc.)
- * Steps:
- * 1) NMS by bounding boxes
- * 2) parse labels -> cards
- * 3) dedupe by code (keep highest confidence per code)
- * 4) pick top 16 by confidence
- */
 function pickBest16Unique(predsRaw, { iouThreshold = 0.5, minConf = 0.2 } = {}) {
-  // 1) filter low confidence early
   const preds = predsRaw.filter((p) => (p.confidence ?? 0) >= minConf);
 
-  // 2) NMS (bbox duplicate remover)
   const afterNms = nms(preds, iouThreshold);
 
-  // 3) parse to card objects
   const parsed = afterNms
     .map((p) => {
       const parsedCard = parseCardLabel(p.class);
@@ -234,14 +217,12 @@ function pickBest16Unique(predsRaw, { iouThreshold = 0.5, minConf = 0.2 } = {}) 
     })
     .filter(Boolean);
 
-  // 4) dedupe by card code (keep highest confidence)
   const byCode = new Map();
   for (const c of parsed) {
     const prev = byCode.get(c.code);
     if (!prev || c.confidence > prev.confidence) byCode.set(c.code, c);
   }
 
-  // 5) choose top 16
   const uniqueSorted = [...byCode.values()].sort((a, b) => b.confidence - a.confidence);
   const cards16 = uniqueSorted.slice(0, 16);
 
@@ -258,7 +239,7 @@ function pickBest16Unique(predsRaw, { iouThreshold = 0.5, minConf = 0.2 } = {}) 
   };
 }
 
-// ---------- roboflow call ----------
+// ---------- roboflow call (JSON base64 - more reliable for workflows) ----------
 async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
   const apiUrl = process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com";
   const apiKey = process.env.ROBOFLOW_API_KEY;
@@ -275,19 +256,25 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     apiKey
   )}`;
 
-  const form = new FormData();
-  const blob = new Blob([imageBuffer], { type: mimeType || "image/jpeg" });
-  form.append("image", blob, "upload.jpg");
+  const b64 = Buffer.from(imageBuffer).toString("base64");
+  const type = mimeType || "image/jpeg";
+  const dataUrl = `data:${type};base64,${b64}`;
 
   const resp = await fetch(url, {
     method: "POST",
-    body: form,
     headers: {
+      "content-type": "application/json",
       "x-api-key": apiKey,
     },
+    body: JSON.stringify({
+      inputs: {
+        image: dataUrl,
+      },
+    }),
   });
 
   const text = await resp.text();
+
   let json;
   try {
     json = JSON.parse(text);
@@ -351,26 +338,21 @@ export default async function handler(req, res) {
     const pileSide = normalizePileSide(fields.pileSide || "BIDDER");
     const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
 
-    // (optional) tune these from env if you want
     const IOU_THRESHOLD = Number(process.env.IOU_THRESHOLD ?? 0.5);
     const MIN_CONF = Number(process.env.MIN_CONF ?? 0.2);
 
-    // 1) call workflow
     const rf = await callRoboflowWorkflow({
       imageBuffer,
       mimeType: imageInfo?.mimeType || "image/jpeg",
     });
 
-    // 2) extract predictions
     const preds = extractPredictionsDeep(rf);
 
-    // 3) pick best 16 unique using NMS + dedupe
     const { cards16, debug } = pickBest16Unique(preds, {
       iouThreshold: IOU_THRESHOLD,
       minConf: MIN_CONF,
     });
 
-    // 4) compute points
     const points = computeBelotePoints(cards16, trumpSuit, lastTrick);
 
     const warnings = [];
@@ -379,7 +361,6 @@ export default async function handler(req, res) {
         `Detected ${cards16.length} unique cards (expected 16). Try: brighter light, less overlap, less glare, tighter framing.`
       );
     }
-    if (!["H", "D", "C", "S"].includes(trumpSuit)) warnings.push("Unknown trump suit received.");
 
     res.status(200).json({
       ok: true,
