@@ -18,11 +18,10 @@ export default async function handler(req, res) {
     }
 
     const base = apiUrl.replace(/\/$/, "");
-    const url =
-      `${base}/infer/workflows/${encodeURIComponent(workspace)}/${encodeURIComponent(workflowId)}` +
-      `?api_key=${encodeURIComponent(apiKey)}`;
+    const url = `${base}/${workspace}/workflows/${workflowId}`;
 
     const body = {
+      api_key: apiKey,
       inputs: {
         image: {
           type: "base64",
@@ -34,7 +33,7 @@ export default async function handler(req, res) {
     const resp = await fetch(url, {
       method: "POST",
       headers: {
-        "content-type": "application/json",
+        "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
     });
@@ -43,7 +42,7 @@ export default async function handler(req, res) {
 
     res.status(200).json({
       ok: true,
-      url: `${base}/infer/workflows/${workspace}/${workflowId}?api_key=***`,
+      url: `${base}/${workspace}/workflows/${workflowId}`,
       status: resp.status,
       statusText: resp.statusText,
       bodyPreview: text.slice(0, 700),

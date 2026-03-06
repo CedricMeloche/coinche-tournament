@@ -227,14 +227,13 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
   }
 
   const base = apiUrl.replace(/\/$/, "");
-  const url =
-    `${base}/infer/workflows/${encodeURIComponent(workspace)}/${encodeURIComponent(workflowId)}` +
-    `?api_key=${encodeURIComponent(apiKey)}&use_cache=true`;
+  const url = `${base}/${encodeURIComponent(workspace)}/workflows/${encodeURIComponent(workflowId)}`;
 
   const base64 = imageBuffer.toString("base64");
   const dataUrl = `data:${mimeType || "image/jpeg"};base64,${base64}`;
 
   const body = {
+    api_key: apiKey,
     inputs: {
       image: {
         type: "base64",
@@ -246,7 +245,7 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
   const resp = await fetch(url, {
     method: "POST",
     headers: {
-      "content-type": "application/json",
+      "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
   });
