@@ -106,7 +106,7 @@ function roundTrickPoints(x) {
 function computeFastCoincheScore({
   bidder,
   bid,
-  suit, // tracked, not used in math
+  suit,
   coincheLevel,
   capot,
   bidderTrickPoints,
@@ -682,6 +682,23 @@ export default function App() {
     };
   }
 
+  function persistNow(next = {}) {
+    try {
+      const payload = {
+        appName: next.appName ?? appName,
+        players: next.players ?? players,
+        teams: next.teams ?? teams,
+        avoidSameTeams: next.avoidSameTeams ?? avoidSameTeams,
+        pairHistory: next.pairHistory ?? pairHistory,
+        matches: next.matches ?? matches,
+        savedAt: Date.now(),
+      };
+      localStorage.setItem(LS_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore storage errors
+    }
+  }
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
@@ -862,67 +879,85 @@ export default function App() {
   function addPlayer() {
     const name = newPlayerName.trim();
     if (!name) return;
-    setPlayers((prev) => [...prev, { id: uid("p"), name }]);
+    const nextPlayers = [...players, { id: uid("p"), name }];
+    setPlayers(nextPlayers);
+    persistNow({ players: nextPlayers });
     setNewPlayerName("");
     setTimeout(() => inputRef.current?.focus?.(), 0);
   }
+
   function removePlayer(id) {
-    setPlayers((prev) => prev.filter((p) => p.id !== id));
+    const nextPlayers = players.filter((p) => p.id !== id);
+    setPlayers(nextPlayers);
     setTeams([]);
     setPairHistory([]);
     setMatches([]);
+    persistNow({
+      players: nextPlayers,
+      teams: [],
+      pairHistory: [],
+      matches: [],
+    });
   }
 
   function addTeam() {
     const name = (newTeamName || "").trim();
     const teamName = name || `Team ${teams.length + 1}`;
-    setTeams((prev) => [
-      ...prev,
+    const nextTeams = [
+      ...teams,
       { id: uid("t"), name: teamName, playerIds: [], locked: false },
-    ]);
+    ];
+    setTeams(nextTeams);
+    persistNow({ teams: nextTeams });
     setNewTeamName("");
   }
 
   function removeTeam(teamId) {
-    setTeams((prev) => prev.filter((t) => t.id !== teamId));
-    setMatches((prev) =>
-      prev.map((m) => {
-        const next = { ...m };
-        if (next.teamAId === teamId) next.teamAId = null;
-        if (next.teamBId === teamId) next.teamBId = null;
-        return recomputeMatch({
-          ...next,
-          hands: [],
-          forcedComplete: false,
-          editingHandIdx: null,
-          fastDraft: defaultFastDraft(),
-        });
-      })
-    );
+    const nextTeams = teams.filter((t) => t.id !== teamId);
+    const nextMatches = matches.map((m) => {
+      const next = { ...m };
+      if (next.teamAId === teamId) next.teamAId = null;
+      if (next.teamBId === teamId) next.teamBId = null;
+      return recomputeMatch({
+        ...next,
+        hands: [],
+        forcedComplete: false,
+        editingHandIdx: null,
+        fastDraft: defaultFastDraft(),
+      });
+    });
+
+    setTeams(nextTeams);
+    setMatches(nextMatches);
+    persistNow({ teams: nextTeams, matches: nextMatches });
   }
 
   function toggleTeamLock(teamId, locked) {
-    setTeams((prev) =>
-      prev.map((t) => (t.id === teamId ? { ...t, locked: Boolean(locked) } : t))
+    const nextTeams = teams.map((t) =>
+      t.id === teamId ? { ...t, locked: Boolean(locked) } : t
     );
+    setTeams(nextTeams);
+    persistNow({ teams: nextTeams });
   }
 
   function setTeamPlayer(teamId, slotIdx, playerIdOrEmpty) {
-    setTeams((prev) =>
-      prev.map((t) => {
-        if (t.id !== teamId) return t;
-        const ids = [...(t.playerIds || [])];
-        while (ids.length < 2) ids.push("");
-        ids[slotIdx] = playerIdOrEmpty;
-        if (slotIdx === 0 && ids[0] && ids[0] === ids[1]) ids[1] = "";
-        if (slotIdx === 1 && ids[1] && ids[0] === ids[1]) ids[0] = "";
-        return { ...t, playerIds: ids.filter(Boolean) };
-      })
-    );
+    const nextTeams = teams.map((t) => {
+      if (t.id !== teamId) return t;
+      const ids = [...(t.playerIds || [])];
+      while (ids.length < 2) ids.push("");
+      ids[slotIdx] = playerIdOrEmpty;
+      if (slotIdx === 0 && ids[0] && ids[0] === ids[1]) ids[1] = "";
+      if (slotIdx === 1 && ids[1] && ids[0] === ids[1]) ids[0] = "";
+      return { ...t, playerIds: ids.filter(Boolean) };
+    });
+    setTeams(nextTeams);
+    persistNow({ teams: nextTeams });
   }
 
   function renameTeam(teamId, name) {
-    setTeams((prev) => prev.map((t) => (t.id === teamId ? { ...t, name } : t)));
+    const nextTeams = teams.map((t) => (t.id === teamId ? { ...t, name } : t));
+    setTeams(nextTeams);
+    persistNow({ teams: nextTeams });
   }
 
   function buildRandomTeams() {
@@ -983,133 +1018,149 @@ export default function App() {
         newPairs.push([...t.playerIds].sort().join("|"));
     }
 
-    setTeams(nextTeams);
-    setPairHistory((prev) => Array.from(new Set([...prev, ...newPairs])));
-    setMatches((prev) =>
-      prev.map((m) =>
-        recomputeMatch({
-          ...m,
-          hands: [],
-          forcedComplete: false,
-          editingHandIdx: null,
-          fastDraft: defaultFastDraft(),
-        })
-      )
+    const nextPairHistory = Array.from(new Set([...pairHistory, ...newPairs]));
+    const nextMatches = matches.map((m) =>
+      recomputeMatch({
+        ...m,
+        hands: [],
+        forcedComplete: false,
+        editingHandIdx: null,
+        fastDraft: defaultFastDraft(),
+      })
     );
+
+    setTeams(nextTeams);
+    setPairHistory(nextPairHistory);
+    setMatches(nextMatches);
+    persistNow({
+      teams: nextTeams,
+      pairHistory: nextPairHistory,
+      matches: nextMatches,
+    });
   }
 
   function addMatch() {
     if (!teams.length) return;
-    setMatches((prev) => [
-      ...prev,
-      recomputeMatch(
-        makeEmptyMatch({
-          tableName: newTableName.trim() || `Table ${prev.length + 1}`,
-          teamAId: null,
-          teamBId: null,
-          label: newMatchLabel.trim() || `Match ${prev.length + 1}`,
-        })
-      ),
-    ]);
+
+    const nextMatch = recomputeMatch(
+      makeEmptyMatch({
+        tableName: newTableName.trim() || `Table ${matches.length + 1}`,
+        teamAId: null,
+        teamBId: null,
+        label: newMatchLabel.trim() || `Match ${matches.length + 1}`,
+      })
+    );
+
+    const nextMatches = [...matches, nextMatch];
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   }
 
   function removeMatch(matchId) {
-    setMatches((prev) => prev.filter((m) => m.id !== matchId));
+    const nextMatches = matches.filter((m) => m.id !== matchId);
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   }
 
   function setMatchTeam(matchId, side, teamIdOrEmpty) {
-    setMatches((prev) =>
-      prev.map((m) => {
-        if (m.id !== matchId) return m;
-        const next = { ...m, [side]: teamIdOrEmpty || null };
-        return recomputeMatch({
-          ...next,
-          hands: [],
-          forcedComplete: false,
-          editingHandIdx: null,
-          fastDraft: defaultFastDraft(),
-        });
-      })
-    );
+    const nextMatches = matches.map((m) => {
+      if (m.id !== matchId) return m;
+      const next = { ...m, [side]: teamIdOrEmpty || null };
+      return recomputeMatch({
+        ...next,
+        hands: [],
+        forcedComplete: false,
+        editingHandIdx: null,
+        fastDraft: defaultFastDraft(),
+      });
+    });
+
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   }
 
   function renameMatch(matchId, patch) {
-    setMatches((prev) =>
-      prev.map((m) =>
-        m.id === matchId ? { ...m, ...patch, lastUpdatedAt: Date.now() } : m
-      )
+    const nextMatches = matches.map((m) =>
+      m.id === matchId ? { ...m, ...patch, lastUpdatedAt: Date.now() } : m
     );
+
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   }
 
   function finishMatchNow(matchId) {
-    setMatches((prev) =>
-      prev.map((m) => {
-        if (m.id !== matchId) return m;
-        const a = Number(m.totalA) || 0;
-        const b = Number(m.totalB) || 0;
+    const nextMatches = matches.map((m) => {
+      if (m.id !== matchId) return m;
+      const a = Number(m.totalA) || 0;
+      const b = Number(m.totalB) || 0;
 
-        let winnerId = null;
-        if (a !== b) winnerId = a > b ? m.teamAId : m.teamBId;
+      let winnerId = null;
+      if (a !== b) winnerId = a > b ? m.teamAId : m.teamBId;
 
-        return {
-          ...m,
-          forcedComplete: true,
-          completed: true,
-          winnerId,
-          lastUpdatedAt: Date.now(),
-        };
-      })
-    );
+      return {
+        ...m,
+        forcedComplete: true,
+        completed: true,
+        winnerId,
+        lastUpdatedAt: Date.now(),
+      };
+    });
+
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   }
 
   function updateDraft(matchId, patch) {
-    setMatches((prev) =>
-      prev.map((m) => {
-        if (m.id !== matchId) return m;
-        return {
-          ...m,
-          fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch },
-        };
-      })
-    );
+    const nextMatches = matches.map((m) => {
+      if (m.id !== matchId) return m;
+      return {
+        ...m,
+        fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch },
+      };
+    });
+
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   }
 
   function startEditHand(matchId, handIdx) {
-    setMatches((prev) =>
-      prev.map((m) => {
-        if (m.id !== matchId) return m;
-        const hand = (m.hands || []).find((h) => h.idx === handIdx);
-        if (!hand) return m;
-        const d = hand.draftSnapshot || {};
-        return {
-          ...m,
-          editingHandIdx: handIdx,
-          fastDraft: {
-            bidder: d.bidder ?? "A",
-            bid: String(d.bid ?? ""),
-            suit: d.suit ?? "S",
-            coincheLevel: d.coincheLevel ?? "NONE",
-            capot: Boolean(d.capot),
-            bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
-            nonBidderTrickPoints: String(d.nonBidderTrickPoints ?? ""),
-            trickSource: d.trickSource ?? "",
-            announceA: String(d.announceA ?? "0"),
-            announceB: String(d.announceB ?? "0"),
-            beloteTeam: d.beloteTeam ?? "NONE",
-          },
-        };
-      })
-    );
+    const nextMatches = matches.map((m) => {
+      if (m.id !== matchId) return m;
+      const hand = (m.hands || []).find((h) => h.idx === handIdx);
+      if (!hand) return m;
+      const d = hand.draftSnapshot || {};
+      return {
+        ...m,
+        editingHandIdx: handIdx,
+        fastDraft: {
+          bidder: d.bidder ?? "A",
+          bid: String(d.bid ?? ""),
+          suit: d.suit ?? "S",
+          coincheLevel: d.coincheLevel ?? "NONE",
+          capot: Boolean(d.capot),
+          bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
+          nonBidderTrickPoints: String(d.nonBidderTrickPoints ?? ""),
+          trickSource: d.trickSource ?? "",
+          announceA: String(d.announceA ?? "0"),
+          announceB: String(d.announceB ?? "0"),
+          beloteTeam: d.beloteTeam ?? "NONE",
+        },
+      };
+    });
+
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   }
 
   function cancelEditHand(matchId) {
-    setMatches((prev) =>
-      prev.map((m) =>
-        m.id === matchId
-          ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() }
-          : m
-      )
+    const nextMatches = matches.map((m) =>
+      m.id === matchId
+        ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() }
+        : m
     );
+
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   }
 
   function parseBidValue(bidStr) {
@@ -1120,122 +1171,124 @@ export default function App() {
   }
 
   function addOrSaveHand(matchId) {
-    setMatches((prev) =>
-      prev.map((m) => {
-        if (m.id !== matchId) return m;
+    const nextMatches = matches.map((m) => {
+      if (m.id !== matchId) return m;
 
-        const canPlay = !!m.teamAId && !!m.teamBId;
-        if (!canPlay) return m;
+      const canPlay = !!m.teamAId && !!m.teamBId;
+      if (!canPlay) return m;
 
-        const d = m.fastDraft || defaultFastDraft();
-        const bidVal = parseBidValue(d.bid);
+      const d = m.fastDraft || defaultFastDraft();
+      const bidVal = parseBidValue(d.bid);
 
-        const bidIsCapotWord = String(d.bid || "").trim().toLowerCase() === "capot";
-        const capotFlag = Boolean(d.capot) || bidIsCapotWord;
+      const bidIsCapotWord = String(d.bid || "").trim().toLowerCase() === "capot";
+      const capotFlag = Boolean(d.capot) || bidIsCapotWord;
 
-        let trickVal = null;
-        const bidderTP = safeInt(d.bidderTrickPoints);
-        const nonBidderTP = safeInt(d.nonBidderTrickPoints);
+      let trickVal = null;
+      const bidderTP = safeInt(d.bidderTrickPoints);
+      const nonBidderTP = safeInt(d.nonBidderTrickPoints);
 
-        if (d.trickSource === "BIDDER") {
-          if (bidderTP === null) return m;
-          trickVal = bidderTP;
-        } else if (d.trickSource === "NON") {
-          if (nonBidderTP === null) return m;
-          trickVal = 162 - nonBidderTP;
-        } else {
-          if (bidderTP !== null) trickVal = bidderTP;
-          else if (nonBidderTP !== null) trickVal = 162 - nonBidderTP;
-        }
+      if (d.trickSource === "BIDDER") {
+        if (bidderTP === null) return m;
+        trickVal = bidderTP;
+      } else if (d.trickSource === "NON") {
+        if (nonBidderTP === null) return m;
+        trickVal = 162 - nonBidderTP;
+      } else {
+        if (bidderTP !== null) trickVal = bidderTP;
+        else if (nonBidderTP !== null) trickVal = 162 - nonBidderTP;
+      }
 
-        if (bidVal === null || trickVal === null) return m;
-        trickVal = clamp(trickVal, 0, 162);
+      if (bidVal === null || trickVal === null) return m;
+      trickVal = clamp(trickVal, 0, 162);
 
-        const res = computeFastCoincheScore({
-          bidder: d.bidder,
-          bid: bidVal,
-          suit: d.suit || "S",
-          coincheLevel: d.coincheLevel || "NONE",
-          capot: capotFlag,
-          bidderTrickPoints: trickVal,
-          announceA: safeInt(d.announceA) ?? 0,
-          announceB: safeInt(d.announceB) ?? 0,
-          beloteTeam: d.beloteTeam || "NONE",
+      const res = computeFastCoincheScore({
+        bidder: d.bidder,
+        bid: bidVal,
+        suit: d.suit || "S",
+        coincheLevel: d.coincheLevel || "NONE",
+        capot: capotFlag,
+        bidderTrickPoints: trickVal,
+        announceA: safeInt(d.announceA) ?? 0,
+        announceB: safeInt(d.announceB) ?? 0,
+        beloteTeam: d.beloteTeam || "NONE",
+      });
+
+      const snap = {
+        bidder: d.bidder,
+        bid: bidVal,
+        suit: d.suit || "S",
+        coincheLevel: d.coincheLevel || "NONE",
+        capot: capotFlag,
+        bidderTrickPoints: trickVal,
+        nonBidderTrickPoints:
+          d.trickSource === "NON"
+            ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
+            : clamp(162 - trickVal, 0, 162),
+        trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
+        announceA: safeInt(d.announceA) ?? 0,
+        announceB: safeInt(d.announceB) ?? 0,
+        beloteTeam: d.beloteTeam || "NONE",
+      };
+
+      if (m.editingHandIdx) {
+        const nextHands = (m.hands || []).map((h) => {
+          if (h.idx !== m.editingHandIdx) return h;
+          return {
+            ...h,
+            draftSnapshot: snap,
+            scoreA: res.scoreA,
+            scoreB: res.scoreB,
+            bidderSucceeded: res.bidderSucceeded,
+            editedAt: Date.now(),
+          };
         });
-
-        const snap = {
-          bidder: d.bidder,
-          bid: bidVal,
-          suit: d.suit || "S",
-          coincheLevel: d.coincheLevel || "NONE",
-          capot: capotFlag,
-          bidderTrickPoints: trickVal,
-          nonBidderTrickPoints:
-            d.trickSource === "NON"
-              ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
-              : clamp(162 - trickVal, 0, 162),
-          trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
-          announceA: safeInt(d.announceA) ?? 0,
-          announceB: safeInt(d.announceB) ?? 0,
-          beloteTeam: d.beloteTeam || "NONE",
-        };
-
-        if (m.editingHandIdx) {
-          const nextHands = (m.hands || []).map((h) => {
-            if (h.idx !== m.editingHandIdx) return h;
-            return {
-              ...h,
-              draftSnapshot: snap,
-              scoreA: res.scoreA,
-              scoreB: res.scoreB,
-              bidderSucceeded: res.bidderSucceeded,
-              editedAt: Date.now(),
-            };
-          });
-
-          return recomputeMatch({
-            ...m,
-            hands: nextHands,
-            fastDraft: defaultFastDraft(),
-            editingHandIdx: null,
-          });
-        }
-
-        const current = recomputeMatch(m);
-        if (current.completed) return current;
-
-        const nextHand = {
-          idx: (m.hands?.length || 0) + 1,
-          createdAt: Date.now(),
-          draftSnapshot: snap,
-          scoreA: res.scoreA,
-          scoreB: res.scoreB,
-          bidderSucceeded: res.bidderSucceeded,
-        };
 
         return recomputeMatch({
           ...m,
-          hands: [...(m.hands || []), nextHand],
+          hands: nextHands,
           fastDraft: defaultFastDraft(),
+          editingHandIdx: null,
         });
-      })
-    );
+      }
+
+      const current = recomputeMatch(m);
+      if (current.completed) return current;
+
+      const nextHand = {
+        idx: (m.hands?.length || 0) + 1,
+        createdAt: Date.now(),
+        draftSnapshot: snap,
+        scoreA: res.scoreA,
+        scoreB: res.scoreB,
+        bidderSucceeded: res.bidderSucceeded,
+      };
+
+      return recomputeMatch({
+        ...m,
+        hands: [...(m.hands || []), nextHand],
+        fastDraft: defaultFastDraft(),
+      });
+    });
+
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   }
 
   function clearMatchHands(matchId) {
-    setMatches((prev) =>
-      prev.map((m) =>
-        m.id === matchId
-          ? recomputeMatch({
-              ...m,
-              hands: [],
-              forcedComplete: false,
-              editingHandIdx: null,
-              fastDraft: defaultFastDraft(),
-            })
-          : m
-      )
+    const nextMatches = matches.map((m) =>
+      m.id === matchId
+        ? recomputeMatch({
+            ...m,
+            hands: [],
+            forcedComplete: false,
+            editingHandIdx: null,
+            fastDraft: defaultFastDraft(),
+          })
+        : m
     );
+
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   }
 
   const scoreboardRows = useMemo(() => {
@@ -1720,7 +1773,10 @@ export default function App() {
                 <input
                   type="checkbox"
                   checked={avoidSameTeams}
-                  onChange={(e) => setAvoidSameTeams(e.target.checked)}
+                  onChange={(e) => {
+                    setAvoidSameTeams(e.target.checked);
+                    persistNow({ avoidSameTeams: e.target.checked });
+                  }}
                 />
                 Avoid repeating pairs
               </label>
@@ -1745,6 +1801,13 @@ export default function App() {
                   setPairHistory([]);
                   setMatches([]);
                   sentHandKeysRef.current = new Set();
+                  persistNow({
+                    appName: "Coinche Scorekeeper",
+                    players: [],
+                    teams: [],
+                    pairHistory: [],
+                    matches: [],
+                  });
                 }}
               >
                 Full Reset
@@ -1758,7 +1821,10 @@ export default function App() {
               <input
                 style={styles.input("100%")}
                 value={appName}
-                onChange={(e) => setAppName(e.target.value)}
+                onChange={(e) => {
+                  setAppName(e.target.value);
+                  persistNow({ appName: e.target.value });
+                }}
               />
             </div>
 
