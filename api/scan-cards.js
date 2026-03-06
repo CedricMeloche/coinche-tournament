@@ -241,26 +241,27 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     throw new Error("Missing Roboflow env vars. Set ROBOFLOW_API_KEY, ROBOFLOW_WORKSPACE, ROBOFLOW_WORKFLOW_ID.");
   }
 
-  const base = apiUrl.replace(/\/$/, "");
-  const url =
-    `${base}/infer/workflows/${encodeURIComponent(workspace)}/${encodeURIComponent(workflowId)}` +
-    `?api_key=${encodeURIComponent(apiKey)}`;
+const base = apiUrl.replace(/\/$/, "");
+const url =
+  `${base}/infer/workflows/${encodeURIComponent(workspace)}/${encodeURIComponent(workflowId)}` +
+  `?api_key=${encodeURIComponent(apiKey)}&use_cache=true`;
 
   const base64 = imageBuffer.toString("base64");
   const dataUrl = `data:${mimeType || "image/jpeg"};base64,${base64}`;
 
-  const body = {
-    inputs: {
-      image: { type: "base64", value: dataUrl },
-    },
-  };
+ const body = {
+  inputs: {
+    image: {
+      type: "base64",
+      value: dataUrl
+    }
+  }
+};
 
   const resp = await fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      // IMPORTANT: do NOT send Bearer / x-api-key here; api_key query is enough for serverless workflows
-    },
     body: JSON.stringify(body),
   });
 
