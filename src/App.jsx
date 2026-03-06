@@ -1709,6 +1709,8 @@ export default function App() {
 
         <Section
           title="Quick Links"
+          collapsible
+          defaultCollapsed
           right={
             <div style={styles.row}>
               <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
@@ -1741,6 +1743,8 @@ export default function App() {
 
         <Section
           title="Settings"
+          collapsible
+          defaultCollapsed
           right={
             <div style={styles.row}>
               <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
@@ -2079,7 +2083,11 @@ export default function App() {
           )}
         </Section>
 
-        <Section title="Scoreboard + Fun Facts (Live)">
+        <Section
+          title="Scoreboard + Fun Facts (Live)"
+          collapsible
+          defaultCollapsed
+        >
           <div style={styles.grid2}>
             <div style={styles.card}>
               <div style={{ fontWeight: 950, marginBottom: 8 }}>Live Scoreboard</div>
@@ -2137,14 +2145,43 @@ export default function App() {
 
 /** ===== Components ===== */
 
-function Section({ title, right, children }) {
+function Section({
+  title,
+  right,
+  children,
+  collapsible = false,
+  defaultCollapsed = false,
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+
   return (
     <div style={styles.section}>
       <div style={styles.sectionHeader}>
-        <h2 style={styles.h2}>{title}</h2>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h2 style={{ ...styles.h2, margin: 0 }}>{title}</h2>
+
+          {collapsible ? (
+            <button
+              type="button"
+              onClick={() => setCollapsed((v) => !v)}
+              style={{
+                ...styles.btnGhost,
+                padding: "6px 10px",
+                border: "1px solid rgba(148,163,184,0.18)",
+                borderRadius: 10,
+                color: "#cbd5e1",
+                background: "rgba(255,255,255,0.03)",
+              }}
+            >
+              {collapsed ? "Expand" : "Collapse"}
+            </button>
+          ) : null}
+        </div>
+
         <div>{right}</div>
       </div>
-      {children}
+
+      {!collapsed ? children : null}
     </div>
   );
 }
@@ -2645,12 +2682,37 @@ function TableMatchPanel({
 
   return (
     <div style={{ ...styles.card, borderRadius: 18 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
         <div style={{ fontWeight: 950 }}>
           {match.tableName} • {match.label}
         </div>
-        <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
-          {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
+            {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
+          </div>
+
+          {!match.completed ? (
+            <button
+              style={{ ...styles.btnDanger, ...(canPlay ? {} : styles.disabled) }}
+              onClick={() => {
+                if (!canPlay) return;
+                if (!confirm("Finish this game now? Winner will be the higher total score.")) return;
+                onFinishNow?.();
+              }}
+              disabled={!canPlay}
+            >
+              Finish Game Now
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -2955,20 +3017,6 @@ function TableMatchPanel({
           <button style={styles.btnSecondary} onClick={onClearHands}>
             Clear Match Hands
           </button>
-
-          {!match.completed ? (
-            <button
-              style={{ ...styles.btnDanger, ...(canPlay ? {} : styles.disabled) }}
-              onClick={() => {
-                if (!canPlay) return;
-                if (!confirm("Finish this game now? Winner will be the higher total score.")) return;
-                onFinishNow?.();
-              }}
-              disabled={!canPlay}
-            >
-              Finish Game Now
-            </button>
-          ) : null}
 
           <span style={{ ...styles.small, marginLeft: "auto" }}>
             Suit: <SuitIcon suit={d.suit || "S"} /> {suitLabel}
