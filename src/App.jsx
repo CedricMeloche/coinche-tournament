@@ -46,7 +46,7 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, x));
 }
 
-/** ===== NEW: image helpers (camera scan) ===== */
+/** ===== image helpers (camera scan) ===== */
 function dataURLtoBlob(dataUrl) {
   const [meta, b64] = String(dataUrl).split(",");
   const mime = (meta.match(/data:(.*?);base64/) || [])[1] || "image/jpeg";
@@ -149,7 +149,6 @@ function computeFastCoincheScore({
   let scoreA = 0;
   let scoreB = 0;
 
-  // ✅ Capot scoring: contract value fixed at 250 (no double-count)
   if (capot) {
     const winnerGets = 250 + aAnn + bAnn + belotePts;
     if (BIDDER_IS_A) {
@@ -214,6 +213,18 @@ function parseHashRoute() {
   const q = new URLSearchParams(queryPart || "");
   const query = Object.fromEntries(q.entries());
   return { path, query };
+}
+
+function navigateHash(nextHash) {
+  if (window.location.hash === nextHash) {
+    try {
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    } catch {
+      window.dispatchEvent(new Event("hashchange"));
+    }
+    return;
+  }
+  window.location.hash = nextHash;
 }
 
 /** ===== Styles ===== */
@@ -371,14 +382,6 @@ const styles = {
     background:
       "linear-gradient(90deg, rgba(99,102,241,0.95), rgba(59,130,246,0.9))",
   }),
-
-  handGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: 10,
-    marginTop: 12,
-    alignItems: "start",
-  },
 
   handRow1: {
     display: "grid",
@@ -566,26 +569,22 @@ function getDeviceId() {
   }
 }
 
-/** ===== Main App ===== */
 export default function App() {
   const [route, setRoute] = useState(() => parseHashRoute());
   const [loaded, setLoaded] = useState(false);
+  const [tableMissingDelayDone, setTableMissingDelayDone] = useState(false);
 
   useEffect(() => {
     ensureGlobalCSS();
   }, []);
 
-  // Core data
   const [appName, setAppName] = useState("Coinche Scorekeeper");
-  const [players, setPlayers] = useState([]); // {id,name}
-  const [teams, setTeams] = useState([]); // {id,name,playerIds[], locked:boolean}
+  const [players, setPlayers] = useState([]);
+  const [teams, setTeams] = useState([]);
   const [avoidSameTeams, setAvoidSameTeams] = useState(true);
-  const [pairHistory, setPairHistory] = useState([]); // ["p1|p2", ...]
-
-  // Matches
+  const [pairHistory, setPairHistory] = useState([]);
   const [matches, setMatches] = useState([]);
 
-  // UI
   const [newPlayerName, setNewPlayerName] = useState("");
   const [newTeamName, setNewTeamName] = useState("");
   const [newTableName, setNewTableName] = useState("Table 1");
@@ -593,7 +592,6 @@ export default function App() {
 
   const inputRef = useRef(null);
 
-  // ✅ Backup status (per-hand to Google Sheet)
   const [backupState, setBackupState] = useState({
     lastOk: null,
     lastErr: null,
@@ -601,16 +599,19 @@ export default function App() {
   });
 
   const deviceIdRef = useRef(getDeviceId());
-
-  // queue + sent tracking
   const backupQueueRef = useRef([]);
   const backupSendingRef = useRef(false);
-  const sentHandKeysRef = useRef(new Set()); // avoids duplicate POSTs
+  const sentHandKeysRef = useRef(new Set());
 
   useEffect(() => {
-    const onHash = () => setRoute(parseHashRoute());
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    const syncRoute = () => setRoute(parseHashRoute());
+    window.addEventListener("hashchange", syncRoute);
+    window.addEventListener("popstate", syncRoute);
+    syncRoute();
+    return () => {
+      window.removeEventListener("hashchange", syncRoute);
+      window.removeEventListener("popstate", syncRoute);
+    };
   }, []);
 
   function defaultFastDraft() {
@@ -622,7 +623,7 @@ export default function App() {
       capot: false,
       bidderTrickPoints: "",
       nonBidderTrickPoints: "",
-      trickSource: "", // "" | "BIDDER" | "NON"
+      trickSource: "",
       announceA: "0",
       announceB: "0",
       beloteTeam: "NONE",
@@ -681,7 +682,6 @@ export default function App() {
     };
   }
 
-  // localStorage load
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
@@ -701,7 +701,6 @@ export default function App() {
     }
   }, []);
 
-  // localStorage persist
   useEffect(() => {
     if (!loaded) return;
     const payload = {
@@ -731,7 +730,27 @@ export default function App() {
     return s;
   }, [teams]);
 
-  /** ===== ✅ Google Sheet backup after each hand ===== */
+  useEffect(() => {
+    const current = parseHashRoute();
+    const wantedCode = (current.query.code || "").toUpperCase();
+    if (!wantedCode) return;
+    const exists = matches.some((m) => (m.code || "").toUpperCase() === wantedCode);
+    if (exists) setRoute(current);
+  }, [matches]);
+
+  useEffect(() => {
+    if (route.path !== "/table") {
+      setTableMissingDelayDone(false);
+      return;
+    }
+    if ((route.query.code || "").trim() === "") {
+      setTableMissingDelayDone(true);
+      return;
+    }
+    const t = setTimeout(() => setTableMissingDelayDone(true), 350);
+    return () => clearTimeout(t);
+  }, [route.path, route.query.code]);
+
   function enqueueHandBackup(row) {
     backupQueueRef.current.push(row);
     setBackupState((s) => ({ ...s, queued: (s.queued || 0) + 1 }));
@@ -755,7 +774,7 @@ export default function App() {
           queued: Math.max(0, (s.queued || 1) - 1),
         }));
       }
-    } catch (e) {
+    } catch {
       setBackupState((s) => ({
         ...s,
         lastErr: Date.now(),
@@ -788,7 +807,6 @@ export default function App() {
     }
   }
 
-  // ✅ Detect newly created/edited hands and auto-backup them
   useEffect(() => {
     if (!loaded) return;
 
@@ -833,7 +851,6 @@ export default function App() {
         });
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, matches, teamById, appName]);
 
   useEffect(() => {
@@ -842,7 +859,6 @@ export default function App() {
     return () => window.removeEventListener("online", onOnline);
   }, []);
 
-  /** ===== Players ===== */
   function addPlayer() {
     const name = newPlayerName.trim();
     if (!name) return;
@@ -857,7 +873,6 @@ export default function App() {
     setMatches([]);
   }
 
-  /** ===== Teams ===== */
   function addTeam() {
     const name = (newTeamName || "").trim();
     const teamName = name || `Team ${teams.length + 1}`;
@@ -983,7 +998,6 @@ export default function App() {
     );
   }
 
-  /** ===== Matches ===== */
   function addMatch() {
     if (!teams.length) return;
     setMatches((prev) => [
@@ -1048,7 +1062,6 @@ export default function App() {
     );
   }
 
-  /** ===== Hand tracker ===== */
   function updateDraft(matchId, patch) {
     setMatches((prev) =>
       prev.map((m) => {
@@ -1101,7 +1114,7 @@ export default function App() {
 
   function parseBidValue(bidStr) {
     const s = String(bidStr || "").trim().toLowerCase();
-    if (s === "capot") return 250; // ✅ accept the word capot as 250
+    if (s === "capot") return 250;
     const n = safeInt(bidStr);
     return n;
   }
@@ -1167,7 +1180,6 @@ export default function App() {
           beloteTeam: d.beloteTeam || "NONE",
         };
 
-        // editing existing hand
         if (m.editingHandIdx) {
           const nextHands = (m.hands || []).map((h) => {
             if (h.idx !== m.editingHandIdx) return h;
@@ -1226,7 +1238,6 @@ export default function App() {
     );
   }
 
-  /** ===== Scoreboard ===== */
   const scoreboardRows = useMemo(() => {
     const rows = teams.map((t) => ({
       teamId: t.id,
@@ -1274,7 +1285,6 @@ export default function App() {
     });
   }, [teams, matches]);
 
-  /** ===== Fun stats ===== */
   const funStats = useMemo(() => {
     const completed = matches.filter((m) => m.completed && m.teamAId && m.teamBId);
 
@@ -1409,7 +1419,6 @@ export default function App() {
     };
   }, [matches, teamById]);
 
-  /** ===== Links ===== */
   const publicLink = useMemo(
     () => `${window.location.origin}${window.location.pathname}#/public`,
     []
@@ -1422,7 +1431,6 @@ export default function App() {
     }));
   }, [matches]);
 
-  /** ===== Routing ===== */
   const { path, query } = route;
 
   const tableMatch = useMemo(() => {
@@ -1453,7 +1461,6 @@ export default function App() {
     </div>
   );
 
-  /** ===== Public View ===== */
   if (path === "/public") {
     const liveMatches = matches
       .filter((m) => m.teamAId && m.teamBId && !m.completed)
@@ -1479,51 +1486,15 @@ export default function App() {
 
             <Section title="Fun Facts">
               <div style={styles.grid3}>
-                <StatCard
-                  label="Biggest Blowout"
-                  value={`${funStats.biggestBlowout.diff} pts`}
-                  sub={funStats.biggestBlowout.label}
-                />
-                <StatCard
-                  label="Best Comeback"
-                  value={`${funStats.bestComeback.deficit} pts`}
-                  sub={funStats.bestComeback.label}
-                />
-                <StatCard
-                  label="Closest Match"
-                  value={`${funStats.closest.diff} pts`}
-                  sub={funStats.closest.label}
-                />
-                <StatCard
-                  label="Clutch Finish (last 3 hands)"
-                  value={`${funStats.clutchFinish.diff} pts`}
-                  sub={funStats.clutchFinish.label}
-                />
-                <StatCard
-                  label="Momentum Monster"
-                  value={`${funStats.momentumMonster.swing} pts`}
-                  sub={funStats.momentumMonster.label}
-                />
-                <StatCard
-                  label="Perfect Defense"
-                  value={funStats.perfectDefense.name}
-                  sub={`${funStats.perfectDefense.count} shutout hands`}
-                />
-                <StatCard
-                  label="Coinche King"
-                  value={funStats.coincheKing.name}
-                  sub={`${funStats.coincheKing.v} coinches`}
-                />
-                <StatCard
-                  label="Capot Hero"
-                  value={funStats.capotHero.name}
-                  sub={`${funStats.capotHero.v} capots`}
-                />
-                <StatCard
-                  label="Belote Magnet"
-                  value={funStats.beloteMagnet.name}
-                  sub={`${funStats.beloteMagnet.v} belotes`}
-                />
+                <StatCard label="Biggest Blowout" value={`${funStats.biggestBlowout.diff} pts`} sub={funStats.biggestBlowout.label} />
+                <StatCard label="Best Comeback" value={`${funStats.bestComeback.deficit} pts`} sub={funStats.bestComeback.label} />
+                <StatCard label="Closest Match" value={`${funStats.closest.diff} pts`} sub={funStats.closest.label} />
+                <StatCard label="Clutch Finish (last 3 hands)" value={`${funStats.clutchFinish.diff} pts`} sub={funStats.clutchFinish.label} />
+                <StatCard label="Momentum Monster" value={`${funStats.momentumMonster.swing} pts`} sub={funStats.momentumMonster.label} />
+                <StatCard label="Perfect Defense" value={funStats.perfectDefense.name} sub={`${funStats.perfectDefense.count} shutout hands`} />
+                <StatCard label="Coinche King" value={funStats.coincheKing.name} sub={`${funStats.coincheKing.v} coinches`} />
+                <StatCard label="Capot Hero" value={funStats.capotHero.name} sub={`${funStats.capotHero.v} capots`} />
+                <StatCard label="Belote Magnet" value={funStats.beloteMagnet.name} sub={`${funStats.beloteMagnet.v} belotes`} />
               </div>
             </Section>
           </div>
@@ -1585,16 +1556,13 @@ export default function App() {
                       </div>
 
                       <div style={{ marginTop: 10 }}>
-                        <a
-                          href={`#/table?code=${m.code}`}
-                          style={{
-                            ...styles.btnSecondary,
-                            textDecoration: "none",
-                            display: "inline-block",
-                          }}
+                        <button
+                          type="button"
+                          style={styles.btnSecondary}
+                          onClick={() => navigateHash(`#/table?code=${m.code}`)}
                         >
                           Open Table
-                        </a>
+                        </button>
                       </div>
                     </div>
                   );
@@ -1614,16 +1582,13 @@ export default function App() {
                   <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
                     Code: {t.code}
                   </div>
-                  <a
-                    href={t.href}
-                    style={{
-                      ...styles.btnSecondary,
-                      display: "inline-block",
-                      textDecoration: "none",
-                    }}
+                  <button
+                    type="button"
+                    style={styles.btnSecondary}
+                    onClick={() => navigateHash(`#/table?code=${t.code}`)}
                   >
                     Open Table View
-                  </a>
+                  </button>
                 </div>
               ))}
               {tableLinks.length === 0 ? (
@@ -1636,8 +1601,9 @@ export default function App() {
     );
   }
 
-  /** ===== Table View ===== */
   if (path === "/table") {
+    const hasRequestedCode = Boolean((query.code || "").trim());
+
     return (
       <div style={styles.page}>
         <div style={styles.container}>
@@ -1652,15 +1618,19 @@ export default function App() {
           </div>
 
           {!tableMatch ? (
-            <Section title="No match found">
+            <Section title={hasRequestedCode && !tableMissingDelayDone ? "Loading match..." : "No match found"}>
               <div style={styles.small}>
-                This table link is missing or incorrect. Ask the organizer for the correct code.
+                {hasRequestedCode && !tableMissingDelayDone
+                  ? "Opening the table..."
+                  : "This table link is missing or incorrect. Ask the organizer for the correct code."}
               </div>
-              <div style={{ marginTop: 10 }}>
-                <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
-                  Go to Public View
-                </a>
-              </div>
+              {(!hasRequestedCode || tableMissingDelayDone) && (
+                <div style={{ marginTop: 10 }}>
+                  <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                    Go to Public View
+                  </a>
+                </div>
+              )}
             </Section>
           ) : (
             <Section title={`Your Match • Code ${tableMatch.code}`}>
@@ -1693,7 +1663,6 @@ export default function App() {
     );
   }
 
-  /** ===== Admin View ===== */
   return (
     <div style={styles.page}>
       <div style={styles.container}>
@@ -1983,9 +1952,13 @@ export default function App() {
                       {m.tableName} • {m.label} <span style={styles.small}>• Code {m.code}</span>
                     </div>
                     <div style={styles.row}>
-                      <a href={`#/table?code=${m.code}`} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                      <button
+                        type="button"
+                        style={styles.btnSecondary}
+                        onClick={() => navigateHash(`#/table?code=${m.code}`)}
+                      >
                         Open Table
-                      </a>
+                      </button>
                       <button
                         style={styles.btnSecondary}
                         onClick={() => {
@@ -2121,9 +2094,13 @@ export default function App() {
                 <div style={{ fontWeight: 950, marginBottom: 6 }}>{t.label}</div>
                 <div style={styles.small}>Code: {t.code}</div>
                 <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <a href={t.href} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                  <button
+                    type="button"
+                    style={styles.btnSecondary}
+                    onClick={() => navigateHash(`#/table?code=${t.code}`)}
+                  >
                     Open
-                  </a>
+                  </button>
                   <button
                     style={styles.btnSecondary}
                     onClick={() => {
@@ -2143,8 +2120,6 @@ export default function App() {
   );
 }
 
-/** ===== Components ===== */
-
 function Section({
   title,
   right,
@@ -2159,7 +2134,6 @@ function Section({
       <div style={styles.sectionHeader}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <h2 style={{ ...styles.h2, margin: 0 }}>{title}</h2>
-
           {collapsible ? (
             <button
               type="button"
@@ -2177,10 +2151,8 @@ function Section({
             </button>
           ) : null}
         </div>
-
         <div>{right}</div>
       </div>
-
       {!collapsed ? children : null}
     </div>
   );
@@ -2317,17 +2289,18 @@ function Fireworks({ seed = 0 }) {
   );
 }
 
-/** ===== NEW: Scan Points Modal (camera) ===== */
 function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
 
-  const [pileSide, setPileSide] = useState("BIDDER"); // BIDDER | NON
+  const [pileSide, setPileSide] = useState("BIDDER");
   const [lastTrick, setLastTrick] = useState(false);
-  const [captured, setCaptured] = useState(null); // dataURL
+  const [captured, setCaptured] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [result, setResult] = useState(null); // {points,cards,warnings}
+  const [result, setResult] = useState(null);
+  const [manualPoints, setManualPoints] = useState("");
+  const [confidence, setConfidence] = useState(null);
 
   useEffect(() => {
     if (!open) return;
@@ -2336,6 +2309,8 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
     setCaptured(null);
     setResult(null);
     setBusy(false);
+    setManualPoints("");
+    setConfidence(null);
 
     (async () => {
       try {
@@ -2352,7 +2327,7 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
         }
-      } catch (e) {
+      } catch {
         setErr("Camera permission denied or not available in this browser.");
       }
     })();
@@ -2369,6 +2344,8 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
   function captureFrame() {
     setErr("");
     setResult(null);
+    setManualPoints("");
+    setConfidence(null);
 
     const v = videoRef.current;
     if (!v) return;
@@ -2379,6 +2356,7 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext("2d");
+    if (!ctx) return;
     ctx.drawImage(v, 0, 0, w, h);
 
     const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
@@ -2393,6 +2371,7 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
     setBusy(true);
     setErr("");
     setResult(null);
+    setConfidence(null);
 
     try {
       const j = await postScanToApi({
@@ -2404,15 +2383,28 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
 
       if (!j || j.ok === false) throw new Error(j?.error || "Scan error");
       setResult(j);
+      setConfidence(typeof j.confidence === "number" ? j.confidence : null);
 
       if (typeof j.points === "number" && Number.isFinite(j.points)) {
-        onApplyPoints?.({ pileSide, points: j.points });
+        setManualPoints(String(clamp(j.points, 0, 162)));
+      } else {
+        setManualPoints("");
       }
     } catch (e) {
       setErr(e?.message || "Scan failed.");
     } finally {
       setBusy(false);
     }
+  }
+
+  function applyDetectedPoints() {
+    const p = safeInt(manualPoints);
+    if (p === null) {
+      setErr("Enter valid points before applying.");
+      return;
+    }
+    onApplyPoints?.({ pileSide, points: clamp(p, 0, 162) });
+    onClose?.();
   }
 
   if (!open) return null;
@@ -2554,8 +2546,26 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
                 <div style={styles.small}>No scan result yet.</div>
               ) : (
                 <>
-                  <div style={{ fontSize: 20, fontWeight: 1000 }}>
-                    Points: <span style={{ color: "#34d399" }}>{result.points}</span>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 20, fontWeight: 1000 }}>
+                      Points: <span style={{ color: "#34d399" }}>{manualPoints || "—"}</span>
+                    </div>
+                    {confidence !== null ? (
+                      <span style={styles.tag}>
+                        Confidence {Math.round(confidence * 100)}%
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div style={{ marginTop: 10 }}>
+                    <div style={styles.small}>Adjust points before applying</div>
+                    <input
+                      style={styles.input("100%")}
+                      value={manualPoints}
+                      onChange={(e) => setManualPoints(e.target.value)}
+                      inputMode="numeric"
+                      placeholder="0-162"
+                    />
                   </div>
 
                   {Array.isArray(result.warnings) && result.warnings.length ? (
@@ -2580,12 +2590,18 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
                       </span>
                     </div>
                   ) : null}
+
+                  <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <button style={styles.btnPrimary} onClick={applyDetectedPoints}>
+                      Apply Points
+                    </button>
+                  </div>
                 </>
               )}
             </div>
 
             <div style={{ marginTop: 12, ...styles.small }}>
-              Note: This MVP uses a mock recognizer (API). We’ll swap in real card detection next.
+              Note: best results come from bright light, no glare, and all cards fully visible.
             </div>
           </div>
         </div>
@@ -2646,8 +2662,6 @@ function TableMatchPanel({
 
   const [celebrateOn, setCelebrateOn] = useState(false);
   const prevWinnerRef = useRef(null);
-
-  // ✅ NEW: scan modal open/close
   const [scanOpen, setScanOpen] = useState(false);
 
   useEffect(() => {
@@ -2717,7 +2731,6 @@ function TableMatchPanel({
       </div>
 
       <div style={{ marginTop: 10, ...styles.grid2 }}>
-        {/* Team A box */}
         <div
           style={{
             ...styles.card,
@@ -2761,7 +2774,6 @@ function TableMatchPanel({
           </div>
         </div>
 
-        {/* Team B box */}
         <div
           style={{
             ...styles.card,
@@ -2810,7 +2822,6 @@ function TableMatchPanel({
         End immediately at <b style={{ color: "#e5e7eb" }}>{TARGET_SCORE}</b>. Add hands until one team reaches 2000+.
       </div>
 
-      {/* Hand Tracker form */}
       <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
           <div style={{ fontWeight: 950 }}>Hand Tracker</div>
@@ -2821,7 +2832,6 @@ function TableMatchPanel({
           )}
         </div>
 
-        {/* Row 1 */}
         <div style={styles.handRow1}>
           <div>
             <div style={fieldLabelStyle}>Bidder</div>
@@ -2890,7 +2900,6 @@ function TableMatchPanel({
           </div>
         </div>
 
-        {/* Row 2 */}
         <div style={styles.handRow2}>
           <div>
             <div style={fieldLabelStyle}>Announces Team A (non-belote)</div>
@@ -2915,7 +2924,6 @@ function TableMatchPanel({
           </div>
         </div>
 
-        {/* Row 3 */}
         <div style={styles.handRow3}>
           <div>
             <div style={fieldLabelStyle}>Belote</div>
@@ -3005,7 +3013,6 @@ function TableMatchPanel({
             </button>
           ) : null}
 
-          {/* ✅ NEW button */}
           <button
             style={{ ...styles.btnSecondary, ...(canPlay ? {} : styles.disabled) }}
             onClick={() => setScanOpen(true)}
@@ -3024,7 +3031,6 @@ function TableMatchPanel({
         </div>
       </div>
 
-      {/* Hands list */}
       <div style={{ marginTop: 14 }}>
         <div style={{ fontWeight: 950, marginBottom: 10 }}>Hands Played</div>
         {(match.hands || []).length === 0 ? (
@@ -3061,7 +3067,6 @@ function TableMatchPanel({
         )}
       </div>
 
-      {/* ✅ Scan modal */}
       <ScanPointsModal
         open={scanOpen}
         onClose={() => setScanOpen(false)}
