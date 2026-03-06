@@ -1,11 +1,9 @@
-// api/scan-cards.js
 import Busboy from "busboy";
 
 export const config = {
   api: { bodyParser: false },
 };
 
-// ---------- helpers ----------
 function streamToBuffer(stream) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -17,32 +15,26 @@ function streamToBuffer(stream) {
 
 function normalizeSuit(s) {
   const up = String(s || "").toUpperCase();
-  if (["H", "D", "C", "S"].includes(up)) return up;
-  return "S";
+  return ["H", "D", "C", "S"].includes(up) ? up : "S";
 }
 
 function normalizePileSide(s) {
   const up = String(s || "").toUpperCase();
-  if (up === "BIDDER") return "BIDDER";
-  return "NON";
+  return up === "BIDDER" ? "BIDDER" : "NON";
 }
 
-// French ranks mapping:
-// R (Roi) => K, D (Dame) => Q, V (Valet) => J, 1 => A
 function normalizeRank(rankRaw) {
   const r = String(rankRaw || "").trim().toUpperCase();
   if (r === "R") return "K";
   if (r === "D") return "Q";
   if (r === "V") return "J";
-  if (r === "1") return "A"; // French-style Ace as "1"
+  if (r === "1") return "A";
   return r;
 }
 
 function parseCardLabel(label) {
-  // expects like: "10S", "9H", "QD", "JS", "AS", "7C"
-  // and French rank variants: "RV"?? no, rank is french letter: "RS"(=KS), "DH"(=QH), "VC"(=JC), "1S"(=AS)
   const raw = String(label || "").trim().toUpperCase();
-  if (!raw) return null;
+  if (!raw || raw.length < 2) return null;
 
   const suit = raw.slice(-1);
   let rank = raw.slice(0, -1);
@@ -92,19 +84,17 @@ function computeBelotePoints(cards, trumpSuit, lastTrick) {
   return total;
 }
 
-/**
- * Robustly extract predictions from a Roboflow workflow response.
- * We search for objects with a "class" (or "label") and "confidence".
- */
 function extractPredictionsDeep(obj) {
   const out = [];
 
   const visit = (node) => {
     if (!node) return;
+
     if (Array.isArray(node)) {
       for (const x of node) visit(x);
       return;
     }
+
     if (typeof node !== "object") return;
 
     const cls = node.class ?? node.label ?? node.predicted_class ?? node.name;
@@ -128,10 +118,7 @@ function extractPredictionsDeep(obj) {
   return out;
 }
 
-// ---------- bbox helpers (NMS) ----------
 function boxFromPred(p) {
-  // Roboflow commonly uses center x/y + width/height in pixels
-  // Convert to [x1,y1,x2,y2]
   const x = Number(p.x);
   const y = Number(p.y);
   const w = Number(p.width);
@@ -139,11 +126,12 @@ function boxFromPred(p) {
 
   if (![x, y, w, h].every((n) => Number.isFinite(n))) return null;
 
-  const x1 = x - w / 2;
-  const y1 = y - h / 2;
-  const x2 = x + w / 2;
-  const y2 = y + h / 2;
-  return { x1, y1, x2, y2 };
+  return {
+    x1: x - w / 2,
+    y1: y - h / 2,
+    x2: x + w / 2,
+    y2: y + h / 2,
+  };
 }
 
 function iou(a, b) {
@@ -160,19 +148,16 @@ function iou(a, b) {
   const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
 
   const denom = areaA + areaB - interArea;
-  if (denom <= 0) return 0;
-  return interArea / denom;
+  return denom > 0 ? interArea / denom : 0;
 }
 
 function nms(preds, iouThreshold = 0.45) {
-  // Sort by confidence descending; keep boxes that don't overlap too much.
   const sorted = [...preds].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
   const kept = [];
 
   for (const p of sorted) {
     const bp = boxFromPred(p);
     if (!bp) {
-      // if no bbox, keep it (can't compare)
       kept.push(p);
       continue;
     }
@@ -186,28 +171,25 @@ function nms(preds, iouThreshold = 0.45) {
         break;
       }
     }
+
     if (!overlaps) kept.push(p);
   }
 
   return kept;
 }
 
-// Pick best UNIQUE cards, using confidence + bbox filtering first
 function pickBestUniqueCards(preds, maxCards = 16) {
-  // 1) NMS to reduce duplicate detections of same corner
   const reduced = nms(preds, 0.45);
 
-  // 2) Parse labels -> cards
   const parsed = reduced
     .map((p) => {
-      const parsed = parseCardLabel(p.class);
-      if (!parsed) return null;
+      const parsedCard = parseCardLabel(p.class);
+      if (!parsedCard) return null;
       return {
-        rank: parsed.rank,
-        suit: parsed.suit,
-        code: parsed.code,
+        rank: parsedCard.rank,
+        suit: parsedCard.suit,
+        code: parsedCard.code,
         confidence: p.confidence ?? 0,
-        // keep bbox for debugging if you want
         x: p.x,
         y: p.y,
         width: p.width,
@@ -217,9 +199,9 @@ function pickBestUniqueCards(preds, maxCards = 16) {
     .filter(Boolean)
     .sort((a, b) => b.confidence - a.confidence);
 
-  // 3) Keep best per unique card code
   const seen = new Set();
   const unique = [];
+
   for (const c of parsed) {
     if (seen.has(c.code)) continue;
     seen.add(c.code);
@@ -227,10 +209,13 @@ function pickBestUniqueCards(preds, maxCards = 16) {
     if (unique.length >= maxCards) break;
   }
 
-  return { unique, reducedCount: reduced.length, parsedCount: parsed.length };
+  return {
+    unique,
+    reducedCount: reduced.length,
+    parsedCount: parsed.length,
+  };
 }
 
-// ---------- roboflow call ----------
 async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
   const apiUrl = process.env.ROBOFLOW_API_URL || "https://serverless.roboflow.com";
   const apiKey = process.env.ROBOFLOW_API_KEY;
@@ -238,30 +223,31 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
   const workflowId = process.env.ROBOFLOW_WORKFLOW_ID;
 
   if (!apiKey || !workspace || !workflowId) {
-    throw new Error("Missing Roboflow env vars. Set ROBOFLOW_API_KEY, ROBOFLOW_WORKSPACE, ROBOFLOW_WORKFLOW_ID.");
+    throw new Error("Missing Roboflow env vars.");
   }
 
-const base = apiUrl.replace(/\/$/, "");
-const url =
-  `${base}/infer/workflows/${encodeURIComponent(workspace)}/${encodeURIComponent(workflowId)}` +
-  `?api_key=${encodeURIComponent(apiKey)}&use_cache=true`;
+  const base = apiUrl.replace(/\/$/, "");
+  const url =
+    `${base}/infer/workflows/${encodeURIComponent(workspace)}/${encodeURIComponent(workflowId)}` +
+    `?api_key=${encodeURIComponent(apiKey)}&use_cache=true`;
 
   const base64 = imageBuffer.toString("base64");
   const dataUrl = `data:${mimeType || "image/jpeg"};base64,${base64}`;
 
- const body = {
-  inputs: {
-    image: {
-      type: "base64",
-      value: dataUrl
-    }
-  }
-};
+  const body = {
+    inputs: {
+      image: {
+        type: "base64",
+        value: dataUrl,
+      },
+    },
+  };
 
   const resp = await fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
+    },
     body: JSON.stringify(body),
   });
 
@@ -282,7 +268,6 @@ const url =
   return json;
 }
 
-// ---------- handler ----------
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.status(405).json({ ok: false, error: "Use POST" });
@@ -330,24 +315,18 @@ export default async function handler(req, res) {
     const pileSide = normalizePileSide(fields.pileSide || "BIDDER");
     const lastTrick = fields.lastTrick === "1" || fields.lastTrick === "true";
 
-    // 1) call workflow
     const rf = await callRoboflowWorkflow({
       imageBuffer,
       mimeType: imageInfo?.mimeType || "image/jpeg",
     });
 
-    // 2) extract predictions
     const preds = extractPredictionsDeep(rf);
-
-    // 3) pick best 16 UNIQUE cards with bbox filtering
     const { unique: cards16, reducedCount, parsedCount } = pickBestUniqueCards(preds, 16);
-
-    // 4) compute points
     const points = computeBelotePoints(cards16, trumpSuit, lastTrick);
 
     const warnings = [];
     if (cards16.length !== 16) {
-      warnings.push(`Detected ${cards16.length} unique cards (expected 16). Try better lighting / less overlap.`);
+      warnings.push(`Detected ${cards16.length} unique cards (expected 16).`);
     }
 
     res.status(200).json({
@@ -369,6 +348,9 @@ export default async function handler(req, res) {
       },
     });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || "Server error" });
+    res.status(500).json({
+      ok: false,
+      error: e?.message || "Server error",
+    });
   }
 }

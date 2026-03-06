@@ -1,7 +1,5 @@
-// api/debug-roboflow-call.js
 export const config = { api: { bodyParser: true } };
 
-// 1x1 transparent PNG (valid image payload)
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
 
@@ -13,7 +11,10 @@ export default async function handler(req, res) {
     const workflowId = process.env.ROBOFLOW_WORKFLOW_ID;
 
     if (!apiKey || !workspace || !workflowId) {
-      return res.status(500).json({ ok: false, error: "Missing env vars", apiUrl, workspace, workflowId });
+      return res.status(500).json({
+        ok: false,
+        error: "Missing env vars",
+      });
     }
 
     const base = apiUrl.replace(/\/$/, "");
@@ -23,25 +24,34 @@ export default async function handler(req, res) {
 
     const body = {
       inputs: {
-        image: { type: "base64", value: `data:image/png;base64,${ONE_PIXEL_PNG_BASE64}` },
+        image: {
+          type: "base64",
+          value: `data:image/png;base64,${ONE_PIXEL_PNG_BASE64}`,
+        },
       },
     };
 
     const resp = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+      },
       body: JSON.stringify(body),
     });
 
     const text = await resp.text();
+
     res.status(200).json({
       ok: true,
-      url,
+      url: `${base}/infer/workflows/${workspace}/${workflowId}?api_key=***`,
       status: resp.status,
       statusText: resp.statusText,
       bodyPreview: text.slice(0, 700),
     });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || "error" });
+    res.status(500).json({
+      ok: false,
+      error: e?.message || "error",
+    });
   }
 }
