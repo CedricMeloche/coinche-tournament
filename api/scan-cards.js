@@ -27,30 +27,32 @@ function normalizePileSide(s) {
   return "NON";
 }
 
-// French rank mapping: R=Roi(K), D=Dame(Q), V=Valet(J), 1=As(A)
+// French ranks mapping:
+// R (Roi) => K, D (Dame) => Q, V (Valet) => J, 1 => A
 function normalizeRank(rankRaw) {
   const r = String(rankRaw || "").trim().toUpperCase();
-  const map = { R: "K", D: "Q", V: "J", "1": "A" };
-  const normalized = map[r] ?? r;
-
-  // allowed in belote 32-card deck
-  const ok = ["7", "8", "9", "10", "J", "Q", "K", "A"];
-  return ok.includes(normalized) ? normalized : null;
+  if (r === "R") return "K";
+  if (r === "D") return "Q";
+  if (r === "V") return "J";
+  if (r === "1") return "A"; // French-style Ace as "1"
+  return r;
 }
 
 function parseCardLabel(label) {
   // expects like: "10S", "9H", "QD", "JS", "AS", "7C"
-  // supports French ranks: "RS"(K), "DS"(Q), "VS"(J), "1S"(A)
+  // and French rank variants: "RV"?? no, rank is french letter: "RS"(=KS), "DH"(=QH), "VC"(=JC), "1S"(=AS)
   const raw = String(label || "").trim().toUpperCase();
-  if (!raw || raw.length < 2) return null;
+  if (!raw) return null;
 
   const suit = raw.slice(-1);
-  const rankPart = raw.slice(0, -1);
+  let rank = raw.slice(0, -1);
 
   if (!["H", "D", "C", "S"].includes(suit)) return null;
 
-  const rank = normalizeRank(rankPart);
-  if (!rank) return null;
+  rank = normalizeRank(rank);
+
+  const ok = ["7", "8", "9", "10", "J", "Q", "K", "A"];
+  if (!ok.includes(rank)) return null;
 
   return { rank, suit, code: `${rank}${suit}` };
 }
@@ -92,7 +94,7 @@ function computeBelotePoints(cards, trumpSuit, lastTrick) {
 
 /**
  * Robustly extract predictions from a Roboflow workflow response.
- * We search for objects with a "class" (or similar) and "confidence".
+ * We search for objects with a "class" (or "label") and "confidence".
  */
 function extractPredictionsDeep(obj) {
   const out = [];
@@ -126,59 +128,60 @@ function extractPredictionsDeep(obj) {
   return out;
 }
 
-// ---------- bbox / duplicate filtering ----------
-function toXYXY(p) {
+// ---------- bbox helpers (NMS) ----------
+function boxFromPred(p) {
+  // Roboflow commonly uses center x/y + width/height in pixels
+  // Convert to [x1,y1,x2,y2]
   const x = Number(p.x);
   const y = Number(p.y);
   const w = Number(p.width);
   const h = Number(p.height);
+
   if (![x, y, w, h].every((n) => Number.isFinite(n))) return null;
-  return {
-    x1: x - w / 2,
-    y1: y - h / 2,
-    x2: x + w / 2,
-    y2: y + h / 2,
-  };
+
+  const x1 = x - w / 2;
+  const y1 = y - h / 2;
+  const x2 = x + w / 2;
+  const y2 = y + h / 2;
+  return { x1, y1, x2, y2 };
 }
 
 function iou(a, b) {
-  const interX1 = Math.max(a.x1, b.x1);
-  const interY1 = Math.max(a.y1, b.y1);
-  const interX2 = Math.min(a.x2, b.x2);
-  const interY2 = Math.min(a.y2, b.y2);
+  const xA = Math.max(a.x1, b.x1);
+  const yA = Math.max(a.y1, b.y1);
+  const xB = Math.min(a.x2, b.x2);
+  const yB = Math.min(a.y2, b.y2);
 
-  const interW = Math.max(0, interX2 - interX1);
-  const interH = Math.max(0, interY2 - interY1);
+  const interW = Math.max(0, xB - xA);
+  const interH = Math.max(0, yB - yA);
   const interArea = interW * interH;
 
   const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
   const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
-  const union = areaA + areaB - interArea;
 
-  return union > 0 ? interArea / union : 0;
+  const denom = areaA + areaB - interArea;
+  if (denom <= 0) return 0;
+  return interArea / denom;
 }
 
-/**
- * NMS-like filter: keep only one box per physical card region.
- * We don't require same class; we just drop high-overlap boxes.
- */
-function filterOverlappingBoxes(preds, iouThreshold = 0.65) {
-  const sorted = [...preds].sort((a, b) => b.confidence - a.confidence);
+function nms(preds, iouThreshold = 0.45) {
+  // Sort by confidence descending; keep boxes that don't overlap too much.
+  const sorted = [...preds].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
   const kept = [];
 
   for (const p of sorted) {
-    const bb = toXYXY(p);
-    // If no bbox info, keep it (can't dedupe)
-    if (!bb) {
+    const bp = boxFromPred(p);
+    if (!bp) {
+      // if no bbox, keep it (can't compare)
       kept.push(p);
       continue;
     }
 
     let overlaps = false;
     for (const k of kept) {
-      const kb = toXYXY(k);
-      if (!kb) continue;
-      if (iou(bb, kb) >= iouThreshold) {
+      const bk = boxFromPred(k);
+      if (!bk) continue;
+      if (iou(bp, bk) >= iouThreshold) {
         overlaps = true;
         break;
       }
@@ -189,38 +192,42 @@ function filterOverlappingBoxes(preds, iouThreshold = 0.65) {
   return kept;
 }
 
-/**
- * Pick best 16 UNIQUE cards.
- * 1) bbox-dedupe (removes duplicate detections)
- * 2) unique-by-card-code (since a belote deck has no duplicates)
- * 3) stop at 16
- */
-function pickBestUniqueCards(predsParsed, target = 16) {
+// Pick best UNIQUE cards, using confidence + bbox filtering first
+function pickBestUniqueCards(preds, maxCards = 16) {
+  // 1) NMS to reduce duplicate detections of same corner
+  const reduced = nms(preds, 0.45);
+
+  // 2) Parse labels -> cards
+  const parsed = reduced
+    .map((p) => {
+      const parsed = parseCardLabel(p.class);
+      if (!parsed) return null;
+      return {
+        rank: parsed.rank,
+        suit: parsed.suit,
+        code: parsed.code,
+        confidence: p.confidence ?? 0,
+        // keep bbox for debugging if you want
+        x: p.x,
+        y: p.y,
+        width: p.width,
+        height: p.height,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.confidence - a.confidence);
+
+  // 3) Keep best per unique card code
   const seen = new Set();
-  const out = [];
-
-  for (const p of predsParsed.sort((a, b) => b.confidence - a.confidence)) {
-    if (!p.parsed) continue;
-    const code = p.parsed.code;
-    if (seen.has(code)) continue;
-
-    seen.add(code);
-    out.push({
-      rank: p.parsed.rank,
-      suit: p.parsed.suit,
-      code,
-      confidence: p.confidence,
-      x: p.x,
-      y: p.y,
-      width: p.width,
-      height: p.height,
-      rawClass: p.class,
-    });
-
-    if (out.length >= target) break;
+  const unique = [];
+  for (const c of parsed) {
+    if (seen.has(c.code)) continue;
+    seen.add(c.code);
+    unique.push(c);
+    if (unique.length >= maxCards) break;
   }
 
-  return out;
+  return { unique, reducedCount: reduced.length, parsedCount: parsed.length };
 }
 
 // ---------- roboflow call ----------
@@ -231,12 +238,9 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
   const workflowId = process.env.ROBOFLOW_WORKFLOW_ID;
 
   if (!apiKey || !workspace || !workflowId) {
-    throw new Error(
-      "Missing Roboflow env vars. Set ROBOFLOW_API_KEY, ROBOFLOW_WORKSPACE, ROBOFLOW_WORKFLOW_ID."
-    );
+    throw new Error("Missing Roboflow env vars. Set ROBOFLOW_API_KEY, ROBOFLOW_WORKSPACE, ROBOFLOW_WORKFLOW_ID.");
   }
 
-  // ✅ Robust endpoint for Workflows inference
   const base = apiUrl.replace(/\/$/, "");
   const url =
     `${base}/infer/workflows/${encodeURIComponent(workspace)}/${encodeURIComponent(workflowId)}` +
@@ -255,9 +259,7 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      // ✅ Add Bearer auth too (some setups require it)
-      Authorization: `Bearer ${apiKey}`,
-      "x-api-key": apiKey,
+      // IMPORTANT: do NOT send Bearer / x-api-key here; api_key query is enough for serverless workflows
     },
     body: JSON.stringify(body),
   });
@@ -268,11 +270,11 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
   try {
     json = JSON.parse(text);
   } catch {
-    throw new Error(`Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`);
+    throw new Error(`Roboflow returned non-JSON (status ${resp.status}): ${text.slice(0, 500)}`);
   }
 
   if (!resp.ok) {
-    const msg = json?.error || json?.message || JSON.stringify(json).slice(0, 300);
+    const msg = json?.error || json?.message || JSON.stringify(json).slice(0, 500);
     throw new Error(`Roboflow error ${resp.status}: ${msg}`);
   }
 
@@ -333,26 +335,18 @@ export default async function handler(req, res) {
       mimeType: imageInfo?.mimeType || "image/jpeg",
     });
 
-    // 2) extract predictions (deep)
+    // 2) extract predictions
     const preds = extractPredictionsDeep(rf);
 
-    // 3) bbox dedupe first (removes “same card” duplicates)
-    const predsDedup = filterOverlappingBoxes(preds, 0.65);
+    // 3) pick best 16 UNIQUE cards with bbox filtering
+    const { unique: cards16, reducedCount, parsedCount } = pickBestUniqueCards(preds, 16);
 
-    // 4) parse labels to cards (supports French ranks)
-    const parsed = predsDedup.map((p) => ({ ...p, parsed: parseCardLabel(p.class) }));
-
-    // 5) pick best 16 UNIQUE by card code
-    const cards16 = pickBestUniqueCards(parsed, 16);
-
-    // 6) compute points
+    // 4) compute points
     const points = computeBelotePoints(cards16, trumpSuit, lastTrick);
 
     const warnings = [];
     if (cards16.length !== 16) {
-      warnings.push(
-        `Detected ${cards16.length} unique cards (expected 16). Try: brighter light, less glare, fan slightly wider, keep corners visible.`
-      );
+      warnings.push(`Detected ${cards16.length} unique cards (expected 16). Try better lighting / less overlap.`);
     }
 
     res.status(200).json({
@@ -369,7 +363,8 @@ export default async function handler(req, res) {
       },
       debug: {
         totalPredictionsFound: preds.length,
-        afterBoxDedup: predsDedup.length,
+        afterNMS: reducedCount,
+        parsedCardsAfterNMS: parsedCount,
       },
     });
   } catch (e) {

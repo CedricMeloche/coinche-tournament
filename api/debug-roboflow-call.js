@@ -1,6 +1,7 @@
+// api/debug-roboflow-call.js
 export const config = { api: { bodyParser: true } };
 
-// Tiny 1x1 transparent PNG
+// 1x1 transparent PNG (valid image payload)
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
 
@@ -12,14 +13,7 @@ export default async function handler(req, res) {
     const workflowId = process.env.ROBOFLOW_WORKFLOW_ID;
 
     if (!apiKey || !workspace || !workflowId) {
-      return res.status(500).json({
-        ok: false,
-        error: "Missing env vars",
-        hasKey: !!apiKey,
-        workspace,
-        workflowId,
-        apiUrl,
-      });
+      return res.status(500).json({ ok: false, error: "Missing env vars", apiUrl, workspace, workflowId });
     }
 
     const base = apiUrl.replace(/\/$/, "");
@@ -35,25 +29,19 @@ export default async function handler(req, res) {
 
     const resp = await fetch(url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "x-api-key": apiKey,
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
 
     const text = await resp.text();
-
-    // Return status + raw text (first part) so we see EXACTLY what Roboflow says
-    return res.status(200).json({
-      ok: resp.ok,
+    res.status(200).json({
+      ok: true,
+      url,
       status: resp.status,
       statusText: resp.statusText,
-      urlUsed: url.replace(apiKey, "****"),
-      responsePreview: text.slice(0, 800),
+      bodyPreview: text.slice(0, 700),
     });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e?.message || "Server error" });
+    res.status(500).json({ ok: false, error: e?.message || "error" });
   }
 }
