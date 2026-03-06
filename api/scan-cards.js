@@ -14,25 +14,48 @@ function streamToBuffer(stream) {
 }
 
 function normalizeSuit(s) {
-  const up = String(s || "").toUpperCase();
+  const up = String(s || "").trim().toUpperCase();
   return ["H", "D", "C", "S"].includes(up) ? up : "S";
 }
 
 function normalizePileSide(s) {
-  const up = String(s || "").toUpperCase();
+  const up = String(s || "").trim().toUpperCase();
   return up === "BIDDER" ? "BIDDER" : "NON";
 }
 
+// Accept both English and French ranks from Roboflow
+// French: V=Jack, D=Queen, R=King, 1=Ace
 function normalizeRank(rankRaw) {
   const r = String(rankRaw || "").trim().toUpperCase();
-  if (r === "R") return "K";
-  if (r === "D") return "Q";
   if (r === "V") return "J";
+  if (r === "D") return "Q";
+  if (r === "R") return "K";
   if (r === "1") return "A";
   return r;
 }
 
+// For display back to your users in French card notation
+function toFrenchRank(rank) {
+  if (rank === "J") return "V";
+  if (rank === "Q") return "D";
+  if (rank === "K") return "R";
+  if (rank === "A") return "1";
+  return rank;
+}
+
+function toFrenchCode(code) {
+  const raw = String(code || "").trim().toUpperCase();
+  if (!raw) return raw;
+  const suit = raw.slice(-1);
+  const rank = raw.slice(0, -1);
+  return `${toFrenchRank(rank)}${suit}`;
+}
+
 function parseCardLabel(label) {
+  // Accept labels like:
+  // 7H, 8D, 9S, 10C, JH, QD, KS, AC
+  // and French:
+  // 7H, 8D, 9S, 10C, VH, DD, RS, 1C
   const raw = String(label || "").trim().toUpperCase();
   if (!raw || raw.length < 2) return null;
 
@@ -43,8 +66,8 @@ function parseCardLabel(label) {
 
   rank = normalizeRank(rank);
 
-  const ok = ["7", "8", "9", "10", "J", "Q", "K", "A"];
-  if (!ok.includes(rank)) return null;
+  const validRanks = ["7", "8", "9", "10", "J", "Q", "K", "A"];
+  if (!validRanks.includes(rank)) return null;
 
   return { rank, suit, code: `${rank}${suit}` };
 }
@@ -226,6 +249,7 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     throw new Error("Missing Roboflow env vars.");
   }
 
+  // This matches the HTTP/cURL deploy panel you showed
   const base = apiUrl.replace(/\/$/, "");
   const url = `${base}/${encodeURIComponent(workspace)}/workflows/${encodeURIComponent(workflowId)}`;
 
@@ -325,7 +349,7 @@ export default async function handler(req, res) {
 
     const warnings = [];
     if (cards16.length !== 16) {
-      warnings.push(`Detected ${cards16.length} unique cards (expected 16).`);
+      warnings.push(`Detected ${cards16.length} unique cards (expected 16). Try better lighting / less overlap.`);
     }
 
     res.status(200).json({
@@ -334,7 +358,11 @@ export default async function handler(req, res) {
       pileSide,
       lastTrick,
       points,
-      cards: cards16,
+      cards: cards16.map((c) => ({
+        ...c,
+        displayRank: toFrenchRank(c.rank),
+        displayCode: toFrenchCode(c.code),
+      })),
       warnings,
       meta: {
         receivedBytes: imageBuffer.length,
