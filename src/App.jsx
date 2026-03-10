@@ -18,6 +18,10 @@ const BACKUP_URL =
 // ✅ MUST match Apps Script SECRET
 const BACKUP_SECRET = "CHANGE_ME_TO_A_LONG_RANDOM_STRING";
 
+/* =========================
+   Helpers
+========================= */
+
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 }
@@ -77,13 +81,16 @@ function SuitIcon({ suit }) {
   };
   const s = map[suit] || map.S;
   return (
-    <span title={s.label} style={{ fontWeight: 900, color: s.color, marginLeft: 4 }}>
+    <span title={s.label} style={{ fontWeight: 900, color: s.color }}>
       {s.ch}
     </span>
   );
 }
 
-/** ===== image helpers (camera scan) ===== */
+/* =========================
+   Camera scan helpers
+========================= */
+
 function dataURLtoBlob(dataUrl) {
   const [meta, b64] = String(dataUrl).split(",");
   const mime = (meta.match(/data:(.*?);base64/) || [])[1] || "image/jpeg";
@@ -109,7 +116,10 @@ async function postScanToApi({ imageDataUrl, trumpSuit, pileSide, lastTrick }) {
   return await res.json();
 }
 
-/** ===== Global CSS (confetti + fireworks) ===== */
+/* =========================
+   Global CSS
+========================= */
+
 function ensureGlobalCSS() {
   if (typeof document === "undefined") return;
   if (document.getElementById("coinche_global_css")) return;
@@ -133,7 +143,10 @@ function ensureGlobalCSS() {
   document.head.appendChild(el);
 }
 
-/** ===== scoring helpers ===== */
+/* =========================
+   Scoring
+========================= */
+
 function roundTrickPointsPair(rawBidderPoints) {
   const bidderRaw = clamp(Number(rawBidderPoints) || 0, 0, 162);
   const oppRaw = 162 - bidderRaw;
@@ -172,7 +185,7 @@ function computeFastCoincheScore({
   announceB,
   beloteTeam,
 }) {
-  const bidderIsA = bidder === "A";
+  const BIDDER_IS_A = bidder === "A";
   const bidVal = Number(bid) || 0;
 
   const aAnn = Number(announceA) || 0;
@@ -186,8 +199,8 @@ function computeFastCoincheScore({
   const { bidderRounded, oppRounded } = roundTrickPointsPair(rawBidder);
 
   const bidderHasBelote =
-    (bidderIsA && beloteTeam === "A") || (!bidderIsA && beloteTeam === "B");
-  const bidderAnn = bidderIsA ? aAnn : bAnn;
+    (BIDDER_IS_A && beloteTeam === "A") || (!BIDDER_IS_A && beloteTeam === "B");
+  const bidderAnn = BIDDER_IS_A ? aAnn : bAnn;
 
   const minRequired = bidderHasBelote ? 71 : 81;
   const special80 = bidVal === 80 ? 81 : 0;
@@ -203,7 +216,7 @@ function computeFastCoincheScore({
 
   if (capot) {
     const winnerTotal = 250 + totalAnnounces + beloteA + beloteB + bidVal;
-    if (bidderIsA) {
+    if (BIDDER_IS_A) {
       scoreA = winnerTotal;
       scoreB = 0;
     } else {
@@ -216,7 +229,7 @@ function computeFastCoincheScore({
   if (isCoinche) {
     const winnerTotal = 160 + totalAnnounces + mult * bidVal;
     if (bidderSucceeded) {
-      if (bidderIsA) {
+      if (BIDDER_IS_A) {
         scoreA = winnerTotal + beloteA;
         scoreB = beloteB;
       } else {
@@ -224,7 +237,7 @@ function computeFastCoincheScore({
         scoreA = beloteA;
       }
     } else {
-      if (bidderIsA) {
+      if (BIDDER_IS_A) {
         scoreA = beloteA;
         scoreB = winnerTotal + beloteB;
       } else {
@@ -236,7 +249,7 @@ function computeFastCoincheScore({
   }
 
   if (bidderSucceeded) {
-    if (bidderIsA) {
+    if (BIDDER_IS_A) {
       scoreA = bidderRounded + aAnn + beloteA + bidVal;
       scoreB = oppRounded + bAnn + beloteB;
     } else {
@@ -245,7 +258,7 @@ function computeFastCoincheScore({
     }
   } else {
     const oppGets = 160 + bidVal + totalAnnounces;
-    if (bidderIsA) {
+    if (BIDDER_IS_A) {
       scoreA = beloteA;
       scoreB = oppGets + beloteB;
     } else {
@@ -257,7 +270,10 @@ function computeFastCoincheScore({
   return { scoreA, scoreB, bidderSucceeded };
 }
 
-/** ===== routing ===== */
+/* =========================
+   Routing
+========================= */
+
 function parseHashRoute() {
   const raw = window.location.hash || "#/admin";
   const [pathPart, queryPart] = raw.replace(/^#/, "").split("?");
@@ -279,31 +295,10 @@ function navigateHash(nextHash) {
   window.location.hash = nextHash;
 }
 
-/** ===== shared helpers ===== */
-function sumAnnounces(d, side) {
-  const v1 = safeInt(d?.[`announce${side}1`]) ?? 0;
-  const v2 = safeInt(d?.[`announce${side}2`]) ?? 0;
-  return v1 + v2;
-}
+/* =========================
+   Styles
+========================= */
 
-function getTeamPlayers(team, playerById) {
-  return (team?.playerIds || []).map((pid) => playerById.get(pid)).filter(Boolean);
-}
-
-function getCurrentShufflerName(match, playerById) {
-  const order = match.tableOrderPlayerIds || [];
-  const first = match.firstShufflerPlayerId || "";
-  if (!order.length || !first) return "";
-
-  const startIdx = order.findIndex((id) => id === first);
-  if (startIdx < 0) return "";
-
-  const handCount = (match.hands || []).length;
-  const idx = (startIdx + handCount) % order.length;
-  return playerById.get(order[idx])?.name || "";
-}
-
-/** ===== styles ===== */
 const styles = {
   page: {
     minHeight: "100vh",
@@ -442,9 +437,9 @@ const styles = {
   progressWrap: {
     height: 12,
     borderRadius: 999,
-    background: "rgba(255,255,255,0.92)",
+    background: "rgba(255,255,255,0.95)",
     overflow: "hidden",
-    border: "1px solid rgba(255,255,255,0.6)",
+    border: "1px solid rgba(255,255,255,0.7)",
   },
   progressFillA: (pct) => ({
     height: "100%",
@@ -616,6 +611,37 @@ const styles = {
     lineHeight: 1.0,
   },
 };
+
+/* =========================
+   Match helpers
+========================= */
+
+function sumAnnounces(d, side) {
+  const v1 = safeInt(d?.[`announce${side}1`]) ?? 0;
+  const v2 = safeInt(d?.[`announce${side}2`]) ?? 0;
+  return v1 + v2;
+}
+
+function getTeamPlayers(team, playerById) {
+  return (team?.playerIds || []).map((pid) => playerById.get(pid)).filter(Boolean);
+}
+
+function getCurrentShufflerName(match, playerById) {
+  const order = match.tableOrderPlayerIds || [];
+  const first = match.firstShufflerPlayerId || "";
+  if (!order.length || !first) return "";
+
+  const startIdx = order.findIndex((id) => id === first);
+  if (startIdx < 0) return "";
+
+  const handCount = (match.hands || []).length;
+  const idx = (startIdx + handCount) % order.length;
+  return playerById.get(order[idx])?.name || "";
+}
+
+/* =========================
+   App
+========================= */
 
 export default function App() {
   const [route, setRoute] = useState(() => parseHashRoute());
@@ -1503,7 +1529,6 @@ export default function App() {
       if (!teamId) return;
       defenseCounts.set(teamId, (defenseCounts.get(teamId) || 0) + 1);
     };
-
     for (const m of matches.filter((x) => x.teamAId && x.teamBId)) {
       for (const h of m.hands || []) {
         const a = Number(h.scoreA) || 0;
@@ -1526,4 +1551,2040 @@ export default function App() {
 
     const bump = (tid, key, n = 1) => {
       if (!tid) return;
-      const cur = teamFun.get(tid) || { coinches: 0, surcoinches: 0
+      const cur = teamFun.get(tid) || { coinches: 0, surcoinches: 0, capots: 0, belotes: 0 };
+      cur[key] = (cur[key] || 0) + n;
+      teamFun.set(tid, cur);
+    };
+
+    const bumpPlayerAnnounce = (pid, val) => {
+      const pts = Number(val) || 0;
+      if (!pid || pts <= 0) return;
+      announceCountByPlayer.set(pid, (announceCountByPlayer.get(pid) || 0) + 1);
+      announceTotalByPlayer.set(pid, (announceTotalByPlayer.get(pid) || 0) + pts);
+    };
+
+    for (const m of completed) {
+      for (const h of m.hands || []) {
+        const d = h.draftSnapshot || {};
+        const bidderTeamId = d.bidder === "A" ? m.teamAId : m.teamBId;
+        if (d.coincheLevel === "COINCHE") bump(bidderTeamId, "coinches");
+        if (d.coincheLevel === "SURCOINCHE") bump(bidderTeamId, "surcoinches");
+        if (d.capot) bump(bidderTeamId, "capots");
+        if (d.beloteTeam === "A") bump(m.teamAId, "belotes");
+        if (d.beloteTeam === "B") bump(m.teamBId, "belotes");
+
+        bumpPlayerAnnounce(d.announceA1PlayerId, d.announceA1);
+        bumpPlayerAnnounce(d.announceA2PlayerId, d.announceA2);
+        bumpPlayerAnnounce(d.announceB1PlayerId, d.announceB1);
+        bumpPlayerAnnounce(d.announceB2PlayerId, d.announceB2);
+      }
+    }
+
+    const leader = (key) => {
+      let best = null;
+      for (const [tid, obj] of teamFun.entries()) {
+        const v = obj[key] || 0;
+        if (!best || v > best.v) best = { tid, v };
+      }
+      if (!best || best.v === 0) return { name: "—", v: 0 };
+      return { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
+    };
+
+    let mostAnnounces = { name: "—", v: 0 };
+    for (const [pid, v] of announceCountByPlayer.entries()) {
+      if (v > mostAnnounces.v) mostAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
+    }
+
+    let highestAnnounces = { name: "—", v: 0 };
+    for (const [pid, v] of announceTotalByPlayer.entries()) {
+      if (v > highestAnnounces.v) highestAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
+    }
+
+    return {
+      biggestBlowout,
+      bestComeback,
+      closest,
+      clutchFinish,
+      momentumMonster,
+      perfectDefense,
+      coincheKing: leader("coinches"),
+      capotHero: leader("capots"),
+      beloteMagnet: leader("belotes"),
+      mostAnnounces,
+      highestAnnounces,
+    };
+  }, [matches, teamById, playerById]);
+
+  const publicLink = useMemo(
+    () => `${window.location.origin}${window.location.pathname}#/public`,
+    []
+  );
+
+  const tableLinks = useMemo(() => {
+    return matches.map((m) => ({
+      label: `${m.tableName} • ${m.label}`,
+      code: m.code,
+      href: `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`,
+    }));
+  }, [matches]);
+
+  const { path, query } = route;
+
+  const tableMatch = useMemo(() => {
+    const code = (query.code || "").toUpperCase();
+    if (!code) return null;
+
+    const direct = matches.find((x) => (x.code || "").toUpperCase() === code);
+    if (direct) return direct;
+
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return (
+        (parsed.matches || []).find((x) => (x.code || "").toUpperCase() === code) ||
+        null
+      );
+    } catch {
+      return null;
+    }
+  }, [query.code, matches]);
+
+  const NavPills = ({ showAdmin = true }) => (
+    <div style={styles.pillRow}>
+      {showAdmin ? (
+        <a href="#/admin" style={{ ...styles.tag, textDecoration: "none" }}>
+          Admin
+        </a>
+      ) : null}
+      <a href="#/public" style={{ ...styles.tag, textDecoration: "none" }}>
+        Public View
+      </a>
+      <span style={styles.tag}>
+        Backup:{" "}
+        {backupState.lastOk
+          ? `OK (${new Date(backupState.lastOk).toLocaleTimeString()})`
+          : "—"}
+        {backupState.lastErr ? ` • retrying…` : ""}
+        {backupState.queued ? ` • queued: ${backupState.queued}` : ""}
+      </span>
+    </div>
+  );
+
+  /* =========================
+     Public View
+  ========================= */
+
+  if (path === "/public") {
+    const liveMatches = matches
+      .filter((m) => m.teamAId && m.teamBId && !m.completed)
+      .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
+
+    return (
+      <div style={styles.page}>
+        <div style={styles.container}>
+          <div style={styles.topbar}>
+            <div>
+              <h1 style={styles.title}>{appName}</h1>
+              <div style={styles.subtitle}>
+                Public scoreboard • Live updates • Tables: {matches.length}
+              </div>
+            </div>
+            <NavPills showAdmin={true} />
+          </div>
+
+          <div style={styles.grid2}>
+            <Section title="Live Scoreboard">
+              <ScoreboardTable rows={scoreboardRows} />
+            </Section>
+
+            <Section title="Fun Facts">
+              <div style={styles.grid3}>
+                <StatCard label="Biggest Blowout" value={`${funStats.biggestBlowout.diff} pts`} sub={funStats.biggestBlowout.label} />
+                <StatCard label="Best Comeback" value={`${funStats.bestComeback.deficit} pts`} sub={funStats.bestComeback.label} />
+                <StatCard label="Closest Match" value={`${funStats.closest.diff} pts`} sub={funStats.closest.label} />
+                <StatCard label="Clutch Finish (last 3 hands)" value={`${funStats.clutchFinish.diff} pts`} sub={funStats.clutchFinish.label} />
+                <StatCard label="Momentum Monster" value={`${funStats.momentumMonster.swing} pts`} sub={funStats.momentumMonster.label} />
+                <StatCard label="Perfect Defense" value={funStats.perfectDefense.name} sub={`${funStats.perfectDefense.count} shutout hands`} />
+                <StatCard label="Coinche King" value={funStats.coincheKing.name} sub={`${funStats.coincheKing.v} coinches`} />
+                <StatCard label="Capot Hero" value={funStats.capotHero.name} sub={`${funStats.capotHero.v} capots`} />
+                <StatCard label="Belote Magnet" value={funStats.beloteMagnet.name} sub={`${funStats.beloteMagnet.v} belotes`} />
+                <StatCard label="Most Announces" value={funStats.mostAnnounces.name} sub={`${funStats.mostAnnounces.v} announces`} />
+                <StatCard label="Highest Announces" value={funStats.highestAnnounces.name} sub={`${funStats.highestAnnounces.v} pts announced`} />
+              </div>
+            </Section>
+          </div>
+
+          <Section title="Live Matches (Now Playing)">
+            {liveMatches.length === 0 ? (
+              <div style={styles.small}>No matches currently in progress.</div>
+            ) : (
+              <div style={styles.grid3}>
+                {liveMatches.map((m) => {
+                  const ta = teamById.get(m.teamAId)?.name ?? "Team A";
+                  const tb = teamById.get(m.teamBId)?.name ?? "Team B";
+                  const pctA = Math.min(100, Math.round(((m.totalA || 0) / TARGET_SCORE) * 100));
+                  const pctB = Math.min(100, Math.round(((m.totalB || 0) / TARGET_SCORE) * 100));
+
+                  return (
+                    <div key={m.id} style={styles.card}>
+                      <div style={{ fontWeight: 950, marginBottom: 6 }}>
+                        {m.tableName} • {m.label}
+                      </div>
+
+                      <div style={{ marginTop: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontWeight: 900 }}>
+                          <span>{ta}</span>
+                          <span>{m.totalA}</span>
+                        </div>
+                        <div style={{ marginTop: 6, ...styles.progressWrap }}>
+                          <div style={styles.progressFillA(pctA)} />
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontWeight: 900 }}>
+                          <span>{tb}</span>
+                          <span>{m.totalB}</span>
+                        </div>
+                        <div style={{ marginTop: 6, ...styles.progressWrap }}>
+                          <div style={styles.progressFillB(pctB)} />
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 10 }}>
+                        <button
+                          type="button"
+                          style={styles.btnSecondary}
+                          onClick={() => navigateHash(`#/table?code=${m.code}`)}
+                        >
+                          Open Table
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Section>
+
+          <Section title="Table Entry Links">
+            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
+              Each table uses their own link to enter hands/scores.
+            </div>
+            <div style={styles.grid3}>
+              {tableLinks.map((t) => (
+                <div key={t.code} style={styles.card}>
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>{t.label}</div>
+                  <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
+                    Code: {t.code}
+                  </div>
+                  <button
+                    type="button"
+                    style={styles.btnSecondary}
+                    onClick={() => navigateHash(`#/table?code=${t.code}`)}
+                  >
+                    Open Table View
+                  </button>
+                </div>
+              ))}
+              {tableLinks.length === 0 ? (
+                <div style={styles.small}>No matches yet. Add matches in Admin.</div>
+              ) : null}
+            </div>
+          </Section>
+        </div>
+      </div>
+    );
+  }
+
+  /* =========================
+     Table View
+  ========================= */
+
+  if (path === "/table") {
+    const hasRequestedCode = Boolean((query.code || "").trim());
+
+    return (
+      <div style={styles.page}>
+        <div style={styles.container}>
+          <div style={styles.topbar}>
+            <div>
+              <h1 style={styles.title}>{appName}</h1>
+              <div style={styles.subtitle}>
+                Table View • Enter hands for your match only
+              </div>
+            </div>
+            <NavPills showAdmin={true} />
+          </div>
+
+          {!tableMatch ? (
+            <Section title={hasRequestedCode && !tableMissingDelayDone ? "Loading match..." : "No match found"}>
+              <div style={styles.small}>
+                {hasRequestedCode && !tableMissingDelayDone
+                  ? "Opening the table..."
+                  : "This table link is missing or incorrect. Ask the organizer for the correct code."}
+              </div>
+              {(!hasRequestedCode || tableMissingDelayDone) && (
+                <div style={{ marginTop: 10 }}>
+                  <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                    Go to Public View
+                  </a>
+                </div>
+              )}
+            </Section>
+          ) : (
+            <Section title={`Your Match • Code ${tableMatch.code}`}>
+              <TableMatchPanel
+                match={tableMatch}
+                teamById={teamById}
+                playerById={playerById}
+                onTableSetupPatch={(patch) => updateTableSetup(tableMatch.id, patch)}
+                onDraftPatch={(patch) => updateDraft(tableMatch.id, patch)}
+                onAddHand={() => addOrSaveHand(tableMatch.id)}
+                onClearHands={() => clearMatchHands(tableMatch.id)}
+                onStartEditHand={(handIdx) => startEditHand(tableMatch.id, handIdx)}
+                onCancelEdit={() => cancelEditHand(tableMatch.id)}
+                onFinishNow={() => finishMatchNow(tableMatch.id)}
+                bigTotals
+              />
+            </Section>
+          )}
+
+          <Section title="Live Scoreboard (read-only)">
+            <ScoreboardTable rows={scoreboardRows} />
+          </Section>
+
+          <Section title="Public View Link">
+            <a href={publicLink} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+              Open Public View
+            </a>
+          </Section>
+        </div>
+      </div>
+    );
+  }
+
+  /* =========================
+     Admin View
+  ========================= */
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.container}>
+        <div style={styles.topbar}>
+          <div>
+            <h1 style={styles.title}>{appName}</h1>
+            <div style={styles.subtitle}>
+              Admin • Setup players/teams • Create table matches • Share links • Auto-backup to Google Sheet
+            </div>
+          </div>
+          <NavPills showAdmin={false} />
+        </div>
+
+        <Section
+          title="Quick Links"
+          collapsible
+          defaultCollapsed
+          right={
+            <div style={styles.row}>
+              <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                Public View
+              </a>
+              <button
+                style={styles.btnSecondary}
+                onClick={() => {
+                  navigator.clipboard?.writeText(publicLink);
+                  alert("Public link copied!");
+                }}
+              >
+                Copy Public Link
+              </button>
+            </div>
+          }
+        >
+          <div style={styles.small}>
+            Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span>
+          </div>
+          <div style={{ marginTop: 8, ...styles.small }}>
+            GoogleSheet backup: {backupState.lastOk ? "✅ OK" : "—"}{" "}
+            {backupState.lastErr ? "• retrying…" : ""}{" "}
+            {backupState.queued ? `• queued: ${backupState.queued}` : ""}
+          </div>
+          <div style={{ marginTop: 6, ...styles.small }}>
+            Device: <span style={{ color: "#e5e7eb" }}>{deviceIdRef.current}</span>
+          </div>
+        </Section>
+
+        <Section
+          title="Settings"
+          collapsible
+          defaultCollapsed
+          right={
+            <div style={styles.row}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
+                <input
+                  type="checkbox"
+                  checked={avoidSameTeams}
+                  onChange={(e) => {
+                    setAvoidSameTeams(e.target.checked);
+                    persistNow({ avoidSameTeams: e.target.checked });
+                  }}
+                />
+                Avoid repeating pairs
+              </label>
+
+              <button
+                style={styles.btnSecondary}
+                onClick={() => {
+                  void flushHandBackupQueue();
+                  alert("Backup retry triggered (if anything is queued).");
+                }}
+              >
+                Backup Now
+              </button>
+
+              <button
+                style={styles.btnDanger}
+                onClick={() => {
+                  if (!confirm("Full reset? This clears everything.")) return;
+                  setAppName("Coinche Scorekeeper");
+                  setPlayers([]);
+                  setTeams([]);
+                  setPairHistory([]);
+                  setMatches([]);
+                  sentHandKeysRef.current = new Set();
+                  persistNow({
+                    appName: "Coinche Scorekeeper",
+                    players: [],
+                    teams: [],
+                    pairHistory: [],
+                    matches: [],
+                  });
+                }}
+              >
+                Full Reset
+              </button>
+            </div>
+          }
+        >
+          <div style={styles.grid3}>
+            <div style={styles.card}>
+              <div style={styles.small}>App name</div>
+              <input
+                style={styles.input("100%")}
+                value={appName}
+                onChange={(e) => {
+                  setAppName(e.target.value);
+                  persistNow({ appName: e.target.value });
+                }}
+              />
+            </div>
+
+            <div style={styles.card}>
+              <div style={styles.small}>Target score</div>
+              <div style={{ fontWeight: 950, fontSize: 18 }}>{TARGET_SCORE}</div>
+              <div style={styles.small}>Match ends immediately at {TARGET_SCORE}+.</div>
+            </div>
+
+            <div style={styles.card}>
+              <div style={styles.small}>Backup endpoint</div>
+              <div style={{ fontWeight: 900, fontSize: 12, color: "#cbd5e1", wordBreak: "break-all" }}>
+                {BACKUP_URL}
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        <Section title={`Players (${players.length})`}>
+          <div style={styles.row}>
+            <input
+              ref={inputRef}
+              style={styles.input(320)}
+              value={newPlayerName}
+              onChange={(e) => setNewPlayerName(e.target.value)}
+              placeholder="Add player name"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addPlayer();
+              }}
+            />
+            <button style={styles.btnPrimary} onClick={addPlayer} disabled={!newPlayerName.trim()}>
+              Add Player
+            </button>
+          </div>
+
+          <div style={{ marginTop: 12, ...styles.grid4 }}>
+            {players.map((p) => (
+              <div key={p.id} style={styles.card}>
+                <div style={{ fontWeight: 950, display: "flex", justifyContent: "space-between", gap: 10 }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {p.name}
+                  </span>
+                  <button style={{ ...styles.btnGhost, padding: 0 }} onClick={() => removePlayer(p.id)}>
+                    Remove
+                  </button>
+                </div>
+                <div style={styles.small}>ID: {p.id.slice(-6)}</div>
+              </div>
+            ))}
+            {players.length === 0 ? <div style={styles.small}>Add players to get started.</div> : null}
+          </div>
+        </Section>
+
+        <Section
+          title={`Teams (${teams.length})`}
+          right={
+            <div style={styles.row}>
+              <input
+                style={styles.input(220)}
+                value={newTeamName}
+                onChange={(e) => setNewTeamName(e.target.value)}
+                placeholder="Optional team name"
+              />
+              <button style={styles.btnPrimary} onClick={addTeam}>
+                Add Team
+              </button>
+              <button
+                style={styles.btnSecondary}
+                onClick={buildRandomTeams}
+                disabled={players.length < 2 || teams.length < 1}
+              >
+                Randomize Teams (respects locks)
+              </button>
+            </div>
+          }
+        >
+          {teams.length === 0 ? (
+            <div style={styles.small}>Add teams, then assign players.</div>
+          ) : (
+            <div style={styles.grid2}>
+              {teams.map((t, idx) => (
+                <div key={t.id} style={styles.card}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 950 }}>Team #{idx + 1}</div>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900, color: t.locked ? "#34d399" : "#94a3b8" }}>
+                        <input type="checkbox" checked={!!t.locked} onChange={(e) => toggleTeamLock(t.id, e.target.checked)} />
+                        Lock
+                      </label>
+                      <button style={styles.btnGhost} onClick={() => removeTeam(t.id)}>
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 10 }}>
+                    <div style={styles.small}>Team name</div>
+                    <input
+                      style={styles.input("100%")}
+                      value={t.name}
+                      onChange={(e) => renameTeam(t.id, e.target.value)}
+                      placeholder={`Team ${idx + 1}`}
+                    />
+                  </div>
+
+                  <div style={{ marginTop: 10, ...styles.grid2 }}>
+                    <div>
+                      <div style={styles.small}>Player 1</div>
+                      <select
+                        style={styles.select("100%")}
+                        value={t.playerIds?.[0] || ""}
+                        onChange={(e) => setTeamPlayer(t.id, 0, e.target.value)}
+                      >
+                        <option value="">— Select —</option>
+                        {players.map((p) => {
+                          const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
+                          return (
+                            <option key={p.id} value={p.id} disabled={taken}>
+                              {p.name}
+                              {taken ? " (used)" : ""}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+
+                    <div>
+                      <div style={styles.small}>Player 2</div>
+                      <select
+                        style={styles.select("100%")}
+                        value={t.playerIds?.[1] || ""}
+                        onChange={(e) => setTeamPlayer(t.id, 1, e.target.value)}
+                      >
+                        <option value="">— Select —</option>
+                        {players.map((p) => {
+                          const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
+                          return (
+                            <option key={p.id} value={p.id} disabled={taken}>
+                              {p.name}
+                              {taken ? " (used)" : ""}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 10, ...styles.small }}>
+                    Members:{" "}
+                    {(t.playerIds || [])
+                      .map((pid) => playerById.get(pid)?.name)
+                      .filter(Boolean)
+                      .join(" / ") || "—"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+
+        <Section
+          title={`Tables / Matches (${matches.length})`}
+          right={
+            <div style={styles.row}>
+              <input
+                style={styles.input(180)}
+                value={newTableName}
+                onChange={(e) => setNewTableName(e.target.value)}
+                placeholder="Table name"
+              />
+              <input
+                style={styles.input(180)}
+                value={newMatchLabel}
+                onChange={(e) => setNewMatchLabel(e.target.value)}
+                placeholder="Match label"
+              />
+              <button style={styles.btnPrimary} onClick={addMatch} disabled={teams.length < 1}>
+                Add Match
+              </button>
+            </div>
+          }
+        >
+          {matches.length === 0 ? (
+            <div style={styles.small}>Add a match, then assign Team A / Team B.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {matches.map((m) => (
+                <CollapsibleMatchCard
+                  key={m.id}
+                  match={m}
+                  teamById={teamById}
+                  playerById={playerById}
+                  teams={teams}
+                  onOpenTable={() => navigateHash(`#/table?code=${m.code}`)}
+                  onCopyLink={() => {
+                    const href = `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`;
+                    navigator.clipboard?.writeText(href);
+                    alert("Table link copied!");
+                  }}
+                  onRemove={() => removeMatch(m.id)}
+                  onRenameMatch={(patch) => renameMatch(m.id, patch)}
+                  onSetMatchTeam={(side, value) => setMatchTeam(m.id, side, value)}
+                  onTableSetupPatch={(patch) => updateTableSetup(m.id, patch)}
+                  onDraftPatch={(patch) => updateDraft(m.id, patch)}
+                  onAddHand={() => addOrSaveHand(m.id)}
+                  onClearHands={() => clearMatchHands(m.id)}
+                  onStartEditHand={(handIdx) => startEditHand(m.id, handIdx)}
+                  onCancelEdit={() => cancelEditHand(m.id)}
+                  onFinishNow={() => finishMatchNow(m.id)}
+                />
+              ))}
+            </div>
+          )}
+        </Section>
+
+        <Section
+          title="Scoreboard + Fun Facts (Live)"
+          collapsible
+          defaultCollapsed
+        >
+          <div style={styles.grid2}>
+            <div style={styles.card}>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Live Scoreboard</div>
+              <ScoreboardTable rows={scoreboardRows} />
+            </div>
+
+            <div style={styles.card}>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Fun Facts</div>
+              <div style={styles.grid3}>
+                <StatCard label="Biggest Blowout" value={`${funStats.biggestBlowout.diff} pts`} sub={funStats.biggestBlowout.label} />
+                <StatCard label="Best Comeback" value={`${funStats.bestComeback.deficit} pts`} sub={funStats.bestComeback.label} />
+                <StatCard label="Closest Match" value={`${funStats.closest.diff} pts`} sub={funStats.closest.label} />
+                <StatCard label="Clutch Finish (last 3 hands)" value={`${funStats.clutchFinish.diff} pts`} sub={funStats.clutchFinish.label} />
+                <StatCard label="Momentum Monster" value={`${funStats.momentumMonster.swing} pts`} sub={funStats.momentumMonster.label} />
+                <StatCard label="Perfect Defense" value={funStats.perfectDefense.name} sub={`${funStats.perfectDefense.count} shutout hands`} />
+                <StatCard label="Coinche King" value={funStats.coincheKing.name} sub={`${funStats.coincheKing.v} coinches`} />
+                <StatCard label="Capot Hero" value={funStats.capotHero.name} sub={`${funStats.capotHero.v} capots`} />
+                <StatCard label="Belote Magnet" value={funStats.beloteMagnet.name} sub={`${funStats.beloteMagnet.v} belotes`} />
+                <StatCard label="Most Announces" value={funStats.mostAnnounces.name} sub={`${funStats.mostAnnounces.v} announces`} />
+                <StatCard label="Highest Announces" value={funStats.highestAnnounces.name} sub={`${funStats.highestAnnounces.v} pts announced`} />
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        <Section title="Table Links (share to each table)">
+          <div style={styles.small}>
+            Each match has a unique code + link. Teams should open their match link to enter hands.
+          </div>
+          <div style={{ marginTop: 10, ...styles.grid3 }}>
+            {tableLinks.map((t) => (
+              <div key={t.code} style={styles.card}>
+                <div style={{ fontWeight: 950, marginBottom: 6 }}>{t.label}</div>
+                <div style={styles.small}>Code: {t.code}</div>
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    style={styles.btnSecondary}
+                    onClick={() => navigateHash(`#/table?code=${t.code}`)}
+                  >
+                    Open
+                  </button>
+                  <button
+                    style={styles.btnSecondary}
+                    onClick={() => {
+                      navigator.clipboard?.writeText(t.href);
+                      alert(`Copied link for ${t.label}`);
+                    }}
+                  >
+                    Copy Link
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+      </div>
+    </div>
+  );
+}
+
+/* =========================
+   Shared components
+========================= */
+
+function Section({
+  title,
+  right,
+  children,
+  collapsible = false,
+  defaultCollapsed = false,
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+
+  return (
+    <div style={styles.section}>
+      <div style={styles.sectionHeader}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h2 style={{ ...styles.h2, margin: 0 }}>{title}</h2>
+          {collapsible ? (
+            <button
+              type="button"
+              onClick={() => setCollapsed((v) => !v)}
+              style={{
+                ...styles.btnGhost,
+                padding: "6px 10px",
+                border: "1px solid rgba(148,163,184,0.18)",
+                borderRadius: 10,
+                color: "#cbd5e1",
+                background: "rgba(255,255,255,0.03)",
+              }}
+            >
+              {collapsed ? "Expand" : "Collapse"}
+            </button>
+          ) : null}
+        </div>
+        <div>{right}</div>
+      </div>
+      {!collapsed ? children : null}
+    </div>
+  );
+}
+
+function StatCard({ label, value, sub }) {
+  return (
+    <div style={styles.card}>
+      <div style={styles.small}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 950 }}>{value ?? "—"}</div>
+      {sub ? <div style={{ marginTop: 6, ...styles.small }}>{sub}</div> : null}
+    </div>
+  );
+}
+
+function ScoreboardTable({ rows }) {
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+        <thead>
+          <tr>
+            {["Rank", "Team", "MP", "W", "L", "PF", "PA", "+/-"].map((h) => (
+              <th
+                key={h}
+                style={{
+                  textAlign: "left",
+                  padding: "10px 10px",
+                  fontSize: 12,
+                  color: "#94a3b8",
+                  borderBottom: "1px solid rgba(148,163,184,0.18)",
+                }}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const diff = (r.pointsFor || 0) - (r.pointsAgainst || 0);
+            return (
+              <tr key={r.teamId}>
+                <td style={tdStrong}>#{i + 1}</td>
+                <td style={tdBold}>{r.name}</td>
+                <td style={td}>{r.matchesPlayed}</td>
+                <td style={td}>{r.wins}</td>
+                <td style={td}>{r.losses}</td>
+                <td style={td}>{r.pointsFor}</td>
+                <td style={td}>{r.pointsAgainst}</td>
+                <td style={tdBold}>{diff}</td>
+              </tr>
+            );
+          })}
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={8} style={{ padding: 12, color: "#94a3b8" }}>
+                No data yet.
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const td = {
+  padding: "10px 10px",
+  borderBottom: "1px solid rgba(148,163,184,0.10)",
+  fontWeight: 800,
+};
+const tdBold = { ...td, fontWeight: 950 };
+const tdStrong = { ...td, fontWeight: 1000 };
+
+function AnimatedNumber({ value }) {
+  const [bump, setBump] = useState(false);
+  const prevRef = useRef(value);
+
+  useEffect(() => {
+    if (prevRef.current !== value) {
+      setBump(true);
+      const t = setTimeout(() => setBump(false), 220);
+      prevRef.current = value;
+      return () => clearTimeout(t);
+    }
+  }, [value]);
+
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        transform: bump ? "scale(1.06)" : "scale(1)",
+        transition: "transform 220ms ease",
+      }}
+    >
+      {value}
+    </span>
+  );
+}
+
+function Fireworks({ seed = 0 }) {
+  const bursts = [
+    { x: 25 + (seed % 7) * 2, delay: 0 },
+    { x: 50 + (seed % 5) * 2, delay: 140 },
+    { x: 75 - (seed % 6) * 2, delay: 260 },
+  ];
+
+  const particlesPerBurst = 14;
+  const radius = 46;
+
+  return (
+    <div style={styles.fireworksWrap}>
+      {bursts.map((b, bi) => {
+        const hueBase = (seed * 53 + bi * 70) % 360;
+        return (
+          <React.Fragment key={bi}>
+            <span style={styles.fireworksGlow(b.x, b.delay)} />
+            {Array.from({ length: particlesPerBurst }).map((_, pi) => {
+              const ang = (Math.PI * 2 * pi) / particlesPerBurst;
+              const dx = Math.cos(ang) * (radius + (pi % 3) * 10);
+              const dy = Math.sin(ang) * (radius + (pi % 4) * 8);
+              const hue = (hueBase + pi * 18) % 360;
+              return (
+                <span
+                  key={`${bi}_${pi}`}
+                  style={styles.fireworkParticle(b.x, b.delay + (pi % 6) * 35, dx, dy, hue)}
+                />
+              );
+            })}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+/* =========================
+   Scanner modal
+========================= */
+
+function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+
+  const [pileSide, setPileSide] = useState("BIDDER");
+  const [lastTrick, setLastTrick] = useState(false);
+  const [captured, setCaptured] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [result, setResult] = useState(null);
+  const [manualPoints, setManualPoints] = useState("");
+  const [confidence, setConfidence] = useState(null);
+  const [cardCount, setCardCount] = useState(0);
+
+  useEffect(() => {
+    if (!open) return;
+
+    setErr("");
+    setCaptured(null);
+    setResult(null);
+    setBusy(false);
+    setManualPoints("");
+    setConfidence(null);
+    setCardCount(0);
+
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "environment",
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        });
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+      } catch {
+        setErr("Camera permission denied or not available in this browser.");
+      }
+    })();
+
+    return () => {
+      try {
+        const s = streamRef.current;
+        if (s) s.getTracks().forEach((t) => t.stop());
+      } catch {}
+      streamRef.current = null;
+    };
+  }, [open]);
+
+  function captureFrame() {
+    setErr("");
+    setResult(null);
+    setManualPoints("");
+    setConfidence(null);
+    setCardCount(0);
+
+    const v = videoRef.current;
+    if (!v) return;
+
+    const canvas = document.createElement("canvas");
+    const w = v.videoWidth || 1280;
+    const h = v.videoHeight || 720;
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(v, 0, 0, w, h);
+
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    setCaptured(dataUrl);
+  }
+
+  async function submitToScan() {
+    if (!captured) {
+      setErr("Please capture a photo first.");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    setResult(null);
+    setConfidence(null);
+    setCardCount(0);
+
+    try {
+      const j = await postScanToApi({
+        imageDataUrl: captured,
+        trumpSuit: trumpSuit || "S",
+        pileSide,
+        lastTrick,
+      });
+
+      if (!j || j.ok === false) throw new Error(j?.error || "Scan error");
+      setResult(j);
+      setConfidence(typeof j.confidence === "number" ? j.confidence : null);
+      setCardCount(normalizeScanCardCount(j.cardCount || j.cards?.length || 0));
+
+      if (typeof j.points === "number" && Number.isFinite(j.points)) {
+        setManualPoints(String(clamp(j.points, 0, 162)));
+      } else {
+        setManualPoints("");
+      }
+    } catch (e) {
+      setErr(e?.message || "Scan failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function applyDetectedPoints() {
+    const p = safeInt(manualPoints);
+    if (p === null) {
+      setErr("Enter valid points before applying.");
+      return;
+    }
+    onApplyPoints?.({ pileSide, points: clamp(p, 0, 162) });
+    onClose?.();
+  }
+
+  if (!open) return null;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.65)",
+        zIndex: 9999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 14,
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose?.();
+      }}
+    >
+      <div
+        style={{
+          width: "min(980px, 96vw)",
+          background: "rgba(2,6,23,0.95)",
+          border: "1px solid rgba(148,163,184,0.22)",
+          borderRadius: 18,
+          boxShadow: "0 18px 60px rgba(0,0,0,0.45)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            padding: 12,
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 10,
+            alignItems: "center",
+            borderBottom: "1px solid rgba(148,163,184,0.18)",
+          }}
+        >
+          <div style={{ fontWeight: 950 }}>
+            Scan cards → compute trick points{" "}
+            <span style={{ color: "#94a3b8", fontWeight: 800 }}>
+              (Trump: <SuitIcon suit={trumpSuit || "S"} />)
+            </span>
+          </div>
+          <button style={styles.btnSecondary} onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div style={{ padding: 12, display: "grid", gridTemplateColumns: "1fr 340px", gap: 12 }}>
+          <div style={{ ...styles.card, borderRadius: 16 }}>
+            {!captured ? (
+              <>
+                <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 8 }}>
+                  Tip: lay cards flat, avoid glare, keep all cards visible. Supports scans from 4 to 32 cards.
+                </div>
+                <video
+                  ref={videoRef}
+                  playsInline
+                  muted
+                  style={{
+                    width: "100%",
+                    borderRadius: 14,
+                    background: "rgba(0,0,0,0.35)",
+                    maxHeight: "62vh",
+                    objectFit: "cover",
+                  }}
+                />
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button style={styles.btnPrimary} onClick={captureFrame} disabled={!!err}>
+                    Capture Photo
+                  </button>
+                  <button style={styles.btnSecondary} onClick={onClose}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <img
+                  src={captured}
+                  alt="Captured"
+                  style={{
+                    width: "100%",
+                    borderRadius: 14,
+                    maxHeight: "62vh",
+                    objectFit: "contain",
+                    background: "rgba(0,0,0,0.25)",
+                  }}
+                />
+                <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button style={styles.btnSecondary} onClick={() => setCaptured(null)} disabled={busy}>
+                    Retake
+                  </button>
+                  <button style={styles.btnPrimary} onClick={submitToScan} disabled={busy}>
+                    {busy ? "Scanning…" : "Use Photo & Calculate"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {err ? (
+              <div style={{ marginTop: 10, color: "#fb7185", fontWeight: 900 }}>{err}</div>
+            ) : null}
+          </div>
+
+          <div style={{ ...styles.card, borderRadius: 16 }}>
+            <div style={{ fontWeight: 950, marginBottom: 10 }}>Scan options</div>
+
+            <div style={{ marginBottom: 10 }}>
+              <div style={styles.small}>Which pile is this photo?</div>
+              <select
+                style={styles.select("100%")}
+                value={pileSide}
+                onChange={(e) => setPileSide(e.target.value)}
+                disabled={busy}
+              >
+                <option value="BIDDER">Bidder pile</option>
+                <option value="NON">Non-bidder pile</option>
+              </select>
+            </div>
+
+            <label style={{ display: "flex", gap: 10, alignItems: "center", fontWeight: 900 }}>
+              <input
+                type="checkbox"
+                checked={lastTrick}
+                onChange={(e) => setLastTrick(e.target.checked)}
+                disabled={busy}
+              />
+              This pile includes last trick (+10)
+            </label>
+
+            <div style={{ marginTop: 12, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
+              <div style={{ fontWeight: 950, marginBottom: 8 }}>Result</div>
+
+              {!result ? (
+                <div style={styles.small}>No scan result yet.</div>
+              ) : (
+                <>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 20, fontWeight: 1000 }}>
+                      Points: <span style={{ color: "#34d399" }}>{manualPoints || "—"}</span>
+                    </div>
+                    <span style={styles.tag}>{cardCount} cards</span>
+                    {confidence !== null ? (
+                      <span style={styles.tag}>
+                        Confidence {Math.round(confidence * 100)}%
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div style={{ marginTop: 10 }}>
+                    <div style={styles.small}>Adjust points before applying</div>
+                    <input
+                      style={styles.input("100%")}
+                      value={manualPoints}
+                      onChange={(e) => setManualPoints(e.target.value)}
+                      inputMode="numeric"
+                      placeholder="0-162"
+                    />
+                  </div>
+
+                  {Array.isArray(result.warnings) && result.warnings.length ? (
+                    <div style={{ marginTop: 8 }}>
+                      {result.warnings.map((w, i) => (
+                        <div key={i} style={{ color: "#fbbf24", fontWeight: 900, fontSize: 12 }}>
+                          ⚠ {w}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {Array.isArray(result.cards) && result.cards.length ? (
+                    <div style={{ marginTop: 10, fontSize: 12, color: "#94a3b8" }}>
+                      Detected cards ({result.cards.length}):{" "}
+                      <span style={{ color: "#e5e7eb", fontWeight: 900 }}>
+                        {result.cards
+                          .slice(0, 32)
+                          .map((c) => c.displayCode || `${c.rank}${c.suit}`)
+                          .join(" ")}
+                      </span>
+                    </div>
+                  ) : null}
+
+                  <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <button style={styles.btnPrimary} onClick={applyDetectedPoints}>
+                      Apply Points
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div style={{ marginTop: 12, ...styles.small }}>
+              Best results come from bright light, no glare, and all cards fully visible.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================
+   Admin collapsed match card
+========================= */
+
+function CollapsibleMatchCard({
+  match,
+  teamById,
+  playerById,
+  teams,
+  onOpenTable,
+  onCopyLink,
+  onRemove,
+  onRenameMatch,
+  onSetMatchTeam,
+  onTableSetupPatch,
+  onDraftPatch,
+  onAddHand,
+  onClearHands,
+  onStartEditHand,
+  onCancelEdit,
+  onFinishNow,
+}) {
+  const [collapsed, setCollapsed] = useState(true);
+
+  return (
+    <div style={styles.card}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        <div style={{ fontWeight: 950 }}>
+          {match.tableName} • {match.label} <span style={styles.small}>• Code {match.code}</span>
+        </div>
+
+        <div style={styles.row}>
+          <button type="button" style={styles.btnSecondary} onClick={onOpenTable}>
+            Open Table
+          </button>
+          <button type="button" style={styles.btnGhost} onClick={() => setCollapsed((v) => !v)}>
+            {collapsed ? "Expand" : "Collapse"}
+          </button>
+        </div>
+      </div>
+
+      {!collapsed ? (
+        <>
+          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button style={styles.btnSecondary} onClick={onCopyLink}>
+              Copy Link
+            </button>
+            <button style={styles.btnDanger} onClick={onRemove}>
+              Remove
+            </button>
+          </div>
+
+          <div style={{ marginTop: 10, ...styles.grid3 }}>
+            <div style={styles.card}>
+              <div style={styles.small}>Table name</div>
+              <input
+                style={styles.input("100%")}
+                value={match.tableName}
+                onChange={(e) => onRenameMatch({ tableName: e.target.value })}
+              />
+            </div>
+
+            <div style={styles.card}>
+              <div style={styles.small}>Match label</div>
+              <input
+                style={styles.input("100%")}
+                value={match.label}
+                onChange={(e) => onRenameMatch({ label: e.target.value })}
+              />
+            </div>
+
+            <div style={styles.card}>
+              <div style={styles.small}>Quick status</div>
+              <div style={{ fontWeight: 950, color: match.completed ? "#34d399" : "#94a3b8" }}>
+                {match.completed
+                  ? `Completed • Winner: ${teamById.get(match.winnerId)?.name ?? "—"}`
+                  : "In progress"}
+              </div>
+              <div style={styles.small}>
+                Score: {match.totalA} – {match.totalB}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12, ...styles.grid2 }}>
+            <div>
+              <div style={styles.small}>Team A</div>
+              <select
+                style={styles.select("100%")}
+                value={match.teamAId || ""}
+                onChange={(e) => onSetMatchTeam("teamAId", e.target.value)}
+              >
+                <option value="">— Select —</option>
+                {teams.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <div style={styles.small}>Team B</div>
+              <select
+                style={styles.select("100%")}
+                value={match.teamBId || ""}
+                onChange={(e) => onSetMatchTeam("teamBId", e.target.value)}
+              >
+                <option value="">— Select —</option>
+                {teams.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <TableMatchPanel
+              match={match}
+              teamById={teamById}
+              playerById={playerById}
+              onTableSetupPatch={onTableSetupPatch}
+              onDraftPatch={onDraftPatch}
+              onAddHand={onAddHand}
+              onClearHands={onClearHands}
+              onStartEditHand={onStartEditHand}
+              onCancelEdit={onCancelEdit}
+              onFinishNow={onFinishNow}
+            />
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/* =========================
+   Main match panel
+========================= */
+
+function TableMatchPanel({
+  match,
+  teamById,
+  playerById,
+  onTableSetupPatch,
+  onDraftPatch,
+  onAddHand,
+  onClearHands,
+  onStartEditHand,
+  onCancelEdit,
+  onFinishNow,
+  bigTotals = false,
+}) {
+  const teamA = teamById.get(match.teamAId) || null;
+  const teamB = teamById.get(match.teamBId) || null;
+  const ta = teamA?.name ?? "TBD";
+  const tb = teamB?.name ?? "TBD";
+  const playersA = getTeamPlayers(teamA, playerById);
+  const playersB = getTeamPlayers(teamB, playerById);
+  const allTablePlayers = [...playersA, ...playersB];
+
+  const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
+  const pctB = Math.min(100, Math.round(((match.totalB || 0) / TARGET_SCORE) * 100));
+
+  const d =
+    match.fastDraft || {
+      bidder: "A",
+      bid: "",
+      suit: "S",
+      coincheLevel: "NONE",
+      capot: false,
+      bidderTrickPoints: "",
+      nonBidderTrickPoints: "",
+      trickSource: "",
+      announceA1: "",
+      announceA1PlayerId: "",
+      announceA2: "",
+      announceA2PlayerId: "",
+      announceB1: "",
+      announceB1PlayerId: "",
+      announceB2: "",
+      announceB2PlayerId: "",
+      beloteTeam: "NONE",
+    };
+
+  const canPlay = !!match.teamAId && !!match.teamBId;
+  const setupReady =
+    canPlay &&
+    Array.isArray(match.tableOrderPlayerIds) &&
+    match.tableOrderPlayerIds.length === 4 &&
+    !!match.firstShufflerPlayerId;
+
+  const leader =
+    match.totalA === match.totalB ? null : match.totalA > match.totalB ? "A" : "B";
+
+  const winnerSide =
+    match.completed && match.winnerId
+      ? match.winnerId === match.teamAId
+        ? "A"
+        : match.winnerId === match.teamBId
+        ? "B"
+        : null
+      : null;
+
+  const [celebrateOn, setCelebrateOn] = useState(false);
+  const prevWinnerRef = useRef(null);
+  const [scanOpen, setScanOpen] = useState(false);
+
+  useEffect(() => {
+    const prev = prevWinnerRef.current;
+    if (!prev && winnerSide) {
+      setCelebrateOn(true);
+      const t = setTimeout(() => setCelebrateOn(false), 6000);
+      prevWinnerRef.current = winnerSide;
+      return () => clearTimeout(t);
+    }
+    prevWinnerRef.current = winnerSide;
+  }, [winnerSide]);
+
+  const suitLabel =
+    d.suit === "H"
+      ? "Hearts"
+      : d.suit === "D"
+      ? "Diamonds"
+      : d.suit === "C"
+      ? "Clubs"
+      : "Spades";
+
+  const fieldLabelStyle = {
+    fontSize: (styles.small?.fontSize || 12) + 6,
+    color: "#cbd5e1",
+    fontWeight: 950,
+    marginBottom: 6,
+  };
+
+  const handInput = { ...styles.input("100%"), padding: "8px 10px" };
+  const handSelect = { ...styles.select("100%"), padding: "8px 10px" };
+
+  const currentShufflerName = getCurrentShufflerName(match, playerById);
+  const seatOrderNames = (match.tableOrderPlayerIds || [])
+    .map((pid) => playerById.get(pid)?.name)
+    .filter(Boolean);
+
+  function setSeat(slotIdx, playerIdOrEmpty) {
+    const next = [...(match.tableOrderPlayerIds || [])];
+    while (next.length < 4) next.push("");
+    next[slotIdx] = playerIdOrEmpty || "";
+
+    const cleaned = next.filter(Boolean);
+    const unique = [];
+    for (const id of cleaned) {
+      if (!unique.includes(id)) unique.push(id);
+    }
+
+    while (unique.length < 4 && next.length >= unique.length + 1) {
+      const candidate = next[unique.length];
+      if (candidate && !unique.includes(candidate)) unique.push(candidate);
+      else break;
+    }
+
+    onTableSetupPatch({
+      tableOrderPlayerIds: unique,
+      firstShufflerPlayerId:
+        unique.includes(match.firstShufflerPlayerId) ? match.firstShufflerPlayerId : "",
+    });
+  }
+
+  function renderAnnounceBlock(side, label, teamPlayers) {
+    const key1 = `announce${side}1`;
+    const key2 = `announce${side}2`;
+    const p1 = `announce${side}1PlayerId`;
+    const p2 = `announce${side}2PlayerId`;
+
+    return (
+      <div style={styles.card}>
+        <div style={{ fontWeight: 950, marginBottom: 10 }}>{label}</div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={styles.small}>Announce 1</div>
+            <input
+              style={handInput}
+              value={d[key1]}
+              onChange={(e) => onDraftPatch({ [key1]: e.target.value })}
+              inputMode="numeric"
+              disabled={!setupReady}
+            />
+          </div>
+          <div>
+            <div style={styles.small}>Player</div>
+            <select
+              style={handSelect}
+              value={d[p1] || ""}
+              onChange={(e) => onDraftPatch({ [p1]: e.target.value })}
+              disabled={!setupReady}
+            >
+              <option value="">— Select —</option>
+              {teamPlayers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <div style={styles.small}>Announce 2</div>
+            <input
+              style={handInput}
+              value={d[key2]}
+              onChange={(e) => onDraftPatch({ [key2]: e.target.value })}
+              inputMode="numeric"
+              disabled={!setupReady}
+            />
+          </div>
+          <div>
+            <div style={styles.small}>Player</div>
+            <select
+              style={handSelect}
+              value={d[p2] || ""}
+              onChange={(e) => onDraftPatch({ [p2]: e.target.value })}
+              disabled={!setupReady}
+            >
+              <option value="">— Select —</option>
+              {teamPlayers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 8, ...styles.small }}>
+          Total announces: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{sumAnnounces(d, side)}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...styles.card, borderRadius: 18 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        <div style={{ fontWeight: 950 }}>
+          {match.tableName} • {match.label}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
+            {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
+          </div>
+
+          {!match.completed ? (
+            <button
+              style={{ ...styles.btnDanger, ...(setupReady ? {} : styles.disabled) }}
+              onClick={() => {
+                if (!setupReady) return;
+                if (!confirm("Finish this game now? Winner will be the higher total score.")) return;
+                onFinishNow?.();
+              }}
+              disabled={!setupReady}
+            >
+              Finish Game Now
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10, ...styles.grid2 }}>
+        <div
+          style={{
+            ...styles.card,
+            position: "relative",
+            ...(leader === "A" ? styles.leaderGlow : {}),
+            ...(winnerSide === "A" ? styles.winnerGlow : {}),
+          }}
+        >
+          {winnerSide === "A" ? (
+            <div style={styles.trophyBadge}>
+              <span style={styles.trophyCircle}>🏆</span>
+              <span>1</span>
+            </div>
+          ) : null}
+
+          {celebrateOn && winnerSide === "A" ? (
+            <>
+              <Fireworks seed={(match.id || "").length + (match.totalA || 0)} />
+              <div style={styles.confettiWrap}>
+                {Array.from({ length: 30 }).map((_, i) => (
+                  <span key={i} style={styles.confettiPiece(i)} />
+                ))}
+              </div>
+            </>
+          ) : null}
+
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>{ta}</div>
+
+          {bigTotals ? (
+            <div style={styles.bigTotal}>
+              <AnimatedNumber value={match.totalA} />
+            </div>
+          ) : (
+            <div style={styles.small}>
+              Total: <b style={{ color: "#e5e7eb" }}>{match.totalA}</b> / {TARGET_SCORE}
+            </div>
+          )}
+
+          <div style={{ marginTop: 8, ...styles.progressWrap }}>
+            <div style={styles.progressFillA(pctA)} />
+          </div>
+        </div>
+
+        <div
+          style={{
+            ...styles.card,
+            position: "relative",
+            ...(leader === "B" ? styles.leaderGlow : {}),
+            ...(winnerSide === "B" ? styles.winnerGlow : {}),
+          }}
+        >
+          {winnerSide === "B" ? (
+            <div style={styles.trophyBadge}>
+              <span style={styles.trophyCircle}>🏆</span>
+              <span>1</span>
+            </div>
+          ) : null}
+
+          {celebrateOn && winnerSide === "B" ? (
+            <>
+              <Fireworks seed={(match.id || "").length + (match.totalB || 0) + 7} />
+              <div style={styles.confettiWrap}>
+                {Array.from({ length: 30 }).map((_, i) => (
+                  <span key={i} style={styles.confettiPiece(i)} />
+                ))}
+              </div>
+            </>
+          ) : null}
+
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>{tb}</div>
+
+          {bigTotals ? (
+            <div style={styles.bigTotal}>
+              <AnimatedNumber value={match.totalB} />
+            </div>
+          ) : (
+            <div style={styles.small}>
+              Total: <b style={{ color: "#e5e7eb" }}>{match.totalB}</b> / {TARGET_SCORE}
+            </div>
+          )}
+
+          <div style={{ marginTop: 8, ...styles.progressWrap }}>
+            <div style={styles.progressFillB(pctB)} />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10, ...styles.small }}>
+        End immediately at <b style={{ color: "#e5e7eb" }}>{TARGET_SCORE}</b>. Add hands until one team reaches 2000+.
+      </div>
+
+      <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
+        <div style={{ fontWeight: 950, marginBottom: 10 }}>Table Setup</div>
+
+        {!canPlay ? (
+          <div style={styles.small}>Select both teams first.</div>
+        ) : (
+          <>
+            <div style={{ ...styles.small, marginBottom: 10 }}>
+              Choose the 4 players in table order, then select who shuffles first.
+            </div>
+
+            <div style={styles.grid4}>
+              {[0, 1, 2, 3].map((idx) => (
+                <div key={idx}>
+                  <div style={fieldLabelStyle}>Seat {idx + 1}</div>
+                  <select
+                    style={handSelect}
+                    value={match.tableOrderPlayerIds?.[idx] || ""}
+                    onChange={(e) => setSeat(idx, e.target.value)}
+                    disabled={(match.hands || []).length > 0}
+                  >
+                    <option value="">— Select —</option>
+                    {allTablePlayers.map((p) => {
+                      const taken =
+                        (match.tableOrderPlayerIds || []).includes(p.id) &&
+                        (match.tableOrderPlayerIds || [])[idx] !== p.id;
+                      return (
+                        <option key={p.id} value={p.id} disabled={taken}>
+                          {p.name}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ marginTop: 10, maxWidth: 300 }}>
+              <div style={fieldLabelStyle}>First player to shuffle</div>
+              <select
+                style={handSelect}
+                value={match.firstShufflerPlayerId || ""}
+                onChange={(e) => onTableSetupPatch({ firstShufflerPlayerId: e.target.value })}
+                disabled={(match.hands || []).length > 0 || (match.tableOrderPlayerIds || []).length !== 4}
+              >
+                <option value="">— Select —</option>
+                {(match.tableOrderPlayerIds || []).map((pid) => {
+                  const p = playerById.get(pid);
+                  if (!p) return null;
+                  return (
+                    <option key={pid} value={pid}>
+                      {p.name}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {seatOrderNames.length === 4 ? (
+              <div style={{ marginTop: 10, ...styles.small }}>
+                Order: <span style={{ color: "#e5e7eb" }}>{seatOrderNames.join(" → ")}</span>
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
+
+      <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+          <div style={{ fontWeight: 950 }}>Hand Tracker</div>
+          {match.editingHandIdx ? (
+            <span style={styles.tag}>Editing Hand {match.editingHandIdx}</span>
+          ) : (
+            <span style={styles.tag}>New Hand</span>
+          )}
+        </div>
+
+        <div style={{ marginTop: 8, color: "#facc15", fontWeight: 950 }}>
+          {setupReady && currentShufflerName ? `${currentShufflerName} shuffling` : "Complete table setup before starting"}
+        </div>
+
+        <div style={styles.handRow1}>
+          <div>
+            <div style={fieldLabelStyle}>Bidder</div>
+            <select
+              style={handSelect}
+              value={d.bidder}
+              onChange={(e) => onDraftPatch({ bidder: e.target.value })}
+              disabled={!setupReady}
+            >
+              <option value="A">{ta}</option>
+              <option value="B">{tb}</option>
+            </select>
+          </div>
+
+          <div>
+            <div style={fieldLabelStyle}>Bid</div>
+            <input
+              style={handInput}
+              value={d.bid}
+              onChange={(e) => onDraftPatch({ bid: e.target.value })}
+              placeholder='80, 90, 110... or "capot"'
+              disabled={!setupReady}
+            />
+          </div>
+
+          <div>
+            <div style={fieldLabelStyle}>Suit</div>
+            <select
+              style={handSelect}
+              value={d.suit || "S"}
+              onChange={(e) => onDraftPatch({ suit: e.target.value })}
+              disabled={!setupReady}
+            >
+              <option value="H">♥ Hearts</option>
+              <option value="D">♦ Diamonds</option>
+              <option value="C">♣ Clubs</option>
+              <option value="S">♠ Spades</option>
+            </select>
+          </div>
+
+          <div>
+            <div style={fieldLabelStyle}>Coinche</div>
+            <select
+              style={handSelect}
+              value={d.coincheLevel}
+              onChange={(e) => onDraftPatch({ coincheLevel: e.target.value })}
+              disabled={!setupReady}
+            >
+              <option value="NONE">None</option>
+              <option value="COINCHE">Coinche (x2)</option>
+              <option value="SURCOINCHE">Surcoinche (x4)</option>
+            </select>
+          </div>
+
+          <div>
+            <div style={fieldLabelStyle}>Capot</div>
+            <select
+              style={handSelect}
+              value={d.capot ? "YES" : "NO"}
+              onChange={(e) => onDraftPatch({ capot: e.target.value === "YES" })}
+              disabled={!setupReady}
+            >
+              <option value="NO">No</option>
+              <option value="YES">Yes</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={styles.handRow2}>
+          {renderAnnounceBlock("A", ta, playersA)}
+          {renderAnnounceBlock("B", tb, playersB)}
+        </div>
+
+        <div style={styles.handRow3}>
+          <div>
+            <div style={fieldLabelStyle}>Belote</div>
+            <select
+              style={handSelect}
+              value={d.beloteTeam}
+              onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })}
+              disabled={!setupReady}
+            >
+              <option value="NONE">None</option>
+              <option value="A">{ta}</option>
+              <option value="B">{tb}</option>
+            </select>
+          </div>
+
+          <div>
+            <div style={fieldLabelStyle}>Bidder trick points (0–162)</div>
+            <input
+              style={handInput}
+              value={d.bidderTrickPoints}
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw.trim() === "") {
+                  onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "" });
+                  return;
+                }
+                const n = safeInt(raw);
+                if (n === null) {
+                  onDraftPatch({ bidderTrickPoints: raw, trickSource: "BIDDER" });
+                  return;
+                }
+                const v = clamp(n, 0, 162);
+                onDraftPatch({
+                  bidderTrickPoints: String(v),
+                  nonBidderTrickPoints: String(162 - v),
+                  trickSource: "BIDDER",
+                });
+              }}
+              placeholder="ex: 81"
+              inputMode="numeric"
+              disabled={!setupReady || d.trickSource === "NON"}
+            />
+          </div>
+
+          <div>
+            <div style={fieldLabelStyle}>Non-bidder trick points (0–162)</div>
+            <input
+              style={handInput}
+              value={d.nonBidderTrickPoints}
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw.trim() === "") {
+                  onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "" });
+                  return;
+                }
+                const n = safeInt(raw);
+                if (n === null) {
+                  onDraftPatch({ nonBidderTrickPoints: raw, trickSource: "NON" });
+                  return;
+                }
+                const v = clamp(n, 0, 162);
+                onDraftPatch({
+                  nonBidderTrickPoints: String(v),
+                  bidderTrickPoints: String(162 - v),
+                  trickSource: "NON",
+                });
+              }}
+              placeholder="ex: 81"
+              inputMode="numeric"
+              disabled={!setupReady || d.trickSource === "BIDDER"}
+            />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
+          <button
+            style={{ ...styles.btnPrimary, ...(setupReady ? {} : styles.disabled) }}
+            onClick={onAddHand}
+            disabled={!setupReady}
+          >
+            {match.editingHandIdx ? `Save Changes (Hand ${match.editingHandIdx})` : "Add Hand"}
+          </button>
+
+          {match.editingHandIdx ? (
+            <button style={styles.btnSecondary} onClick={onCancelEdit}>
+              Cancel Edit
+            </button>
+          ) : null}
+
+          <button
+            style={{ ...styles.btnSecondary, ...(setupReady ? {} : styles.disabled) }}
+            onClick={() => setScanOpen(true)}
+            disabled={!setupReady}
+          >
+            Calculate points with picture
+          </button>
+
+          <button style={styles.btnSecondary} onClick={onClearHands}>
+            Clear Match Hands
+          </button>
+
+          <span style={{ ...styles.small, marginLeft: "auto" }}>
+            Suit: <SuitIcon suit={d.suit || "S"} /> {suitLabel}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontWeight: 950, marginBottom: 10 }}>Hands Played</div>
+        {(match.hands || []).length === 0 ? (
+          <div style={styles.small}>No hands yet.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {(match.hands || []).map((h) => {
+              const ds = h.draftSnapshot || {};
+              const announceParts = [];
+              if ((Number(ds.announceA1) || 0) > 0) {
+                announceParts.push(
+                  `${playerById.get(ds.announceA1PlayerId)?.name || ta}: ${ds.announceA1}`
+                );
+              }
+              if ((Number(ds.announceA2) || 0) > 0) {
+                announceParts.push(
+                  `${playerById.get(ds.announceA2PlayerId)?.name || ta}: ${ds.announceA2}`
+                );
+              }
+              if ((Number(ds.announceB1) || 0) > 0) {
+                announceParts.push(
+                  `${playerById.get(ds.announceB1PlayerId)?.name || tb}: ${ds.announceB1}`
+                );
+              }
+              if ((Number(ds.announceB2) || 0) > 0) {
+                announceParts.push(
+                  `${playerById.get(ds.announceB2PlayerId)?.name || tb}: ${ds.announceB2}`
+                );
+              }
+
+              return (
+                <div key={h.idx} style={styles.handRow}>
+                  <div style={{ minWidth: 220 }}>
+                    <div style={{ fontWeight: 950 }}>Hand {h.idx}</div>
+                    <div style={styles.small}>
+                      Bid {ds.bid} <SuitIcon suit={ds.suit || "S"} /> • Bidder {ds.bidder === "A" ? ta : tb} • {ds.coincheLevel}
+                      {ds.capot ? " • Capot" : ""} • Bidder tricks {ds.bidderTrickPoints} • Non-bidder tricks{" "}
+                      {typeof ds.nonBidderTrickPoints !== "undefined" && ds.nonBidderTrickPoints !== ""
+                        ? ds.nonBidderTrickPoints
+                        : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162)}
+                    </div>
+                    {announceParts.length ? (
+                      <div style={{ marginTop: 6, ...styles.small }}>
+                        Announces: <span style={{ color: "#e5e7eb" }}>{announceParts.join(" • ")}</span>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={styles.tag}>
+                      +{h.scoreA} / +{h.scoreB}
+                    </span>
+                    <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>
+                      Edit
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <ScanPointsModal
+        open={scanOpen}
+        onClose={() => setScanOpen(false)}
+        trumpSuit={d.suit || "S"}
+        onApplyPoints={({ pileSide, points }) => {
+          const p = clamp(Number(points) || 0, 0, 162);
+          if (pileSide === "BIDDER") {
+            onDraftPatch({
+              bidderTrickPoints: String(p),
+              nonBidderTrickPoints: String(162 - p),
+              trickSource: "BIDDER",
+            });
+          } else {
+            onDraftPatch({
+              nonBidderTrickPoints: String(p),
+              bidderTrickPoints: String(162 - p),
+              trickSource: "NON",
+            });
+          }
+        }}
+      />
+    </div>
+  );
+}
