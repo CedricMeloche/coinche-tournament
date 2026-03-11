@@ -710,6 +710,15 @@ export default function App() {
     };
   }
 
+  function normalizeLoadedMatch(m) {
+    return {
+      ...m,
+      fastDraft: { ...defaultFastDraft(), ...(m.fastDraft || {}) },
+      tableOrderPlayerIds: m.tableOrderPlayerIds || [],
+      firstShufflerPlayerId: m.firstShufflerPlayerId || "",
+    };
+  }
+
   function makeEmptyMatch({ tableName, teamAId, teamBId, label }) {
     return {
       id: uid("match"),
@@ -781,6 +790,41 @@ export default function App() {
     }
   }
 
+  function hydrateFromLocalStorageForTable(code) {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return false;
+      const d = JSON.parse(raw);
+
+      const loadedMatches = (d.matches ?? []).map(normalizeLoadedMatch);
+      const found = loadedMatches.some(
+        (m) => (m.code || "").toUpperCase() === String(code || "").toUpperCase()
+      );
+
+      if (!found) return false;
+
+      setAppName(d.appName ?? "Coinche Scorekeeper");
+      setPlayers(d.players ?? []);
+      setTeams(d.teams ?? []);
+      setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
+      setPairHistory(d.pairHistory ?? []);
+      setMatches(loadedMatches);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function openTableRoute(code) {
+    persistNow();
+    try {
+      localStorage.setItem("__coinche_last_opened_table_code", String(code || ""));
+    } catch {
+      // ignore
+    }
+    navigateHash(`#/table?code=${code}`);
+  }
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
@@ -791,14 +835,7 @@ export default function App() {
         setTeams(d.teams ?? []);
         setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
         setPairHistory(d.pairHistory ?? []);
-        setMatches(
-          (d.matches ?? []).map((m) => ({
-            ...m,
-            fastDraft: { ...defaultFastDraft(), ...(m.fastDraft || {}) },
-            tableOrderPlayerIds: m.tableOrderPlayerIds || [],
-            firstShufflerPlayerId: m.firstShufflerPlayerId || "",
-          }))
-        );
+        setMatches((d.matches ?? []).map(normalizeLoadedMatch));
       }
     } catch {
       // ignore
@@ -850,6 +887,34 @@ export default function App() {
     const t = setTimeout(() => setTableMissingDelayDone(true), 350);
     return () => clearTimeout(t);
   }, [route.path, route.query.code]);
+
+  useEffect(() => {
+    if (route.path !== "/table") return;
+
+    const code = String(route.query.code || "").toUpperCase();
+    if (!code) return;
+
+    const existsInState = matches.some(
+      (m) => (m.code || "").toUpperCase() === code
+    );
+    if (existsInState) return;
+
+    let tries = 0;
+    const maxTries = 12;
+
+    const tryHydrate = () => {
+      tries += 1;
+      const found = hydrateFromLocalStorageForTable(code);
+      if (found || tries >= maxTries) {
+        clearInterval(timer);
+      }
+    };
+
+    const timer = setInterval(tryHydrate, 120);
+    tryHydrate();
+
+    return () => clearInterval(timer);
+  }, [route.path, route.query.code, matches]);
 
   function enqueueHandBackup(row) {
     backupQueueRef.current.push(row);
@@ -1756,7 +1821,7 @@ export default function App() {
                         <button
                           type="button"
                           style={styles.btnSecondary}
-                          onClick={() => navigateHash(`#/table?code=${m.code}`)}
+                          onClick={() => openTableRoute(m.code)}
                         >
                           Open Table
                         </button>
@@ -1782,7 +1847,7 @@ export default function App() {
                   <button
                     type="button"
                     style={styles.btnSecondary}
-                    onClick={() => navigateHash(`#/table?code=${t.code}`)}
+                    onClick={() => openTableRoute(t.code)}
                   >
                     Open Table View
                   </button>
@@ -2171,7 +2236,7 @@ export default function App() {
                   teamById={teamById}
                   playerById={playerById}
                   teams={teams}
-                  onOpenTable={() => navigateHash(`#/table?code=${m.code}`)}
+                  onOpenTable={() => openTableRoute(m.code)}
                   onCopyLink={() => {
                     const href = `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`;
                     navigator.clipboard?.writeText(href);
@@ -2236,7 +2301,7 @@ export default function App() {
                   <button
                     type="button"
                     style={styles.btnSecondary}
-                    onClick={() => navigateHash(`#/table?code=${t.code}`)}
+                    onClick={() => openTableRoute(t.code)}
                   >
                     Open
                   </button>
@@ -2811,6 +2876,58 @@ function CollapsibleMatchCard({
         </div>
       </div>
 
+      <div style={{ marginTop: 12, ...styles.grid2 }}>
+        <div style={styles.card}>
+          <div style={styles.small}>Table name</div>
+          <input
+            style={styles.input("100%")}
+            value={match.tableName}
+            onChange={(e) => onRenameMatch({ tableName: e.target.value })}
+          />
+        </div>
+
+        <div style={styles.card}>
+          <div style={styles.small}>Match label</div>
+          <input
+            style={styles.input("100%")}
+            value={match.label}
+            onChange={(e) => onRenameMatch({ label: e.target.value })}
+          />
+        </div>
+
+        <div>
+          <div style={styles.small}>Team A</div>
+          <select
+            style={styles.select("100%")}
+            value={match.teamAId || ""}
+            onChange={(e) => onSetMatchTeam("teamAId", e.target.value)}
+          >
+            <option value="">— Select —</option>
+            {teams.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <div style={styles.small}>Team B</div>
+          <select
+            style={styles.select("100%")}
+            value={match.teamBId || ""}
+            onChange={(e) => onSetMatchTeam("teamBId", e.target.value)}
+          >
+            <option value="">— Select —</option>
+            {teams.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
       {!collapsed ? (
         <>
           <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -2822,69 +2939,14 @@ function CollapsibleMatchCard({
             </button>
           </div>
 
-          <div style={{ marginTop: 10, ...styles.grid3 }}>
-            <div style={styles.card}>
-              <div style={styles.small}>Table name</div>
-              <input
-                style={styles.input("100%")}
-                value={match.tableName}
-                onChange={(e) => onRenameMatch({ tableName: e.target.value })}
-              />
+          <div style={{ marginTop: 10, ...styles.card }}>
+            <div style={{ fontWeight: 950, color: match.completed ? "#34d399" : "#94a3b8" }}>
+              {match.completed
+                ? `Completed • Winner: ${teamById.get(match.winnerId)?.name ?? "—"}`
+                : "In progress"}
             </div>
-
-            <div style={styles.card}>
-              <div style={styles.small}>Match label</div>
-              <input
-                style={styles.input("100%")}
-                value={match.label}
-                onChange={(e) => onRenameMatch({ label: e.target.value })}
-              />
-            </div>
-
-            <div style={styles.card}>
-              <div style={styles.small}>Quick status</div>
-              <div style={{ fontWeight: 950, color: match.completed ? "#34d399" : "#94a3b8" }}>
-                {match.completed
-                  ? `Completed • Winner: ${teamById.get(match.winnerId)?.name ?? "—"}`
-                  : "In progress"}
-              </div>
-              <div style={styles.small}>
-                Score: {match.totalA} – {match.totalB}
-              </div>
-            </div>
-          </div>
-
-          <div style={{ marginTop: 12, ...styles.grid2 }}>
-            <div>
-              <div style={styles.small}>Team A</div>
-              <select
-                style={styles.select("100%")}
-                value={match.teamAId || ""}
-                onChange={(e) => onSetMatchTeam("teamAId", e.target.value)}
-              >
-                <option value="">— Select —</option>
-                {teams.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <div style={styles.small}>Team B</div>
-              <select
-                style={styles.select("100%")}
-                value={match.teamBId || ""}
-                onChange={(e) => onSetMatchTeam("teamBId", e.target.value)}
-              >
-                <option value="">— Select —</option>
-                {teams.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+            <div style={styles.small}>
+              Score: {match.totalA} – {match.totalB}
             </div>
           </div>
 
@@ -2979,6 +3041,25 @@ function TableMatchPanel({
   const [celebrateOn, setCelebrateOn] = useState(false);
   const prevWinnerRef = useRef(null);
   const [scanOpen, setScanOpen] = useState(false);
+
+  const [setupCollapsed, setSetupCollapsed] = useState(setupReady);
+  const setupAutoCollapsedRef = useRef(false);
+
+  useEffect(() => {
+    setSetupCollapsed(setupReady);
+    setupAutoCollapsedRef.current = Boolean(setupReady);
+  }, [match.id]);
+
+  useEffect(() => {
+    if (setupReady && !setupAutoCollapsedRef.current) {
+      setSetupCollapsed(true);
+      setupAutoCollapsedRef.current = true;
+    }
+    if (!setupReady) {
+      setSetupCollapsed(false);
+      setupAutoCollapsedRef.current = false;
+    }
+  }, [setupReady]);
 
   useEffect(() => {
     const prev = prevWinnerRef.current;
@@ -3148,6 +3229,117 @@ function TableMatchPanel({
         </div>
       </div>
 
+      <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 10,
+            flexWrap: "wrap",
+            alignItems: "center",
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ fontWeight: 950 }}>Table Setup</div>
+
+          {canPlay ? (
+            <button
+              type="button"
+              style={styles.btnSecondary}
+              onClick={() => setSetupCollapsed((v) => !v)}
+            >
+              {setupCollapsed ? "Expand Setup" : "Collapse Setup"}
+            </button>
+          ) : null}
+        </div>
+
+        {!canPlay ? (
+          <div style={styles.small}>Select both teams first.</div>
+        ) : (
+          <>
+            {setupCollapsed ? (
+              <div style={styles.card}>
+                <div style={{ ...styles.small, marginBottom: 6 }}>
+                  Table setup completed. Expand to edit if needed.
+                </div>
+                {seatOrderNames.length === 4 ? (
+                  <div style={{ fontWeight: 900 }}>
+                    Order: <span style={{ color: "#e5e7eb" }}>{seatOrderNames.join(" → ")}</span>
+                  </div>
+                ) : null}
+                {match.firstShufflerPlayerId ? (
+                  <div style={{ marginTop: 6, ...styles.small }}>
+                    First shuffler:{" "}
+                    <span style={{ color: "#e5e7eb", fontWeight: 900 }}>
+                      {playerById.get(match.firstShufflerPlayerId)?.name || "—"}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <>
+                <div style={{ ...styles.small, marginBottom: 10 }}>
+                  Choose the 4 players in table order, then select who shuffles first.
+                </div>
+
+                <div style={styles.grid4}>
+                  {[0, 1, 2, 3].map((idx) => (
+                    <div key={idx}>
+                      <div style={fieldLabelStyle}>Seat {idx + 1}</div>
+                      <select
+                        style={handSelect}
+                        value={match.tableOrderPlayerIds?.[idx] || ""}
+                        onChange={(e) => setSeat(idx, e.target.value)}
+                        disabled={(match.hands || []).length > 0}
+                      >
+                        <option value="">— Select —</option>
+                        {allTablePlayers.map((p) => {
+                          const taken =
+                            (match.tableOrderPlayerIds || []).includes(p.id) &&
+                            (match.tableOrderPlayerIds || [])[idx] !== p.id;
+                          return (
+                            <option key={p.id} value={p.id} disabled={taken}>
+                              {p.name}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ marginTop: 10, maxWidth: 320 }}>
+                  <div style={fieldLabelStyle}>First player to shuffle</div>
+                  <select
+                    style={handSelect}
+                    value={match.firstShufflerPlayerId || ""}
+                    onChange={(e) => onTableSetupPatch({ firstShufflerPlayerId: e.target.value })}
+                    disabled={(match.hands || []).length > 0 || (match.tableOrderPlayerIds || []).length !== 4}
+                  >
+                    <option value="">— Select —</option>
+                    {(match.tableOrderPlayerIds || []).map((pid) => {
+                      const p = playerById.get(pid);
+                      if (!p) return null;
+                      return (
+                        <option key={pid} value={pid}>
+                          {p.name}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                {seatOrderNames.length === 4 ? (
+                  <div style={{ marginTop: 10, ...styles.small }}>
+                    Order: <span style={{ color: "#e5e7eb" }}>{seatOrderNames.join(" → ")}</span>
+                  </div>
+                ) : null}
+              </>
+            )}
+          </>
+        )}
+      </div>
+
       <div style={{ marginTop: 10, ...styles.grid2 }}>
         <div
           style={{
@@ -3241,73 +3433,6 @@ function TableMatchPanel({
       </div>
 
       <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
-        <div style={{ fontWeight: 950, marginBottom: 10 }}>Table Setup</div>
-
-        {!canPlay ? (
-          <div style={styles.small}>Select both teams first.</div>
-        ) : (
-          <>
-            <div style={{ ...styles.small, marginBottom: 10 }}>
-              Choose the 4 players in table order, then select who shuffles first.
-            </div>
-
-            <div style={styles.grid4}>
-              {[0, 1, 2, 3].map((idx) => (
-                <div key={idx}>
-                  <div style={fieldLabelStyle}>Seat {idx + 1}</div>
-                  <select
-                    style={handSelect}
-                    value={match.tableOrderPlayerIds?.[idx] || ""}
-                    onChange={(e) => setSeat(idx, e.target.value)}
-                    disabled={(match.hands || []).length > 0}
-                  >
-                    <option value="">— Select —</option>
-                    {allTablePlayers.map((p) => {
-                      const taken =
-                        (match.tableOrderPlayerIds || []).includes(p.id) &&
-                        (match.tableOrderPlayerIds || [])[idx] !== p.id;
-                      return (
-                        <option key={p.id} value={p.id} disabled={taken}>
-                          {p.name}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ marginTop: 10, maxWidth: 300 }}>
-              <div style={fieldLabelStyle}>First player to shuffle</div>
-              <select
-                style={handSelect}
-                value={match.firstShufflerPlayerId || ""}
-                onChange={(e) => onTableSetupPatch({ firstShufflerPlayerId: e.target.value })}
-                disabled={(match.hands || []).length > 0 || (match.tableOrderPlayerIds || []).length !== 4}
-              >
-                <option value="">— Select —</option>
-                {(match.tableOrderPlayerIds || []).map((pid) => {
-                  const p = playerById.get(pid);
-                  if (!p) return null;
-                  return (
-                    <option key={pid} value={pid}>
-                      {p.name}
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
-
-            {seatOrderNames.length === 4 ? (
-              <div style={{ marginTop: 10, ...styles.small }}>
-                Order: <span style={{ color: "#e5e7eb" }}>{seatOrderNames.join(" → ")}</span>
-              </div>
-            ) : null}
-          </>
-        )}
-      </div>
-
-      <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
           <div style={{ fontWeight: 950 }}>Hand Tracker</div>
           {match.editingHandIdx ? (
@@ -3317,8 +3442,29 @@ function TableMatchPanel({
           )}
         </div>
 
-        <div style={{ marginTop: 8, color: "#facc15", fontWeight: 950 }}>
-          {setupReady && currentShufflerName ? `${currentShufflerName} shuffling` : "Complete table setup before starting"}
+        <div
+          style={{
+            marginTop: 10,
+            padding: 12,
+            borderRadius: 16,
+            background: "rgba(250,204,21,0.08)",
+            border: "1px solid rgba(250,204,21,0.28)",
+          }}
+        >
+          <div style={{ fontSize: 28, fontWeight: 950, lineHeight: 1.1, color: "#e5e7eb" }}>
+            Shuffle Order
+          </div>
+
+          <div style={{ marginTop: 6, fontSize: 32, fontWeight: 950, lineHeight: 1.05, color: "#e5e7eb" }}>
+            {seatOrderNames.length === 4 ? seatOrderNames.join(" → ") : "Set the 4-player order first"}
+          </div>
+
+          <div style={{ marginTop: 8, fontSize: 32, fontWeight: 1000, lineHeight: 1.05 }}>
+            <span style={{ color: "#e5e7eb" }}>Now shuffling: </span>
+            <span style={{ color: "#facc15", fontSize: 36 }}>
+              {setupReady && currentShufflerName ? currentShufflerName : "Complete table setup before starting"}
+            </span>
+          </div>
         </div>
 
         <div style={styles.handRow1}>

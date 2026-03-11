@@ -201,7 +201,7 @@ function nms(preds, iouThreshold = 0.45) {
   return kept;
 }
 
-function pickBestUniqueCards(preds, maxCards = 16) {
+function pickBestUniqueCards(preds, maxCards = 32) {
   const reduced = nms(preds, 0.45);
 
   const parsed = reduced
@@ -249,7 +249,6 @@ async function callRoboflowWorkflow({ imageBuffer, mimeType }) {
     throw new Error("Missing Roboflow env vars.");
   }
 
-  // This matches the HTTP/cURL deploy panel you showed
   const base = apiUrl.replace(/\/$/, "");
   const url = `${base}/${encodeURIComponent(workspace)}/workflows/${encodeURIComponent(workflowId)}`;
 
@@ -344,12 +343,18 @@ export default async function handler(req, res) {
     });
 
     const preds = extractPredictionsDeep(rf);
-    const { unique: cards16, reducedCount, parsedCount } = pickBestUniqueCards(preds, 16);
-    const points = computeBelotePoints(cards16, trumpSuit, lastTrick);
+    const { unique: cards, reducedCount, parsedCount } = pickBestUniqueCards(preds, 32);
+    const points = computeBelotePoints(cards, trumpSuit, lastTrick);
 
     const warnings = [];
-    if (cards16.length !== 16) {
-      warnings.push(`Detected ${cards16.length} unique cards (expected 16). Try better lighting / less overlap.`);
+    if (cards.length < 4) {
+      warnings.push(`Detected only ${cards.length} unique cards. Minimum expected is 4.`);
+    }
+    if (cards.length > 32) {
+      warnings.push(`Detected ${cards.length} unique cards. Maximum valid deck size is 32.`);
+    }
+    if (cards.length >= 4 && cards.length <= 32) {
+      warnings.push(`Detected ${cards.length} unique cards.`);
     }
 
     res.status(200).json({
@@ -358,7 +363,10 @@ export default async function handler(req, res) {
       pileSide,
       lastTrick,
       points,
-      cards: cards16.map((c) => ({
+      cardCount: cards.length,
+      minCardsSupported: 4,
+      maxCardsSupported: 32,
+      cards: cards.map((c) => ({
         ...c,
         displayRank: toFrenchRank(c.rank),
         displayCode: toFrenchCode(c.code),
