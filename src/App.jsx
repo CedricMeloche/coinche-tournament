@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * Coinche Scorekeeper (Vite single-file App.jsx)
+ * Coinche Scorekeeper (cleaned single-file App.jsx)
  * Routes:
  *   #/admin
  *   #/public
@@ -10,27 +10,21 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const LS_KEY = "coinche_scorekeeper_v1";
 const TARGET_SCORE = 2000;
-
-// ✅ Your Google Apps Script Web App endpoint:
 const BACKUP_URL =
   "https://script.google.com/macros/s/AKfycbz-ok_dxCTExzV6LA8NixK6nYnw03MhOBZ3M6SgP_Na5-hlrhnMLX3bIUYqqq5laguSHw/exec";
-
-// ✅ MUST match Apps Script SECRET
 const BACKUP_SECRET = "CHANGE_ME_TO_A_LONG_RANDOM_STRING";
+const APP_UPDATED_EVENT = "coinche_state_updated";
 
 /* =========================
    Helpers
 ========================= */
 
-function uid(prefix = "id") {
-  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-}
+const uid = (prefix = "id") =>
+  `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 
 function shortCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let s = "";
-  for (let i = 0; i < 4; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return s;
+  return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
 
 function shuffleArray(arr) {
@@ -42,22 +36,20 @@ function shuffleArray(arr) {
   return a;
 }
 
-function safeInt(v) {
+const safeInt = (v) => {
   if (v === "" || v === null || v === undefined) return null;
   const n = Number(String(v).replace(/[^0-9\-]/g, ""));
   return Number.isFinite(n) ? n : null;
-}
+};
 
-function clamp(n, lo, hi) {
+const clamp = (n, lo, hi) => {
   const x = Number(n);
-  if (!Number.isFinite(x)) return lo;
-  return Math.max(lo, Math.min(hi, x));
-}
+  return Number.isFinite(x) ? Math.max(lo, Math.min(hi, x)) : lo;
+};
 
-function normalizeScanCardCount(n) {
-  const x = Number(n) || 0;
-  return clamp(Math.round(x), 0, 32);
-}
+const num = (v, d = 0) => safeInt(v) ?? d;
+const normalizeScanCardCount = (n) => clamp(Math.round(Number(n) || 0), 0, 32);
+const parseBidValue = (v) => (String(v || "").trim().toLowerCase() === "capot" ? 250 : safeInt(v));
 
 function getDeviceId() {
   try {
@@ -88,16 +80,15 @@ function SuitIcon({ suit }) {
 }
 
 /* =========================
-   Camera scan helpers
+   Camera helpers
 ========================= */
 
 function dataURLtoBlob(dataUrl) {
   const [meta, b64] = String(dataUrl).split(",");
   const mime = (meta.match(/data:(.*?);base64/) || [])[1] || "image/jpeg";
-  const binStr = atob(b64);
-  const len = binStr.length;
-  const arr = new Uint8Array(len);
-  for (let i = 0; i < len; i++) arr[i] = binStr.charCodeAt(i);
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
   return new Blob([arr], { type: mime });
 }
 
@@ -113,7 +104,7 @@ async function postScanToApi({ imageDataUrl, trumpSuit, pileSide, lastTrick }) {
     const t = await res.text().catch(() => "");
     throw new Error(`Scan failed (${res.status}) ${t}`);
   }
-  return await res.json();
+  return res.json();
 }
 
 /* =========================
@@ -127,19 +118,18 @@ function ensureGlobalCSS() {
   el.id = "coinche_global_css";
   el.innerHTML = `
 @keyframes confettiDrop {
-  0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
+  0% { transform: translateY(0) rotate(0deg); opacity: 1; }
   100% { transform: translateY(420px) rotate(520deg); opacity: 0; }
 }
 @keyframes fireworkParticle {
-  0%   { transform: translate(0px, 0px) scale(1); opacity: 1; }
+  0% { transform: translate(0px,0px) scale(1); opacity: 1; }
   100% { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; }
 }
 @keyframes fireworkGlow {
-  0%   { transform: scale(0.4); opacity: 0; }
-  15%  { transform: scale(1); opacity: 1; }
+  0% { transform: scale(0.4); opacity: 0; }
+  15% { transform: scale(1); opacity: 1; }
   100% { transform: scale(1.1); opacity: 0; }
-}
-`;
+}`;
   document.head.appendChild(el);
 }
 
@@ -150,22 +140,10 @@ function ensureGlobalCSS() {
 function roundTrickPointsPair(rawBidderPoints) {
   const bidderRaw = clamp(Number(rawBidderPoints) || 0, 0, 162);
   const oppRaw = 162 - bidderRaw;
-
   const bidderOnes = bidderRaw % 10;
 
-  if (bidderOnes === 5) {
-    return {
-      bidderRounded: bidderRaw - 5,
-      oppRounded: oppRaw + 5,
-    };
-  }
-
-  if (bidderOnes === 6) {
-    return {
-      bidderRounded: bidderRaw + 4,
-      oppRounded: oppRaw + 4,
-    };
-  }
+  if (bidderOnes === 5) return { bidderRounded: bidderRaw - 5, oppRounded: oppRaw + 5 };
+  if (bidderOnes === 6) return { bidderRounded: bidderRaw + 4, oppRounded: oppRaw + 4 };
 
   const bidderRounded = Math.round(bidderRaw / 10) * 10;
   const oppOnes = oppRaw % 10;
@@ -173,6 +151,36 @@ function roundTrickPointsPair(rawBidderPoints) {
     oppOnes === 5 ? oppRaw - 5 : oppOnes === 6 ? oppRaw + 4 : Math.round(oppRaw / 10) * 10;
 
   return { bidderRounded, oppRounded };
+}
+
+function resolveAnnounces({
+  bidder,
+  announceA,
+  announceB,
+  announceWinner,
+  beloteTeam,
+}) {
+  const validAnnounceA = announceWinner === "A" ? Number(announceA) || 0 : 0;
+  const validAnnounceB = announceWinner === "B" ? Number(announceB) || 0 : 0;
+  const totalValidAnnounces = validAnnounceA + validAnnounceB;
+
+  const bidderValidAnnounces = bidder === "A" ? validAnnounceA : validAnnounceB;
+  const oppValidAnnounces = bidder === "A" ? validAnnounceB : validAnnounceA;
+
+  const beloteA = beloteTeam === "A" ? 20 : 0;
+  const beloteB = beloteTeam === "B" ? 20 : 0;
+  const bidderBelote = bidder === "A" ? beloteA : beloteB;
+
+  return {
+    validAnnounceA,
+    validAnnounceB,
+    totalValidAnnounces,
+    beloteA,
+    beloteB,
+    bidderValidAnnounces,
+    oppValidAnnounces,
+    bidderBelote,
+  };
 }
 
 function computeFastCoincheScore({
@@ -183,88 +191,66 @@ function computeFastCoincheScore({
   bidderTrickPoints,
   announceA,
   announceB,
+  announceWinner,
   beloteTeam,
 }) {
-  const BIDDER_IS_A = bidder === "A";
+  const bidderIsA = bidder === "A";
   const bidVal = Number(bid) || 0;
-
-  const aAnn = Number(announceA) || 0;
-  const bAnn = Number(announceB) || 0;
-
-  const beloteA = beloteTeam === "A" ? 20 : 0;
-  const beloteB = beloteTeam === "B" ? 20 : 0;
-  const totalAnnounces = aAnn + bAnn;
-
   const rawBidder = clamp(Number(bidderTrickPoints) || 0, 0, 162);
   const { bidderRounded, oppRounded } = roundTrickPointsPair(rawBidder);
+  const {
+    validAnnounceA,
+    validAnnounceB,
+    totalValidAnnounces,
+    beloteA,
+    beloteB,
+    bidderValidAnnounces,
+    bidderBelote,
+  } = resolveAnnounces({
+    bidder,
+    announceA,
+    announceB,
+    announceWinner,
+    beloteTeam,
+  });
 
-  const bidderHasBelote =
-    (BIDDER_IS_A && beloteTeam === "A") || (!BIDDER_IS_A && beloteTeam === "B");
-  const bidderAnn = BIDDER_IS_A ? aAnn : bAnn;
-
-  const minRequired = bidderHasBelote ? 71 : 81;
+  const minRequired = bidderBelote > 0 ? 71 : 81;
   const special80 = bidVal === 80 ? 81 : 0;
-  const required = Math.max(minRequired, special80, bidVal - bidderAnn - (bidderHasBelote ? 20 : 0));
+  const required = Math.max(minRequired, special80, bidVal - bidderValidAnnounces - bidderBelote);
 
   const bidderSucceeded = capot ? true : rawBidder >= required;
+  const mult = coincheLevel === "SURCOINCHE" ? 4 : coincheLevel === "COINCHE" ? 2 : 1;
   const isCoinche = coincheLevel !== "NONE";
-  const mult =
-    coincheLevel === "SURCOINCHE" ? 4 : coincheLevel === "COINCHE" ? 2 : 1;
 
   let scoreA = 0;
   let scoreB = 0;
 
   if (capot) {
-    const winnerTotal = 250 + totalAnnounces + beloteA + beloteB + bidVal;
-    if (BIDDER_IS_A) {
-      scoreA = winnerTotal;
-      scoreB = 0;
-    } else {
-      scoreB = winnerTotal;
-      scoreA = 0;
-    }
-    return { scoreA, scoreB, bidderSucceeded: true };
+    const winnerTotal = 250 + totalValidAnnounces + beloteA + beloteB + bidVal;
+    return bidderIsA
+      ? { scoreA: winnerTotal, scoreB: 0, bidderSucceeded: true }
+      : { scoreA: 0, scoreB: winnerTotal, bidderSucceeded: true };
   }
 
   if (isCoinche) {
-    const winnerTotal = 160 + totalAnnounces + mult * bidVal;
+    const winnerTotal = 160 + totalValidAnnounces + mult * bidVal;
     if (bidderSucceeded) {
-      if (BIDDER_IS_A) {
-        scoreA = winnerTotal + beloteA;
-        scoreB = beloteB;
-      } else {
-        scoreB = winnerTotal + beloteB;
-        scoreA = beloteA;
-      }
+      scoreA = bidderIsA ? winnerTotal + beloteA : beloteA;
+      scoreB = bidderIsA ? beloteB : winnerTotal + beloteB;
     } else {
-      if (BIDDER_IS_A) {
-        scoreA = beloteA;
-        scoreB = winnerTotal + beloteB;
-      } else {
-        scoreB = beloteB;
-        scoreA = winnerTotal + beloteA;
-      }
+      scoreA = bidderIsA ? beloteA : winnerTotal + beloteA;
+      scoreB = bidderIsA ? winnerTotal + beloteB : beloteB;
     }
     return { scoreA, scoreB, bidderSucceeded };
   }
 
   if (bidderSucceeded) {
-    if (BIDDER_IS_A) {
-      scoreA = bidderRounded + aAnn + beloteA + bidVal;
-      scoreB = oppRounded + bAnn + beloteB;
-    } else {
-      scoreB = bidderRounded + bAnn + beloteB + bidVal;
-      scoreA = oppRounded + aAnn + beloteA;
-    }
+    scoreA = bidderIsA ? bidderRounded + validAnnounceA + beloteA + bidVal : oppRounded + validAnnounceA + beloteA;
+    scoreB = bidderIsA ? oppRounded + validAnnounceB + beloteB : bidderRounded + validAnnounceB + beloteB + bidVal;
   } else {
-    const oppGets = 160 + bidVal + totalAnnounces;
-    if (BIDDER_IS_A) {
-      scoreA = beloteA;
-      scoreB = oppGets + beloteB;
-    } else {
-      scoreB = beloteB;
-      scoreA = oppGets + beloteA;
-    }
+    const oppGets = 160 + bidVal + totalValidAnnounces;
+    scoreA = bidderIsA ? beloteA : oppGets + beloteA;
+    scoreB = bidderIsA ? oppGets + beloteB : beloteB;
   }
 
   return { scoreA, scoreB, bidderSucceeded };
@@ -278,8 +264,7 @@ function parseHashRoute() {
   const raw = window.location.hash || "#/admin";
   const [pathPart, queryPart] = raw.replace(/^#/, "").split("?");
   const path = pathPart || "/admin";
-  const q = new URLSearchParams(queryPart || "");
-  const query = Object.fromEntries(q.entries());
+  const query = Object.fromEntries(new URLSearchParams(queryPart || "").entries());
   return { path, query };
 }
 
@@ -296,8 +281,104 @@ function navigateHash(nextHash) {
 }
 
 /* =========================
+   Match helpers
+========================= */
+
+const defaultFastDraft = () => ({
+  bidder: "A",
+  bid: "",
+  suit: "S",
+  coincheLevel: "NONE",
+  capot: false,
+  bidderTrickPoints: "",
+  nonBidderTrickPoints: "",
+  trickSource: "",
+  beloteTeam: "NONE",
+  announceWinner: "NONE",
+  announceA1: "",
+  announceA1PlayerId: "",
+  announceA2: "",
+  announceA2PlayerId: "",
+  announceB1: "",
+  announceB1PlayerId: "",
+  announceB2: "",
+  announceB2PlayerId: "",
+});
+
+const normalizeLoadedMatch = (m) => ({
+  ...m,
+  fastDraft: { ...defaultFastDraft(), ...(m.fastDraft || {}) },
+  tableOrderPlayerIds: m.tableOrderPlayerIds ?? [],
+  firstShufflerPlayerId: m.firstShufflerPlayerId ?? "",
+});
+
+function makeEmptyMatch({ tableName, teamAId, teamBId, label }) {
+  return {
+    id: uid("match"),
+    code: shortCode(),
+    tableName: tableName || "Table",
+    label: label || "Match",
+    teamAId: teamAId || null,
+    teamBId: teamBId || null,
+    hands: [],
+    totalA: 0,
+    totalB: 0,
+    winnerId: null,
+    completed: false,
+    forcedComplete: false,
+    fastDraft: defaultFastDraft(),
+    editingHandIdx: null,
+    timelineDiffs: [],
+    lastUpdatedAt: Date.now(),
+    tableOrderPlayerIds: [],
+    firstShufflerPlayerId: "",
+  };
+}
+
+function recomputeMatch(m) {
+  let totalA = 0;
+  let totalB = 0;
+  const diffs = [];
+  for (const h of m.hands || []) {
+    totalA += Number(h.scoreA) || 0;
+    totalB += Number(h.scoreB) || 0;
+    diffs.push(totalA - totalB);
+  }
+  const completed = Boolean(m.forcedComplete) || totalA >= TARGET_SCORE || totalB >= TARGET_SCORE;
+  const winnerId = completed && totalA !== totalB ? (totalA > totalB ? m.teamAId : m.teamBId) : null;
+  return { ...m, totalA, totalB, completed, winnerId, timelineDiffs: diffs, lastUpdatedAt: Date.now() };
+}
+
+const sumAnnounces = (d, side) => num(d?.[`announce${side}1`]) + num(d?.[`announce${side}2`]);
+const getTeamPlayers = (team, playerById) => (team?.playerIds || []).map((id) => playerById.get(id)).filter(Boolean);
+
+function getCurrentShufflerInfo(match, playerById) {
+  const order = match.tableOrderPlayerIds || [];
+  if (!order.length || !match.firstShufflerPlayerId) return { playerId: "", name: "" };
+  const startIdx = order.findIndex((id) => id === match.firstShufflerPlayerId);
+  if (startIdx < 0) return { playerId: "", name: "" };
+  const idx = (startIdx + (match.hands || []).length) % order.length;
+  const playerId = order[idx] || "";
+  return { playerId, name: playerById.get(playerId)?.name || "" };
+}
+
+/* =========================
    Styles
 ========================= */
+
+const bg = "rgba(2,6,23,0.35)";
+const bd = "1px solid rgba(148,163,184,0.18)";
+const inputBase = {
+  borderRadius: 14,
+  border: "1px solid rgba(148,163,184,0.22)",
+  background: "rgba(255,255,255,0.92)",
+  color: "#0b1220",
+  outline: "none",
+  boxSizing: "border-box",
+  minWidth: 0,
+  display: "block",
+  fontWeight: 800,
+};
 
 const styles = {
   page: {
@@ -307,48 +388,37 @@ const styles = {
     color: "#e5e7eb",
     padding: 16,
   },
-  container: {
-    width: "100%",
-    maxWidth: "none",
-    margin: 0,
-    display: "flex",
-    flexDirection: "column",
-    gap: 14,
-  },
-  topbar: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
-    gap: 12,
-    flexWrap: "wrap",
-  },
+  container: { width: "100%", maxWidth: "none", margin: 0, display: "flex", flexDirection: "column", gap: 14 },
+  topbar: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, flexWrap: "wrap" },
   title: { margin: 0, fontSize: 28, fontWeight: 950, letterSpacing: "-0.02em" },
   subtitle: { color: "#94a3b8", marginTop: 6, fontSize: 13 },
   pillRow: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
   section: {
     background: "rgba(2,6,23,0.55)",
-    border: "1px solid rgba(148,163,184,0.18)",
+    border: bd,
     borderRadius: 18,
     padding: 14,
     boxShadow: "0 12px 40px rgba(0,0,0,0.25)",
   },
-  sectionHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "baseline",
-    gap: 10,
-    flexWrap: "wrap",
-    marginBottom: 10,
-  },
+  sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 10 },
   h2: { margin: 0, fontSize: 16, fontWeight: 900, letterSpacing: "-0.01em" },
   small: { fontSize: 12, color: "#94a3b8" },
-
+  row: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
+  card: { background: bg, border: bd, borderRadius: 18, padding: 12 },
+  grid2: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 12 },
+  grid3: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 },
+  grid4: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 },
+  handRow1: { display: "grid", gridTemplateColumns: "repeat(5, minmax(160px, 1fr))", gap: 10, marginTop: 12, alignItems: "start" },
+  handRow2: { display: "grid", gridTemplateColumns: "repeat(2, minmax(280px, 1fr))", gap: 10, marginTop: 10, alignItems: "start" },
+  handRow3: { display: "grid", gridTemplateColumns: "repeat(4, minmax(180px, 1fr))", gap: 10, marginTop: 10, alignItems: "start" },
+  handRow: { border: "1px solid rgba(148,163,184,0.16)", background: bg, borderRadius: 16, padding: 12, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" },
+  input: (w = 240) => ({ ...inputBase, width: typeof w === "number" ? `${w}px` : w, padding: "10px 12px" }),
+  select: (w = 180) => ({ ...inputBase, width: typeof w === "number" ? `${w}px` : w, padding: "10px 12px" }),
   btnPrimary: {
     padding: "10px 12px",
     borderRadius: 14,
     border: "1px solid rgba(99,102,241,0.35)",
-    background:
-      "linear-gradient(180deg, rgba(99,102,241,0.95), rgba(79,70,229,0.9))",
+    background: "linear-gradient(180deg, rgba(99,102,241,0.95), rgba(79,70,229,0.9))",
     color: "#fff",
     cursor: "pointer",
     fontWeight: 900,
@@ -366,128 +436,13 @@ const styles = {
     padding: "10px 12px",
     borderRadius: 14,
     border: "1px solid rgba(244,63,94,0.40)",
-    background:
-      "linear-gradient(180deg, rgba(244,63,94,0.95), rgba(190,18,60,0.9))",
+    background: "linear-gradient(180deg, rgba(244,63,94,0.95), rgba(190,18,60,0.9))",
     color: "#fff",
     cursor: "pointer",
     fontWeight: 900,
   },
-  btnGhost: {
-    padding: "8px 10px",
-    borderRadius: 12,
-    border: "1px solid transparent",
-    background: "transparent",
-    color: "#94a3b8",
-    cursor: "pointer",
-    fontWeight: 900,
-  },
+  btnGhost: { padding: "8px 10px", borderRadius: 12, border: "1px solid transparent", background: "transparent", color: "#94a3b8", cursor: "pointer", fontWeight: 900 },
   disabled: { opacity: 0.55, cursor: "not-allowed" },
-
-  input: (w = 240) => ({
-    width: typeof w === "number" ? `${w}px` : w,
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(148,163,184,0.22)",
-    background: "rgba(255,255,255,0.92)",
-    color: "#0b1220",
-    outline: "none",
-    boxSizing: "border-box",
-    minWidth: 0,
-    display: "block",
-    fontWeight: 700,
-  }),
-  select: (w = 180) => ({
-    width: typeof w === "number" ? `${w}px` : w,
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(148,163,184,0.22)",
-    background: "rgba(255,255,255,0.92)",
-    color: "#0b1220",
-    outline: "none",
-    boxSizing: "border-box",
-    minWidth: 0,
-    display: "block",
-    fontWeight: 800,
-  }),
-
-  grid2: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
-    gap: 12,
-  },
-  grid3: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-    gap: 12,
-  },
-  grid4: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 12,
-  },
-  card: {
-    background: "rgba(2,6,23,0.35)",
-    border: "1px solid rgba(148,163,184,0.18)",
-    borderRadius: 18,
-    padding: 12,
-  },
-
-  row: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
-
-  progressWrap: {
-    height: 12,
-    borderRadius: 999,
-    background: "rgba(255,255,255,0.95)",
-    overflow: "hidden",
-    border: "1px solid rgba(255,255,255,0.7)",
-  },
-  progressFillA: (pct) => ({
-    height: "100%",
-    width: `${pct}%`,
-    background:
-      "linear-gradient(90deg, rgba(34,197,94,0.98), rgba(16,185,129,0.95))",
-  }),
-  progressFillB: (pct) => ({
-    height: "100%",
-    width: `${pct}%`,
-    background:
-      "linear-gradient(90deg, rgba(99,102,241,0.98), rgba(59,130,246,0.95))",
-  }),
-
-  handRow1: {
-    display: "grid",
-    gridTemplateColumns: "repeat(5, minmax(160px, 1fr))",
-    gap: 10,
-    marginTop: 12,
-    alignItems: "start",
-  },
-  handRow2: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(280px, 1fr))",
-    gap: 10,
-    marginTop: 10,
-    alignItems: "start",
-  },
-  handRow3: {
-    display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(180px, 1fr))",
-    gap: 10,
-    marginTop: 10,
-    alignItems: "start",
-  },
-
-  handRow: {
-    border: "1px solid rgba(148,163,184,0.16)",
-    background: "rgba(2,6,23,0.35)",
-    borderRadius: 16,
-    padding: 12,
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 10,
-    alignItems: "center",
-    flexWrap: "wrap",
-  },
-
   tag: {
     display: "inline-flex",
     alignItems: "center",
@@ -500,18 +455,11 @@ const styles = {
     fontSize: 12,
     fontWeight: 800,
   },
-
-  leaderGlow: {
-    boxShadow:
-      "0 0 20px rgba(34,197,94,0.35), 0 0 50px rgba(34,197,94,0.18)",
-    border: "1px solid rgba(34,197,94,0.35)",
-  },
-  winnerGlow: {
-    boxShadow:
-      "0 0 28px rgba(34,197,94,0.55), 0 0 90px rgba(34,197,94,0.28), 0 0 140px rgba(34,197,94,0.16)",
-    border: "2px solid rgba(34,197,94,0.55)",
-  },
-
+  progressWrap: { height: 12, borderRadius: 999, background: "rgba(255,255,255,0.95)", overflow: "hidden", border: "1px solid rgba(255,255,255,0.7)" },
+  progressFillA: (pct) => ({ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg, rgba(34,197,94,0.98), rgba(16,185,129,0.95))" }),
+  progressFillB: (pct) => ({ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg, rgba(99,102,241,0.98), rgba(59,130,246,0.95))" }),
+  leaderGlow: { boxShadow: "0 0 20px rgba(34,197,94,0.35), 0 0 50px rgba(34,197,94,0.18)", border: "1px solid rgba(34,197,94,0.35)" },
+  winnerGlow: { boxShadow: "0 0 28px rgba(34,197,94,0.55), 0 0 90px rgba(34,197,94,0.28), 0 0 140px rgba(34,197,94,0.16)", border: "2px solid rgba(34,197,94,0.55)" },
   trophyBadge: {
     position: "absolute",
     top: 10,
@@ -525,29 +473,10 @@ const styles = {
     border: "1px solid rgba(34,197,94,0.40)",
     color: "#eafff3",
     fontWeight: 1000,
-    letterSpacing: "-0.02em",
     zIndex: 4,
   },
-  trophyCircle: {
-    width: 26,
-    height: 26,
-    borderRadius: 999,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "rgba(34,197,94,0.25)",
-    border: "1px solid rgba(34,197,94,0.45)",
-    fontWeight: 1000,
-  },
-
-  confettiWrap: {
-    position: "absolute",
-    inset: 0,
-    pointerEvents: "none",
-    overflow: "hidden",
-    borderRadius: 18,
-    zIndex: 2,
-  },
+  trophyCircle: { width: 26, height: 26, borderRadius: 999, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "rgba(34,197,94,0.25)", border: "1px solid rgba(34,197,94,0.45)", fontWeight: 1000 },
+  confettiWrap: { position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", borderRadius: 18, zIndex: 2 },
   confettiPiece: (i) => ({
     position: "absolute",
     left: `${(i * 11) % 100}%`,
@@ -555,23 +484,13 @@ const styles = {
     width: `${6 + ((i * 7) % 6)}px`,
     height: `${10 + ((i * 5) % 10)}px`,
     borderRadius: 3,
-    background: `hsla(${(i * 37) % 360}, 90%, 60%, 0.95)`,
+    background: `hsla(${(i * 37) % 360},90%,60%,0.95)`,
     transform: `rotate(${(i * 23) % 180}deg)`,
     animation: `confettiDrop 6000ms ease-out forwards`,
     animationDelay: `${(i % 10) * 30}ms`,
     opacity: 0.95,
   }),
-
-  fireworksWrap: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    top: -60,
-    height: 90,
-    pointerEvents: "none",
-    zIndex: 3,
-    overflow: "visible",
-  },
+  fireworksWrap: { position: "absolute", left: 0, right: 0, top: -60, height: 90, pointerEvents: "none", zIndex: 3, overflow: "visible" },
   fireworksGlow: (xPct, delayMs) => ({
     position: "absolute",
     left: `${xPct}%`,
@@ -595,7 +514,7 @@ const styles = {
     height: 6,
     borderRadius: 999,
     transform: "translate(-50%, -50%)",
-    background: `hsla(${hue}, 90%, 60%, 0.95)`,
+    background: `hsla(${hue},90%,60%,0.95)`,
     animation: `fireworkParticle 6000ms ease-out forwards`,
     animationDelay: `${delayMs}ms`,
     opacity: 0,
@@ -603,41 +522,12 @@ const styles = {
     ["--dy"]: `${dy}px`,
     boxShadow: "0 0 10px rgba(255,255,255,0.22)",
   }),
-
-  bigTotal: {
-    fontSize: 52,
-    fontWeight: 1000,
-    letterSpacing: "-0.03em",
-    lineHeight: 1.0,
-  },
+  bigTotal: { fontSize: 52, fontWeight: 1000, letterSpacing: "-0.03em", lineHeight: 1.0 },
 };
 
-/* =========================
-   Match helpers
-========================= */
-
-function sumAnnounces(d, side) {
-  const v1 = safeInt(d?.[`announce${side}1`]) ?? 0;
-  const v2 = safeInt(d?.[`announce${side}2`]) ?? 0;
-  return v1 + v2;
-}
-
-function getTeamPlayers(team, playerById) {
-  return (team?.playerIds || []).map((pid) => playerById.get(pid)).filter(Boolean);
-}
-
-function getCurrentShufflerName(match, playerById) {
-  const order = match.tableOrderPlayerIds || [];
-  const first = match.firstShufflerPlayerId || "";
-  if (!order.length || !first) return "";
-
-  const startIdx = order.findIndex((id) => id === first);
-  if (startIdx < 0) return "";
-
-  const handCount = (match.hands || []).length;
-  const idx = (startIdx + handCount) % order.length;
-  return playerById.get(order[idx])?.name || "";
-}
+const td = { padding: "10px 10px", borderBottom: "1px solid rgba(148,163,184,0.10)", fontWeight: 800 };
+const tdBold = { ...td, fontWeight: 950 };
+const tdStrong = { ...td, fontWeight: 1000 };
 
 /* =========================
    App
@@ -647,10 +537,6 @@ export default function App() {
   const [route, setRoute] = useState(() => parseHashRoute());
   const [loaded, setLoaded] = useState(false);
   const [tableMissingDelayDone, setTableMissingDelayDone] = useState(false);
-
-  useEffect(() => {
-    ensureGlobalCSS();
-  }, []);
 
   const [appName, setAppName] = useState("Coinche Scorekeeper");
   const [players, setPlayers] = useState([]);
@@ -665,17 +551,106 @@ export default function App() {
   const [newMatchLabel, setNewMatchLabel] = useState("Match 1");
 
   const inputRef = useRef(null);
-
-  const [backupState, setBackupState] = useState({
-    lastOk: null,
-    lastErr: null,
-    queued: 0,
-  });
-
   const deviceIdRef = useRef(getDeviceId());
   const backupQueueRef = useRef([]);
   const backupSendingRef = useRef(false);
   const sentHandKeysRef = useRef(new Set());
+  const lastSavedAtRef = useRef(0);
+
+  const [backupState, setBackupState] = useState({ lastOk: null, lastErr: null, queued: 0 });
+
+  const persistNow = (next = {}) => {
+    try {
+      const payload = {
+        appName: next.appName ?? appName,
+        players: next.players ?? players,
+        teams: next.teams ?? teams,
+        avoidSameTeams: next.avoidSameTeams ?? avoidSameTeams,
+        pairHistory: next.pairHistory ?? pairHistory,
+        matches: next.matches ?? matches,
+        savedAt: Date.now(),
+      };
+      lastSavedAtRef.current = payload.savedAt;
+      localStorage.setItem(LS_KEY, JSON.stringify(payload));
+      window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { savedAt: payload.savedAt } }));
+    } catch {}
+  };
+
+  const saveField = (setter, key, value) => {
+    setter(value);
+    persistNow({ [key]: value });
+  };
+
+  const hydrateFromPayload = (d) => {
+    const savedAt = Number(d?.savedAt) || 0;
+    if (savedAt) lastSavedAtRef.current = savedAt;
+    setAppName(d.appName ?? "Coinche Scorekeeper");
+    setPlayers(d.players ?? []);
+    setTeams(d.teams ?? []);
+    setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
+    setPairHistory(d.pairHistory ?? []);
+    setMatches((d.matches ?? []).map(normalizeLoadedMatch));
+  };
+
+  const maybeHydrateLatest = () => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return false;
+      const d = JSON.parse(raw);
+      const savedAt = Number(d?.savedAt) || 0;
+      if (savedAt && savedAt <= lastSavedAtRef.current) return false;
+      hydrateFromPayload(d);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const hydrateFromLocalStorageForTable = (code) => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return false;
+      const d = JSON.parse(raw);
+      const loadedMatches = (d.matches ?? []).map(normalizeLoadedMatch);
+      const found = loadedMatches.some(
+        (m) => (m.code || "").toUpperCase() === String(code || "").toUpperCase()
+      );
+      if (!found) return false;
+      hydrateFromPayload({ ...d, matches: loadedMatches });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const updateMatches = (updater) => {
+    const nextMatches = typeof updater === "function" ? updater(matches) : updater;
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
+    return nextMatches;
+  };
+
+  const resetMatchState = (m) =>
+    recomputeMatch({
+      ...m,
+      hands: [],
+      forcedComplete: false,
+      editingHandIdx: null,
+      fastDraft: defaultFastDraft(),
+      tableOrderPlayerIds: [],
+      firstShufflerPlayerId: "",
+    });
+
+  const updateMatch = (matchId, fn, { skipRecompute = false } = {}) =>
+    updateMatches((prev) =>
+      prev.map((m) => {
+        if (m.id !== matchId) return m;
+        const next = fn(m);
+        return skipRecompute ? next : recomputeMatch(next);
+      })
+    );
+
+  useEffect(() => ensureGlobalCSS(), []);
 
   useEffect(() => {
     const syncRoute = () => setRoute(parseHashRoute());
@@ -688,175 +663,32 @@ export default function App() {
     };
   }, []);
 
-  function defaultFastDraft() {
-    return {
-      bidder: "A",
-      bid: "",
-      suit: "S",
-      coincheLevel: "NONE",
-      capot: false,
-      bidderTrickPoints: "",
-      nonBidderTrickPoints: "",
-      trickSource: "",
-      announceA1: "",
-      announceA1PlayerId: "",
-      announceA2: "",
-      announceA2PlayerId: "",
-      announceB1: "",
-      announceB1PlayerId: "",
-      announceB2: "",
-      announceB2PlayerId: "",
-      beloteTeam: "NONE",
-    };
-  }
-
-  function normalizeLoadedMatch(m) {
-    return {
-      ...m,
-      fastDraft: { ...defaultFastDraft(), ...(m.fastDraft || {}) },
-      tableOrderPlayerIds: m.tableOrderPlayerIds || [],
-      firstShufflerPlayerId: m.firstShufflerPlayerId || "",
-    };
-  }
-
-  function makeEmptyMatch({ tableName, teamAId, teamBId, label }) {
-    return {
-      id: uid("match"),
-      code: shortCode(),
-      tableName: tableName || "Table",
-      label: label || "Match",
-      teamAId: teamAId || null,
-      teamBId: teamBId || null,
-      hands: [],
-      totalA: 0,
-      totalB: 0,
-      winnerId: null,
-      completed: false,
-      forcedComplete: false,
-      fastDraft: defaultFastDraft(),
-      editingHandIdx: null,
-      timelineDiffs: [],
-      lastUpdatedAt: Date.now(),
-      tableOrderPlayerIds: [],
-      firstShufflerPlayerId: "",
-    };
-  }
-
-  function recomputeMatch(m) {
-    const hands = m.hands || [];
-    let totalA = 0;
-    let totalB = 0;
-    const diffs = [];
-    for (const h of hands) {
-      totalA += Number(h.scoreA) || 0;
-      totalB += Number(h.scoreB) || 0;
-      diffs.push(totalA - totalB);
-    }
-
-    const forced = Boolean(m.forcedComplete);
-    const reached = totalA >= TARGET_SCORE || totalB >= TARGET_SCORE;
-    const completed = forced || reached;
-
-    let winnerId = null;
-    if (completed && totalA !== totalB) {
-      winnerId = totalA > totalB ? m.teamAId : m.teamBId;
-    }
-
-    return {
-      ...m,
-      totalA,
-      totalB,
-      completed,
-      winnerId,
-      timelineDiffs: diffs,
-      lastUpdatedAt: Date.now(),
-    };
-  }
-
-  function persistNow(next = {}) {
-    try {
-      const payload = {
-        appName: next.appName ?? appName,
-        players: next.players ?? players,
-        teams: next.teams ?? teams,
-        avoidSameTeams: next.avoidSameTeams ?? avoidSameTeams,
-        pairHistory: next.pairHistory ?? pairHistory,
-        matches: next.matches ?? matches,
-        savedAt: Date.now(),
-      };
-      localStorage.setItem(LS_KEY, JSON.stringify(payload));
-    } catch {
-      // ignore
-    }
-  }
-
-  function hydrateFromLocalStorageForTable(code) {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return false;
-      const d = JSON.parse(raw);
-
-      const loadedMatches = (d.matches ?? []).map(normalizeLoadedMatch);
-      const found = loadedMatches.some(
-        (m) => (m.code || "").toUpperCase() === String(code || "").toUpperCase()
-      );
-
-      if (!found) return false;
-
-      setAppName(d.appName ?? "Coinche Scorekeeper");
-      setPlayers(d.players ?? []);
-      setTeams(d.teams ?? []);
-      setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
-      setPairHistory(d.pairHistory ?? []);
-      setMatches(loadedMatches);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  function openTableRoute(code) {
-    persistNow();
-    try {
-      localStorage.setItem("__coinche_last_opened_table_code", String(code || ""));
-    } catch {
-      // ignore
-    }
-    navigateHash(`#/table?code=${code}`);
-  }
-
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
-      if (raw) {
-        const d = JSON.parse(raw);
-        setAppName(d.appName ?? "Coinche Scorekeeper");
-        setPlayers(d.players ?? []);
-        setTeams(d.teams ?? []);
-        setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
-        setPairHistory(d.pairHistory ?? []);
-        setMatches((d.matches ?? []).map(normalizeLoadedMatch));
-      }
-    } catch {
-      // ignore
-    } finally {
-      setLoaded(true);
-    }
+      if (raw) hydrateFromPayload(JSON.parse(raw));
+    } catch {}
+    setLoaded(true);
   }, []);
 
   useEffect(() => {
     if (!loaded) return;
-    const payload = {
-      appName,
-      players,
-      teams,
-      avoidSameTeams,
-      pairHistory,
-      matches,
-      savedAt: Date.now(),
-    };
-    localStorage.setItem(LS_KEY, JSON.stringify(payload));
+    persistNow();
   }, [loaded, appName, players, teams, avoidSameTeams, pairHistory, matches]);
+
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (!e || e.key === LS_KEY) maybeHydrateLatest();
+    };
+    const onAppUpdated = () => maybeHydrateLatest();
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(APP_UPDATED_EVENT, onAppUpdated);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(APP_UPDATED_EVENT, onAppUpdated);
+    };
+  }, []);
 
   const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
   const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
@@ -871,50 +703,55 @@ export default function App() {
     const current = parseHashRoute();
     const wantedCode = (current.query.code || "").toUpperCase();
     if (!wantedCode) return;
-    const exists = matches.some((m) => (m.code || "").toUpperCase() === wantedCode);
-    if (exists) setRoute(current);
+    if (matches.some((m) => (m.code || "").toUpperCase() === wantedCode)) setRoute(current);
   }, [matches]);
 
   useEffect(() => {
-    if (route.path !== "/table") {
-      setTableMissingDelayDone(false);
-      return;
-    }
-    if ((route.query.code || "").trim() === "") {
-      setTableMissingDelayDone(true);
-      return;
-    }
+    if (route.path !== "/table") return setTableMissingDelayDone(false);
+    if (!(route.query.code || "").trim()) return setTableMissingDelayDone(true);
     const t = setTimeout(() => setTableMissingDelayDone(true), 350);
     return () => clearTimeout(t);
   }, [route.path, route.query.code]);
 
   useEffect(() => {
     if (route.path !== "/table") return;
-
     const code = String(route.query.code || "").toUpperCase();
     if (!code) return;
-
-    const existsInState = matches.some(
-      (m) => (m.code || "").toUpperCase() === code
-    );
-    if (existsInState) return;
+    if (matches.some((m) => (m.code || "").toUpperCase() === code)) return;
 
     let tries = 0;
-    const maxTries = 12;
-
-    const tryHydrate = () => {
+    const timer = setInterval(() => {
       tries += 1;
-      const found = hydrateFromLocalStorageForTable(code);
-      if (found || tries >= maxTries) {
-        clearInterval(timer);
-      }
-    };
+      if (hydrateFromLocalStorageForTable(code) || tries >= 20) clearInterval(timer);
+    }, 120);
 
-    const timer = setInterval(tryHydrate, 120);
-    tryHydrate();
+    hydrateFromLocalStorageForTable(code);
+    maybeHydrateLatest();
 
     return () => clearInterval(timer);
   }, [route.path, route.query.code, matches]);
+
+  function openTableRoute(code) {
+    persistNow();
+    try {
+      localStorage.setItem("__coinche_last_opened_table_code", String(code || ""));
+    } catch {}
+    window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { code } }));
+    navigateHash(`#/table?code=${code}`);
+  }
+
+  async function sendHandRow(row) {
+    const res = await fetch(BACKUP_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...row, secret: BACKUP_SECRET }),
+    });
+    if (!res.ok) throw new Error(`Backup HTTP ${res.status}`);
+    try {
+      const j = await res.json();
+      if (j?.ok === false) throw new Error(j.error || "Backup failed");
+    } catch {}
+  }
 
   function enqueueHandBackup(row) {
     backupQueueRef.current.push(row);
@@ -923,14 +760,11 @@ export default function App() {
   }
 
   async function flushHandBackupQueue() {
-    if (backupSendingRef.current) return;
-    if (backupQueueRef.current.length === 0) return;
+    if (backupSendingRef.current || !backupQueueRef.current.length) return;
     backupSendingRef.current = true;
-
     try {
-      while (backupQueueRef.current.length > 0) {
-        const row = backupQueueRef.current[0];
-        await sendHandRow(row);
+      while (backupQueueRef.current.length) {
+        await sendHandRow(backupQueueRef.current[0]);
         backupQueueRef.current.shift();
         setBackupState((s) => ({
           ...s,
@@ -940,10 +774,7 @@ export default function App() {
         }));
       }
     } catch {
-      setBackupState((s) => ({
-        ...s,
-        lastErr: Date.now(),
-      }));
+      setBackupState((s) => ({ ...s, lastErr: Date.now() }));
       setTimeout(() => {
         backupSendingRef.current = false;
         void flushHandBackupQueue();
@@ -954,39 +785,16 @@ export default function App() {
     }
   }
 
-  async function sendHandRow(row) {
-    const body = { ...row, secret: BACKUP_SECRET };
-    const res = await fetch(BACKUP_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) throw new Error(`Backup HTTP ${res.status}`);
-
-    try {
-      const j = await res.json();
-      if (j && j.ok === false) throw new Error(j.error || "Backup failed");
-    } catch {
-      // ignore parse errors
-    }
-  }
-
   useEffect(() => {
     if (!loaded) return;
-
     for (const m of matches) {
-      if (!m || !m.code) continue;
-      if (!m.teamAId || !m.teamBId) continue;
-
+      if (!m?.code || !m.teamAId || !m.teamBId) continue;
       const teamAName = teamById.get(m.teamAId)?.name ?? "Team A";
       const teamBName = teamById.get(m.teamBId)?.name ?? "Team B";
 
       for (const h of m.hands || []) {
-        const editStamp = h.editedAt || 0;
-        const handKey = `${m.code}|${h.idx}|${h.createdAt || 0}|${editStamp}`;
+        const handKey = `${m.code}|${h.idx}|${h.createdAt || 0}|${h.editedAt || 0}`;
         if (sentHandKeysRef.current.has(handKey)) continue;
-
         sentHandKeysRef.current.add(handKey);
 
         const ds = h.draftSnapshot || {};
@@ -1006,9 +814,12 @@ export default function App() {
           coincheLevel: ds.coincheLevel || "",
           capot: !!ds.capot,
           bidderTrickPoints: ds.bidderTrickPoints ?? "",
+          announceWinner: ds.announceWinner || "NONE",
           announceA: sumAnnounces(ds, "A"),
           announceB: sumAnnounces(ds, "B"),
           beloteTeam: ds.beloteTeam || "",
+          shufflerPlayerId: ds.shufflerPlayerId || "",
+          shufflerName: ds.shufflerName || "",
           bidderSucceeded: !!h.bidderSucceeded,
           totalA: m.totalA ?? "",
           totalB: m.totalB ?? "",
@@ -1024,454 +835,315 @@ export default function App() {
     return () => window.removeEventListener("online", onOnline);
   }, []);
 
-  function addPlayer() {
+  const addPlayer = () => {
     const name = newPlayerName.trim();
     if (!name) return;
-    const nextPlayers = [...players, { id: uid("p"), name }];
-    setPlayers(nextPlayers);
-    persistNow({ players: nextPlayers });
+    saveField(setPlayers, "players", [...players, { id: uid("p"), name }]);
     setNewPlayerName("");
     setTimeout(() => inputRef.current?.focus?.(), 0);
-  }
+  };
 
-  function removePlayer(id) {
+  const removePlayer = (id) => {
     const nextPlayers = players.filter((p) => p.id !== id);
     setPlayers(nextPlayers);
     setTeams([]);
     setPairHistory([]);
     setMatches([]);
-    persistNow({
-      players: nextPlayers,
-      teams: [],
-      pairHistory: [],
-      matches: [],
-    });
-  }
+    persistNow({ players: nextPlayers, teams: [], pairHistory: [], matches: [] });
+  };
 
-  function addTeam() {
-    const name = (newTeamName || "").trim();
-    const teamName = name || `Team ${teams.length + 1}`;
-    const nextTeams = [
+  const addTeam = () =>
+    saveField(setTeams, "teams", [
       ...teams,
-      { id: uid("t"), name: teamName, playerIds: [], locked: false },
-    ];
-    setTeams(nextTeams);
-    persistNow({ teams: nextTeams });
-    setNewTeamName("");
-  }
+      { id: uid("t"), name: (newTeamName || "").trim() || `Team ${teams.length + 1}`, playerIds: [], locked: false },
+    ]);
 
-  function removeTeam(teamId) {
+  const removeTeam = (teamId) => {
     const nextTeams = teams.filter((t) => t.id !== teamId);
     const nextMatches = matches.map((m) => {
-      const next = { ...m };
+      let next = { ...m };
       if (next.teamAId === teamId) next.teamAId = null;
       if (next.teamBId === teamId) next.teamBId = null;
-      return recomputeMatch({
-        ...next,
-        hands: [],
-        forcedComplete: false,
-        editingHandIdx: null,
-        fastDraft: defaultFastDraft(),
-        tableOrderPlayerIds: [],
-        firstShufflerPlayerId: "",
-      });
+      return resetMatchState(next);
     });
-
     setTeams(nextTeams);
     setMatches(nextMatches);
     persistNow({ teams: nextTeams, matches: nextMatches });
-  }
+  };
 
-  function toggleTeamLock(teamId, locked) {
-    const nextTeams = teams.map((t) =>
-      t.id === teamId ? { ...t, locked: Boolean(locked) } : t
+  const toggleTeamLock = (teamId, locked) =>
+    saveField(
+      setTeams,
+      "teams",
+      teams.map((t) => (t.id === teamId ? { ...t, locked: Boolean(locked) } : t))
     );
-    setTeams(nextTeams);
-    persistNow({ teams: nextTeams });
+
+  function setTeamPlayer(teamId, slotIdx, value) {
+    saveField(
+      setTeams,
+      "teams",
+      teams.map((t) => {
+        if (t.id !== teamId) return t;
+        const ids = [...(t.playerIds || [])];
+        while (ids.length < 2) ids.push("");
+        ids[slotIdx] = value;
+        if (ids[0] && ids[0] === ids[1]) ids[slotIdx === 0 ? 1 : 0] = "";
+        return { ...t, playerIds: ids.filter(Boolean) };
+      })
+    );
   }
 
-  function setTeamPlayer(teamId, slotIdx, playerIdOrEmpty) {
-    const nextTeams = teams.map((t) => {
-      if (t.id !== teamId) return t;
-      const ids = [...(t.playerIds || [])];
-      while (ids.length < 2) ids.push("");
-      ids[slotIdx] = playerIdOrEmpty;
-      if (slotIdx === 0 && ids[0] && ids[0] === ids[1]) ids[1] = "";
-      if (slotIdx === 1 && ids[1] && ids[0] === ids[1]) ids[0] = "";
-      return { ...t, playerIds: ids.filter(Boolean) };
-    });
-    setTeams(nextTeams);
-    persistNow({ teams: nextTeams });
-  }
-
-  function renameTeam(teamId, name) {
-    const nextTeams = teams.map((t) => (t.id === teamId ? { ...t, name } : t));
-    setTeams(nextTeams);
-    persistNow({ teams: nextTeams });
-  }
+  const renameTeam = (teamId, name) =>
+    saveField(
+      setTeams,
+      "teams",
+      teams.map((t) => (t.id === teamId ? { ...t, name } : t))
+    );
 
   function buildRandomTeams() {
     if (players.length < 2) return;
-
-    const lockedPlayers = new Set();
-    teams.forEach((t) => {
-      if (!t.locked) return;
-      (t.playerIds || []).forEach((pid) => lockedPlayers.add(pid));
-    });
-
-    const available = players
-      .map((p) => p.id)
-      .filter((pid) => !lockedPlayers.has(pid));
-    const tries = avoidSameTeams ? 40 : 1;
+    const lockedPlayers = new Set(
+      teams.flatMap((t) => (t.locked ? t.playerIds || [] : []))
+    );
+    const available = players.map((p) => p.id).filter((id) => !lockedPlayers.has(id));
     const historySet = new Set(pairHistory);
     let best = null;
 
-    for (let k = 0; k < tries; k++) {
+    for (let k = 0; k < (avoidSameTeams ? 40 : 1); k++) {
       const shuffled = shuffleArray(available);
       const pairs = [];
-      for (let i = 0; i < shuffled.length; i += 2) {
-        const a = shuffled[i];
-        const b = shuffled[i + 1] || null;
-        pairs.push([a, b]);
-      }
-
-      let repeats = 0;
-      for (const [a, b] of pairs) {
-        if (!a || !b) continue;
-        const key = [a, b].sort().join("|");
-        if (historySet.has(key)) repeats++;
-      }
-
-      if (!best || repeats < best.repeats) {
-        best = { pairs, repeats };
-        if (repeats === 0) break;
-      }
+      for (let i = 0; i < shuffled.length; i += 2) pairs.push([shuffled[i], shuffled[i + 1] || null]);
+      const repeats = pairs.reduce((acc, [a, b]) => {
+        if (!a || !b) return acc;
+        return acc + (historySet.has([a, b].sort().join("|")) ? 1 : 0);
+      }, 0);
+      if (!best || repeats < best.repeats) best = { pairs, repeats };
+      if (best?.repeats === 0) break;
     }
-
-    const finalPairs = best?.pairs ?? [];
-    const nextTeams = teams.map((t) => ({
-      ...t,
-      playerIds: [...(t.playerIds || [])],
-    }));
 
     let pairIdx = 0;
-    for (let i = 0; i < nextTeams.length; i++) {
-      if (nextTeams[i].locked) continue;
-      const pair = finalPairs[pairIdx] || [null, null];
-      pairIdx++;
-      nextTeams[i].playerIds = [pair[0], pair[1]].filter(Boolean);
-    }
+    const nextTeams = teams.map((t) =>
+      t.locked ? t : { ...t, playerIds: (best?.pairs?.[pairIdx++] || []).filter(Boolean) }
+    );
 
-    const newPairs = [];
-    for (const t of nextTeams) {
-      if ((t.playerIds || []).length === 2) {
-        newPairs.push([...t.playerIds].sort().join("|"));
-      }
-    }
+    const nextPairHistory = Array.from(
+      new Set([
+        ...pairHistory,
+        ...nextTeams
+          .filter((t) => (t.playerIds || []).length === 2)
+          .map((t) => [...t.playerIds].sort().join("|")),
+      ])
+    );
+    const nextMatches = matches.map(resetMatchState);
 
-    const nextPairHistory = Array.from(new Set([...pairHistory, ...newPairs]));
-    const nextMatches = matches.map((m) =>
+    setTeams(nextTeams);
+    setPairHistory(nextPairHistory);
+    setMatches(nextMatches);
+    persistNow({ teams: nextTeams, pairHistory: nextPairHistory, matches: nextMatches });
+  }
+
+  const addMatch = () => {
+    if (!teams.length) return;
+    updateMatches([...matches, recomputeMatch(makeEmptyMatch({
+      tableName: newTableName.trim() || `Table ${matches.length + 1}`,
+      label: newMatchLabel.trim() || `Match ${matches.length + 1}`,
+    }))]);
+  };
+
+  const removeMatch = (matchId) => updateMatches(matches.filter((m) => m.id !== matchId));
+
+  const setMatchTeam = (matchId, side, value) =>
+    updateMatch(matchId, (m) => resetMatchState({ ...m, [side]: value || null }));
+
+  const renameMatch = (matchId, patch) =>
+    updateMatches(matches.map((m) => (m.id === matchId ? { ...m, ...patch, lastUpdatedAt: Date.now() } : m)));
+
+  const updateTableSetup = (matchId, patch) => renameMatch(matchId, patch);
+
+  const finishMatchNow = (matchId) =>
+    updateMatches(
+      matches.map((m) => {
+        if (m.id !== matchId) return m;
+        const a = Number(m.totalA) || 0;
+        const b = Number(m.totalB) || 0;
+        return {
+          ...m,
+          forcedComplete: true,
+          completed: true,
+          winnerId: a === b ? null : a > b ? m.teamAId : m.teamBId,
+          lastUpdatedAt: Date.now(),
+        };
+      })
+    );
+
+  const updateDraft = (matchId, patch) =>
+    updateMatches(
+      matches.map((m) =>
+        m.id === matchId ? { ...m, fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch } } : m
+      )
+    );
+
+  function startEditHand(matchId, handIdx) {
+    updateMatches(
+      matches.map((m) => {
+        if (m.id !== matchId) return m;
+        const hand = (m.hands || []).find((h) => h.idx === handIdx);
+        if (!hand) return m;
+        const d = hand.draftSnapshot || {};
+        return {
+          ...m,
+          editingHandIdx: handIdx,
+          fastDraft: {
+            ...defaultFastDraft(),
+            bidder: d.bidder ?? "A",
+            bid: String(d.bid ?? ""),
+            suit: d.suit ?? "S",
+            coincheLevel: d.coincheLevel ?? "NONE",
+            capot: Boolean(d.capot),
+            bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
+            nonBidderTrickPoints: String(d.nonBidderTrickPoints ?? ""),
+            trickSource: d.trickSource ?? "",
+            announceWinner: d.announceWinner ?? "NONE",
+            announceA1: String(d.announceA1 ?? ""),
+            announceA1PlayerId: d.announceA1PlayerId ?? "",
+            announceA2: String(d.announceA2 ?? ""),
+            announceA2PlayerId: d.announceA2PlayerId ?? "",
+            announceB1: String(d.announceB1 ?? ""),
+            announceB1PlayerId: d.announceB1PlayerId ?? "",
+            announceB2: String(d.announceB2 ?? ""),
+            announceB2PlayerId: d.announceB2PlayerId ?? "",
+            beloteTeam: d.beloteTeam ?? "NONE",
+          },
+        };
+      })
+    );
+  }
+
+  const cancelEditHand = (matchId) =>
+    updateMatches(
+      matches.map((m) =>
+        m.id === matchId ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() } : m
+      )
+    );
+
+  function addOrSaveHand(matchId) {
+    updateMatches(
+      matches.map((m) => {
+        if (m.id !== matchId) return m;
+        const d = m.fastDraft || defaultFastDraft();
+        const canPlay = !!m.teamAId && !!m.teamBId;
+        const setupReady =
+          canPlay && Array.isArray(m.tableOrderPlayerIds) && m.tableOrderPlayerIds.length === 4 && !!m.firstShufflerPlayerId;
+        if (!setupReady) return m;
+
+        const bidVal = parseBidValue(d.bid);
+        const capotFlag = Boolean(d.capot) || String(d.bid || "").trim().toLowerCase() === "capot";
+
+        let trickVal = null;
+        const bidderTP = safeInt(d.bidderTrickPoints);
+        const nonBidderTP = safeInt(d.nonBidderTrickPoints);
+        if (d.trickSource === "BIDDER") {
+          if (bidderTP === null) return m;
+          trickVal = bidderTP;
+        } else if (d.trickSource === "NON") {
+          if (nonBidderTP === null) return m;
+          trickVal = 162 - nonBidderTP;
+        } else {
+          trickVal = bidderTP !== null ? bidderTP : nonBidderTP !== null ? 162 - nonBidderTP : null;
+        }
+        if (bidVal === null || trickVal === null) return m;
+        trickVal = clamp(trickVal, 0, 162);
+
+        const announceA = sumAnnounces(d, "A");
+        const announceB = sumAnnounces(d, "B");
+        const shuffler = getCurrentShufflerInfo(m, playerById);
+
+        const res = computeFastCoincheScore({
+          bidder: d.bidder,
+          bid: bidVal,
+          coincheLevel: d.coincheLevel || "NONE",
+          capot: capotFlag,
+          bidderTrickPoints: trickVal,
+          announceA,
+          announceB,
+          announceWinner: d.announceWinner || "NONE",
+          beloteTeam: d.beloteTeam || "NONE",
+        });
+
+        const snap = {
+          bidder: d.bidder,
+          bid: bidVal,
+          suit: d.suit || "S",
+          coincheLevel: d.coincheLevel || "NONE",
+          capot: capotFlag,
+          bidderTrickPoints: trickVal,
+          nonBidderTrickPoints:
+            d.trickSource === "NON"
+              ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
+              : clamp(162 - trickVal, 0, 162),
+          trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
+          announceWinner: d.announceWinner || "NONE",
+          announceA1: num(d.announceA1),
+          announceA1PlayerId: d.announceA1PlayerId || "",
+          announceA2: num(d.announceA2),
+          announceA2PlayerId: d.announceA2PlayerId || "",
+          announceB1: num(d.announceB1),
+          announceB1PlayerId: d.announceB1PlayerId || "",
+          announceB2: num(d.announceB2),
+          announceB2PlayerId: d.announceB2PlayerId || "",
+          announceA,
+          announceB,
+          beloteTeam: d.beloteTeam || "NONE",
+          shufflerPlayerId: shuffler.playerId,
+          shufflerName: shuffler.name,
+        };
+
+        if (m.editingHandIdx) {
+          return recomputeMatch({
+            ...m,
+            hands: (m.hands || []).map((h) =>
+              h.idx !== m.editingHandIdx
+                ? h
+                : {
+                    ...h,
+                    draftSnapshot: snap,
+                    scoreA: res.scoreA,
+                    scoreB: res.scoreB,
+                    bidderSucceeded: res.bidderSucceeded,
+                    editedAt: Date.now(),
+                  }
+            ),
+            fastDraft: defaultFastDraft(),
+            editingHandIdx: null,
+          });
+        }
+
+        if (recomputeMatch(m).completed) return recomputeMatch(m);
+
+        const nextHand = {
+          idx: (m.hands?.length || 0) + 1,
+          createdAt: Date.now(),
+          draftSnapshot: snap,
+          scoreA: res.scoreA,
+          scoreB: res.scoreB,
+          bidderSucceeded: res.bidderSucceeded,
+        };
+
+        return recomputeMatch({ ...m, hands: [...(m.hands || []), nextHand], fastDraft: defaultFastDraft() });
+      })
+    );
+  }
+
+  const clearMatchHands = (matchId) =>
+    updateMatch(matchId, (m) =>
       recomputeMatch({
         ...m,
         hands: [],
         forcedComplete: false,
         editingHandIdx: null,
         fastDraft: defaultFastDraft(),
-        tableOrderPlayerIds: [],
-        firstShufflerPlayerId: "",
       })
     );
-
-    setTeams(nextTeams);
-    setPairHistory(nextPairHistory);
-    setMatches(nextMatches);
-    persistNow({
-      teams: nextTeams,
-      pairHistory: nextPairHistory,
-      matches: nextMatches,
-    });
-  }
-
-  function addMatch() {
-    if (!teams.length) return;
-
-    const nextMatch = recomputeMatch(
-      makeEmptyMatch({
-        tableName: newTableName.trim() || `Table ${matches.length + 1}`,
-        teamAId: null,
-        teamBId: null,
-        label: newMatchLabel.trim() || `Match ${matches.length + 1}`,
-      })
-    );
-
-    const nextMatches = [...matches, nextMatch];
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
-
-  function removeMatch(matchId) {
-    const nextMatches = matches.filter((m) => m.id !== matchId);
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
-
-  function setMatchTeam(matchId, side, teamIdOrEmpty) {
-    const nextMatches = matches.map((m) => {
-      if (m.id !== matchId) return m;
-      const next = { ...m, [side]: teamIdOrEmpty || null };
-      return recomputeMatch({
-        ...next,
-        hands: [],
-        forcedComplete: false,
-        editingHandIdx: null,
-        fastDraft: defaultFastDraft(),
-        tableOrderPlayerIds: [],
-        firstShufflerPlayerId: "",
-      });
-    });
-
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
-
-  function renameMatch(matchId, patch) {
-    const nextMatches = matches.map((m) =>
-      m.id === matchId ? { ...m, ...patch, lastUpdatedAt: Date.now() } : m
-    );
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
-
-  function updateTableSetup(matchId, patch) {
-    const nextMatches = matches.map((m) =>
-      m.id === matchId ? { ...m, ...patch, lastUpdatedAt: Date.now() } : m
-    );
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
-
-  function finishMatchNow(matchId) {
-    const nextMatches = matches.map((m) => {
-      if (m.id !== matchId) return m;
-      const a = Number(m.totalA) || 0;
-      const b = Number(m.totalB) || 0;
-
-      let winnerId = null;
-      if (a !== b) winnerId = a > b ? m.teamAId : m.teamBId;
-
-      return {
-        ...m,
-        forcedComplete: true,
-        completed: true,
-        winnerId,
-        lastUpdatedAt: Date.now(),
-      };
-    });
-
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
-
-  function updateDraft(matchId, patch) {
-    const nextMatches = matches.map((m) => {
-      if (m.id !== matchId) return m;
-      return {
-        ...m,
-        fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch },
-      };
-    });
-
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
-
-  function startEditHand(matchId, handIdx) {
-    const nextMatches = matches.map((m) => {
-      if (m.id !== matchId) return m;
-      const hand = (m.hands || []).find((h) => h.idx === handIdx);
-      if (!hand) return m;
-      const d = hand.draftSnapshot || {};
-      return {
-        ...m,
-        editingHandIdx: handIdx,
-        fastDraft: {
-          ...defaultFastDraft(),
-          bidder: d.bidder ?? "A",
-          bid: String(d.bid ?? ""),
-          suit: d.suit ?? "S",
-          coincheLevel: d.coincheLevel ?? "NONE",
-          capot: Boolean(d.capot),
-          bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
-          nonBidderTrickPoints: String(d.nonBidderTrickPoints ?? ""),
-          trickSource: d.trickSource ?? "",
-          announceA1: String(d.announceA1 ?? ""),
-          announceA1PlayerId: d.announceA1PlayerId ?? "",
-          announceA2: String(d.announceA2 ?? ""),
-          announceA2PlayerId: d.announceA2PlayerId ?? "",
-          announceB1: String(d.announceB1 ?? ""),
-          announceB1PlayerId: d.announceB1PlayerId ?? "",
-          announceB2: String(d.announceB2 ?? ""),
-          announceB2PlayerId: d.announceB2PlayerId ?? "",
-          beloteTeam: d.beloteTeam ?? "NONE",
-        },
-      };
-    });
-
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
-
-  function cancelEditHand(matchId) {
-    const nextMatches = matches.map((m) =>
-      m.id === matchId
-        ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() }
-        : m
-    );
-
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
-
-  function parseBidValue(bidStr) {
-    const s = String(bidStr || "").trim().toLowerCase();
-    if (s === "capot") return 250;
-    const n = safeInt(bidStr);
-    return n;
-  }
-
-  function addOrSaveHand(matchId) {
-    const nextMatches = matches.map((m) => {
-      if (m.id !== matchId) return m;
-
-      const canPlay = !!m.teamAId && !!m.teamBId;
-      const d = m.fastDraft || defaultFastDraft();
-
-      const setupOrderOk = Array.isArray(m.tableOrderPlayerIds) && m.tableOrderPlayerIds.length === 4;
-      const firstShufflerOk = Boolean(m.firstShufflerPlayerId);
-
-      if (!canPlay || !setupOrderOk || !firstShufflerOk) return m;
-
-      const bidVal = parseBidValue(d.bid);
-      const bidIsCapotWord = String(d.bid || "").trim().toLowerCase() === "capot";
-      const capotFlag = Boolean(d.capot) || bidIsCapotWord;
-
-      let trickVal = null;
-      const bidderTP = safeInt(d.bidderTrickPoints);
-      const nonBidderTP = safeInt(d.nonBidderTrickPoints);
-
-      if (d.trickSource === "BIDDER") {
-        if (bidderTP === null) return m;
-        trickVal = bidderTP;
-      } else if (d.trickSource === "NON") {
-        if (nonBidderTP === null) return m;
-        trickVal = 162 - nonBidderTP;
-      } else {
-        if (bidderTP !== null) trickVal = bidderTP;
-        else if (nonBidderTP !== null) trickVal = 162 - nonBidderTP;
-      }
-
-      if (bidVal === null || trickVal === null) return m;
-      trickVal = clamp(trickVal, 0, 162);
-
-      const announceA = sumAnnounces(d, "A");
-      const announceB = sumAnnounces(d, "B");
-
-      const res = computeFastCoincheScore({
-        bidder: d.bidder,
-        bid: bidVal,
-        coincheLevel: d.coincheLevel || "NONE",
-        capot: capotFlag,
-        bidderTrickPoints: trickVal,
-        announceA,
-        announceB,
-        beloteTeam: d.beloteTeam || "NONE",
-      });
-
-      const snap = {
-        bidder: d.bidder,
-        bid: bidVal,
-        suit: d.suit || "S",
-        coincheLevel: d.coincheLevel || "NONE",
-        capot: capotFlag,
-        bidderTrickPoints: trickVal,
-        nonBidderTrickPoints:
-          d.trickSource === "NON"
-            ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
-            : clamp(162 - trickVal, 0, 162),
-        trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
-        announceA1: safeInt(d.announceA1) ?? 0,
-        announceA1PlayerId: d.announceA1PlayerId || "",
-        announceA2: safeInt(d.announceA2) ?? 0,
-        announceA2PlayerId: d.announceA2PlayerId || "",
-        announceB1: safeInt(d.announceB1) ?? 0,
-        announceB1PlayerId: d.announceB1PlayerId || "",
-        announceB2: safeInt(d.announceB2) ?? 0,
-        announceB2PlayerId: d.announceB2PlayerId || "",
-        announceA,
-        announceB,
-        beloteTeam: d.beloteTeam || "NONE",
-      };
-
-      if (m.editingHandIdx) {
-        const nextHands = (m.hands || []).map((h) => {
-          if (h.idx !== m.editingHandIdx) return h;
-          return {
-            ...h,
-            draftSnapshot: snap,
-            scoreA: res.scoreA,
-            scoreB: res.scoreB,
-            bidderSucceeded: res.bidderSucceeded,
-            editedAt: Date.now(),
-          };
-        });
-
-        return recomputeMatch({
-          ...m,
-          hands: nextHands,
-          fastDraft: defaultFastDraft(),
-          editingHandIdx: null,
-        });
-      }
-
-      const current = recomputeMatch(m);
-      if (current.completed) return current;
-
-      const nextHand = {
-        idx: (m.hands?.length || 0) + 1,
-        createdAt: Date.now(),
-        draftSnapshot: snap,
-        scoreA: res.scoreA,
-        scoreB: res.scoreB,
-        bidderSucceeded: res.bidderSucceeded,
-      };
-
-      return recomputeMatch({
-        ...m,
-        hands: [...(m.hands || []), nextHand],
-        fastDraft: defaultFastDraft(),
-      });
-    });
-
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
-
-  function clearMatchHands(matchId) {
-    const nextMatches = matches.map((m) =>
-      m.id === matchId
-        ? recomputeMatch({
-            ...m,
-            hands: [],
-            forcedComplete: false,
-            editingHandIdx: null,
-            fastDraft: defaultFastDraft(),
-          })
-        : m
-    );
-
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-  }
 
   const scoreboardRows = useMemo(() => {
     const rows = teams.map((t) => ({
@@ -1496,11 +1168,10 @@ export default function App() {
       b.pointsFor += Number(m.totalB) || 0;
       b.pointsAgainst += Number(m.totalA) || 0;
 
-      if ((m.hands || []).length > 0) {
+      if ((m.hands || []).length) {
         a.matchesPlayed += 1;
         b.matchesPlayed += 1;
       }
-
       if (m.winnerId === m.teamAId) {
         a.wins += 1;
         b.losses += 1;
@@ -1522,110 +1193,64 @@ export default function App() {
 
   const funStats = useMemo(() => {
     const completed = matches.filter((m) => m.completed && m.teamAId && m.teamBId);
+    const labelFor = (m) =>
+      `${teamById.get(m.teamAId)?.name ?? "Team A"} vs ${teamById.get(m.teamBId)?.name ?? "Team B"} (${m.label})`;
 
     let biggestBlowout = { diff: 0, label: "—" };
-    for (const m of completed) {
-      const diff = Math.abs((m.totalA || 0) - (m.totalB || 0));
-      if (diff > biggestBlowout.diff) {
-        const ta = teamById.get(m.teamAId)?.name ?? "Team A";
-        const tb = teamById.get(m.teamBId)?.name ?? "Team B";
-        biggestBlowout = { diff, label: `${ta} vs ${tb} (${m.label})` };
-      }
-    }
-
     let closest = { diff: Infinity, label: "—" };
+    let bestComeback = { deficit: 0, label: "—" };
+    let clutchFinish = { diff: Infinity, label: "—" };
+    let momentumMonster = { swing: 0, label: "—" };
+
     for (const m of completed) {
       const diff = Math.abs((m.totalA || 0) - (m.totalB || 0));
-      if (diff > 0 && diff < closest.diff) {
-        const ta = teamById.get(m.teamAId)?.name ?? "Team A";
-        const tb = teamById.get(m.teamBId)?.name ?? "Team B";
-        closest = { diff, label: `${ta} vs ${tb} (${m.label})` };
-      }
-    }
-    if (!Number.isFinite(closest.diff)) closest = { diff: 0, label: "—" };
+      if (diff > biggestBlowout.diff) biggestBlowout = { diff, label: labelFor(m) };
+      if (diff > 0 && diff < closest.diff) closest = { diff, label: labelFor(m) };
 
-    let bestComeback = { deficit: 0, label: "—" };
-    for (const m of completed) {
       const diffs = m.timelineDiffs || [];
-      if (!diffs.length) continue;
-      const winnerIsA = m.winnerId === m.teamAId;
-      const deficit = winnerIsA ? Math.min(0, ...diffs) : Math.max(0, ...diffs);
-      const comebackSize = Math.abs(deficit);
+      if (diffs.length) {
+        const comebackSize = Math.abs(m.winnerId === m.teamAId ? Math.min(0, ...diffs) : Math.max(0, ...diffs));
+        if (comebackSize > bestComeback.deficit) bestComeback = { deficit: comebackSize, label: labelFor(m) };
 
-      if (comebackSize > bestComeback.deficit) {
-        const ta = teamById.get(m.teamAId)?.name ?? "Team A";
-        const tb = teamById.get(m.teamBId)?.name ?? "Team B";
-        bestComeback = { deficit: comebackSize, label: `${ta} vs ${tb} (${m.label})` };
-      }
-    }
-
-    let clutchFinish = { diff: Infinity, label: "—" };
-    for (const m of completed) {
-      const diffs = m.timelineDiffs || [];
-      if (diffs.length < 1) continue;
-      const startIdx = Math.max(0, diffs.length - 3);
-      for (let i = startIdx; i < diffs.length; i++) {
-        const absDiff = Math.abs(diffs[i]);
-        if (absDiff < clutchFinish.diff) {
-          const ta = teamById.get(m.teamAId)?.name ?? "Team A";
-          const tb = teamById.get(m.teamBId)?.name ?? "Team B";
-          clutchFinish = { diff: absDiff, label: `${ta} vs ${tb} (${m.label})` };
+        for (let i = Math.max(0, diffs.length - 3); i < diffs.length; i++) {
+          const absDiff = Math.abs(diffs[i]);
+          if (absDiff < clutchFinish.diff) clutchFinish = { diff: absDiff, label: labelFor(m) };
         }
       }
     }
-    if (!Number.isFinite(clutchFinish.diff)) clutchFinish = { diff: 0, label: "—" };
 
-    let momentumMonster = { swing: 0, label: "—" };
     for (const m of matches.filter((x) => x.teamAId && x.teamBId)) {
       const diffs = m.timelineDiffs || [];
-      if (diffs.length < 3) continue;
       for (let i = 2; i < diffs.length; i++) {
         const swing = Math.abs(diffs[i] - diffs[i - 2]);
-        if (swing > momentumMonster.swing) {
-          const ta = teamById.get(m.teamAId)?.name ?? "Team A";
-          const tb = teamById.get(m.teamBId)?.name ?? "Team B";
-          momentumMonster = { swing, label: `${ta} vs ${tb} (${m.label})` };
-        }
+        if (swing > momentumMonster.swing) momentumMonster = { swing, label: labelFor(m) };
       }
     }
 
+    if (!Number.isFinite(closest.diff)) closest = { diff: 0, label: "—" };
+    if (!Number.isFinite(clutchFinish.diff)) clutchFinish = { diff: 0, label: "—" };
+
     const defenseCounts = new Map();
-    const bumpDefense = (teamId) => {
-      if (!teamId) return;
-      defenseCounts.set(teamId, (defenseCounts.get(teamId) || 0) + 1);
-    };
     for (const m of matches.filter((x) => x.teamAId && x.teamBId)) {
       for (const h of m.hands || []) {
-        const a = Number(h.scoreA) || 0;
-        const b = Number(h.scoreB) || 0;
-        if (a > 0 && b === 0) bumpDefense(m.teamAId);
-        if (b > 0 && a === 0) bumpDefense(m.teamBId);
+        if ((Number(h.scoreA) || 0) > 0 && (Number(h.scoreB) || 0) === 0) defenseCounts.set(m.teamAId, (defenseCounts.get(m.teamAId) || 0) + 1);
+        if ((Number(h.scoreB) || 0) > 0 && (Number(h.scoreA) || 0) === 0) defenseCounts.set(m.teamBId, (defenseCounts.get(m.teamBId) || 0) + 1);
       }
     }
 
     let perfectDefense = { name: "—", count: 0 };
     for (const [tid, count] of defenseCounts.entries()) {
-      if (count > perfectDefense.count) {
-        perfectDefense = { name: teamById.get(tid)?.name ?? "—", count };
-      }
+      if (count > perfectDefense.count) perfectDefense = { name: teamById.get(tid)?.name ?? "—", count };
     }
 
     const teamFun = new Map();
     const announceCountByPlayer = new Map();
     const announceTotalByPlayer = new Map();
-
     const bump = (tid, key, n = 1) => {
       if (!tid) return;
       const cur = teamFun.get(tid) || { coinches: 0, surcoinches: 0, capots: 0, belotes: 0 };
       cur[key] = (cur[key] || 0) + n;
       teamFun.set(tid, cur);
-    };
-
-    const bumpPlayerAnnounce = (pid, val) => {
-      const pts = Number(val) || 0;
-      if (!pid || pts <= 0) return;
-      announceCountByPlayer.set(pid, (announceCountByPlayer.get(pid) || 0) + 1);
-      announceTotalByPlayer.set(pid, (announceTotalByPlayer.get(pid) || 0) + pts);
     };
 
     for (const m of completed) {
@@ -1638,10 +1263,17 @@ export default function App() {
         if (d.beloteTeam === "A") bump(m.teamAId, "belotes");
         if (d.beloteTeam === "B") bump(m.teamBId, "belotes");
 
-        bumpPlayerAnnounce(d.announceA1PlayerId, d.announceA1);
-        bumpPlayerAnnounce(d.announceA2PlayerId, d.announceA2);
-        bumpPlayerAnnounce(d.announceB1PlayerId, d.announceB1);
-        bumpPlayerAnnounce(d.announceB2PlayerId, d.announceB2);
+        [
+          [d.announceA1PlayerId, d.announceA1],
+          [d.announceA2PlayerId, d.announceA2],
+          [d.announceB1PlayerId, d.announceB1],
+          [d.announceB2PlayerId, d.announceB2],
+        ].forEach(([pid, val]) => {
+          const pts = Number(val) || 0;
+          if (!pid || pts <= 0) return;
+          announceCountByPlayer.set(pid, (announceCountByPlayer.get(pid) || 0) + 1);
+          announceTotalByPlayer.set(pid, (announceTotalByPlayer.get(pid) || 0) + pts);
+        });
       }
     }
 
@@ -1651,19 +1283,13 @@ export default function App() {
         const v = obj[key] || 0;
         if (!best || v > best.v) best = { tid, v };
       }
-      if (!best || best.v === 0) return { name: "—", v: 0 };
-      return { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
+      return !best || best.v === 0 ? { name: "—", v: 0 } : { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
     };
 
     let mostAnnounces = { name: "—", v: 0 };
-    for (const [pid, v] of announceCountByPlayer.entries()) {
-      if (v > mostAnnounces.v) mostAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
-    }
-
     let highestAnnounces = { name: "—", v: 0 };
-    for (const [pid, v] of announceTotalByPlayer.entries()) {
-      if (v > highestAnnounces.v) highestAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
-    }
+    for (const [pid, v] of announceCountByPlayer.entries()) if (v > mostAnnounces.v) mostAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
+    for (const [pid, v] of announceTotalByPlayer.entries()) if (v > highestAnnounces.v) highestAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
 
     return {
       biggestBlowout,
@@ -1680,36 +1306,27 @@ export default function App() {
     };
   }, [matches, teamById, playerById]);
 
-  const publicLink = useMemo(
-    () => `${window.location.origin}${window.location.pathname}#/public`,
-    []
+  const publicLink = useMemo(() => `${window.location.origin}${window.location.pathname}#/public`, []);
+  const tableLinks = useMemo(
+    () =>
+      matches.map((m) => ({
+        label: `${m.tableName} • ${m.label}`,
+        code: m.code,
+        href: `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`,
+      })),
+    [matches]
   );
 
-  const tableLinks = useMemo(() => {
-    return matches.map((m) => ({
-      label: `${m.tableName} • ${m.label}`,
-      code: m.code,
-      href: `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`,
-    }));
-  }, [matches]);
-
   const { path, query } = route;
-
   const tableMatch = useMemo(() => {
     const code = (query.code || "").toUpperCase();
     if (!code) return null;
-
-    const direct = matches.find((x) => (x.code || "").toUpperCase() === code);
+    const direct = matches.find((m) => (m.code || "").toUpperCase() === code);
     if (direct) return direct;
-
     try {
       const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      return (
-        (parsed.matches || []).find((x) => (x.code || "").toUpperCase() === code) ||
-        null
-      );
+      const parsed = raw ? JSON.parse(raw) : null;
+      return (parsed?.matches || []).find((m) => (m.code || "").toUpperCase() === code) || null;
     } catch {
       return null;
     }
@@ -1726,11 +1343,8 @@ export default function App() {
         Public View
       </a>
       <span style={styles.tag}>
-        Backup:{" "}
-        {backupState.lastOk
-          ? `OK (${new Date(backupState.lastOk).toLocaleTimeString()})`
-          : "—"}
-        {backupState.lastErr ? ` • retrying…` : ""}
+        Backup: {backupState.lastOk ? `OK (${new Date(backupState.lastOk).toLocaleTimeString()})` : "—"}
+        {backupState.lastErr ? " • retrying…" : ""}
         {backupState.queued ? ` • queued: ${backupState.queued}` : ""}
       </span>
     </div>
@@ -1748,15 +1362,7 @@ export default function App() {
     return (
       <div style={styles.page}>
         <div style={styles.container}>
-          <div style={styles.topbar}>
-            <div>
-              <h1 style={styles.title}>{appName}</h1>
-              <div style={styles.subtitle}>
-                Public scoreboard • Live updates • Tables: {matches.length}
-              </div>
-            </div>
-            <NavPills showAdmin={true} />
-          </div>
+          <Header title={appName} subtitle={`Public scoreboard • Live updates • Tables: ${matches.length}`} right={<NavPills showAdmin />} />
 
           <div style={styles.grid2}>
             <Section title="Live Scoreboard">
@@ -1764,71 +1370,18 @@ export default function App() {
             </Section>
 
             <Section title="Fun Facts">
-              <div style={styles.grid3}>
-                <StatCard label="Biggest Blowout" value={`${funStats.biggestBlowout.diff} pts`} sub={funStats.biggestBlowout.label} />
-                <StatCard label="Best Comeback" value={`${funStats.bestComeback.deficit} pts`} sub={funStats.bestComeback.label} />
-                <StatCard label="Closest Match" value={`${funStats.closest.diff} pts`} sub={funStats.closest.label} />
-                <StatCard label="Clutch Finish (last 3 hands)" value={`${funStats.clutchFinish.diff} pts`} sub={funStats.clutchFinish.label} />
-                <StatCard label="Momentum Monster" value={`${funStats.momentumMonster.swing} pts`} sub={funStats.momentumMonster.label} />
-                <StatCard label="Perfect Defense" value={funStats.perfectDefense.name} sub={`${funStats.perfectDefense.count} shutout hands`} />
-                <StatCard label="Coinche King" value={funStats.coincheKing.name} sub={`${funStats.coincheKing.v} coinches`} />
-                <StatCard label="Capot Hero" value={funStats.capotHero.name} sub={`${funStats.capotHero.v} capots`} />
-                <StatCard label="Belote Magnet" value={funStats.beloteMagnet.name} sub={`${funStats.beloteMagnet.v} belotes`} />
-                <StatCard label="Most Announces" value={funStats.mostAnnounces.name} sub={`${funStats.mostAnnounces.v} announces`} />
-                <StatCard label="Highest Announces" value={funStats.highestAnnounces.name} sub={`${funStats.highestAnnounces.v} pts announced`} />
-              </div>
+              <FunStatsGrid funStats={funStats} />
             </Section>
           </div>
 
           <Section title="Live Matches (Now Playing)">
-            {liveMatches.length === 0 ? (
+            {!liveMatches.length ? (
               <div style={styles.small}>No matches currently in progress.</div>
             ) : (
               <div style={styles.grid3}>
-                {liveMatches.map((m) => {
-                  const ta = teamById.get(m.teamAId)?.name ?? "Team A";
-                  const tb = teamById.get(m.teamBId)?.name ?? "Team B";
-                  const pctA = Math.min(100, Math.round(((m.totalA || 0) / TARGET_SCORE) * 100));
-                  const pctB = Math.min(100, Math.round(((m.totalB || 0) / TARGET_SCORE) * 100));
-
-                  return (
-                    <div key={m.id} style={styles.card}>
-                      <div style={{ fontWeight: 950, marginBottom: 6 }}>
-                        {m.tableName} • {m.label}
-                      </div>
-
-                      <div style={{ marginTop: 8 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontWeight: 900 }}>
-                          <span>{ta}</span>
-                          <span>{m.totalA}</span>
-                        </div>
-                        <div style={{ marginTop: 6, ...styles.progressWrap }}>
-                          <div style={styles.progressFillA(pctA)} />
-                        </div>
-                      </div>
-
-                      <div style={{ marginTop: 10 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontWeight: 900 }}>
-                          <span>{tb}</span>
-                          <span>{m.totalB}</span>
-                        </div>
-                        <div style={{ marginTop: 6, ...styles.progressWrap }}>
-                          <div style={styles.progressFillB(pctB)} />
-                        </div>
-                      </div>
-
-                      <div style={{ marginTop: 10 }}>
-                        <button
-                          type="button"
-                          style={styles.btnSecondary}
-                          onClick={() => openTableRoute(m.code)}
-                        >
-                          Open Table
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
+                {liveMatches.map((m) => (
+                  <LiveMatchCard key={m.id} match={m} teamById={teamById} onOpen={() => openTableRoute(m.code)} />
+                ))}
               </div>
             )}
           </Section>
@@ -1841,21 +1394,13 @@ export default function App() {
               {tableLinks.map((t) => (
                 <div key={t.code} style={styles.card}>
                   <div style={{ fontWeight: 900, marginBottom: 6 }}>{t.label}</div>
-                  <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
-                    Code: {t.code}
-                  </div>
-                  <button
-                    type="button"
-                    style={styles.btnSecondary}
-                    onClick={() => openTableRoute(t.code)}
-                  >
+                  <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>Code: {t.code}</div>
+                  <button type="button" style={styles.btnSecondary} onClick={() => openTableRoute(t.code)}>
                     Open Table View
                   </button>
                 </div>
               ))}
-              {tableLinks.length === 0 ? (
-                <div style={styles.small}>No matches yet. Add matches in Admin.</div>
-              ) : null}
+              {!tableLinks.length ? <div style={styles.small}>No matches yet. Add matches in Admin.</div> : null}
             </div>
           </Section>
         </div>
@@ -1873,15 +1418,7 @@ export default function App() {
     return (
       <div style={styles.page}>
         <div style={styles.container}>
-          <div style={styles.topbar}>
-            <div>
-              <h1 style={styles.title}>{appName}</h1>
-              <div style={styles.subtitle}>
-                Table View • Enter hands for your match only
-              </div>
-            </div>
-            <NavPills showAdmin={true} />
-          </div>
+          <Header title={appName} subtitle="Table View • Enter hands for your match only" right={<NavPills showAdmin />} />
 
           {!tableMatch ? (
             <Section title={hasRequestedCode && !tableMissingDelayDone ? "Loading match..." : "No match found"}>
@@ -1937,15 +1474,11 @@ export default function App() {
   return (
     <div style={styles.page}>
       <div style={styles.container}>
-        <div style={styles.topbar}>
-          <div>
-            <h1 style={styles.title}>{appName}</h1>
-            <div style={styles.subtitle}>
-              Admin • Setup players/teams • Create table matches • Share links • Auto-backup to Google Sheet
-            </div>
-          </div>
-          <NavPills showAdmin={false} />
-        </div>
+        <Header
+          title={appName}
+          subtitle="Admin • Setup players/teams • Create table matches • Share links • Auto-backup to Google Sheet"
+          right={<NavPills showAdmin={false} />}
+        />
 
         <Section
           title="Quick Links"
@@ -1968,12 +1501,9 @@ export default function App() {
             </div>
           }
         >
-          <div style={styles.small}>
-            Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span>
-          </div>
+          <div style={styles.small}>Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span></div>
           <div style={{ marginTop: 8, ...styles.small }}>
-            GoogleSheet backup: {backupState.lastOk ? "✅ OK" : "—"}{" "}
-            {backupState.lastErr ? "• retrying…" : ""}{" "}
+            GoogleSheet backup: {backupState.lastOk ? "✅ OK" : "—"} {backupState.lastErr ? "• retrying…" : ""}{" "}
             {backupState.queued ? `• queued: ${backupState.queued}` : ""}
           </div>
           <div style={{ marginTop: 6, ...styles.small }}>
@@ -1991,10 +1521,7 @@ export default function App() {
                 <input
                   type="checkbox"
                   checked={avoidSameTeams}
-                  onChange={(e) => {
-                    setAvoidSameTeams(e.target.checked);
-                    persistNow({ avoidSameTeams: e.target.checked });
-                  }}
+                  onChange={(e) => saveField(setAvoidSameTeams, "avoidSameTeams", e.target.checked)}
                 />
                 Avoid repeating pairs
               </label>
@@ -2019,13 +1546,7 @@ export default function App() {
                   setPairHistory([]);
                   setMatches([]);
                   sentHandKeysRef.current = new Set();
-                  persistNow({
-                    appName: "Coinche Scorekeeper",
-                    players: [],
-                    teams: [],
-                    pairHistory: [],
-                    matches: [],
-                  });
+                  persistNow({ appName: "Coinche Scorekeeper", players: [], teams: [], pairHistory: [], matches: [] });
                 }}
               >
                 Full Reset
@@ -2034,30 +1555,20 @@ export default function App() {
           }
         >
           <div style={styles.grid3}>
-            <div style={styles.card}>
-              <div style={styles.small}>App name</div>
+            <InfoCard title="App name">
               <input
                 style={styles.input("100%")}
                 value={appName}
-                onChange={(e) => {
-                  setAppName(e.target.value);
-                  persistNow({ appName: e.target.value });
-                }}
+                onChange={(e) => saveField(setAppName, "appName", e.target.value)}
               />
-            </div>
-
-            <div style={styles.card}>
-              <div style={styles.small}>Target score</div>
+            </InfoCard>
+            <InfoCard title="Target score">
               <div style={{ fontWeight: 950, fontSize: 18 }}>{TARGET_SCORE}</div>
               <div style={styles.small}>Match ends immediately at {TARGET_SCORE}+.</div>
-            </div>
-
-            <div style={styles.card}>
-              <div style={styles.small}>Backup endpoint</div>
-              <div style={{ fontWeight: 900, fontSize: 12, color: "#cbd5e1", wordBreak: "break-all" }}>
-                {BACKUP_URL}
-              </div>
-            </div>
+            </InfoCard>
+            <InfoCard title="Backup endpoint">
+              <div style={{ fontWeight: 900, fontSize: 12, color: "#cbd5e1", wordBreak: "break-all" }}>{BACKUP_URL}</div>
+            </InfoCard>
           </div>
         </Section>
 
@@ -2069,9 +1580,7 @@ export default function App() {
               value={newPlayerName}
               onChange={(e) => setNewPlayerName(e.target.value)}
               placeholder="Add player name"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") addPlayer();
-              }}
+              onKeyDown={(e) => e.key === "Enter" && addPlayer()}
             />
             <button style={styles.btnPrimary} onClick={addPlayer} disabled={!newPlayerName.trim()}>
               Add Player
@@ -2082,9 +1591,7 @@ export default function App() {
             {players.map((p) => (
               <div key={p.id} style={styles.card}>
                 <div style={{ fontWeight: 950, display: "flex", justifyContent: "space-between", gap: 10 }}>
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {p.name}
-                  </span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                   <button style={{ ...styles.btnGhost, padding: 0 }} onClick={() => removePlayer(p.id)}>
                     Remove
                   </button>
@@ -2092,7 +1599,7 @@ export default function App() {
                 <div style={styles.small}>ID: {p.id.slice(-6)}</div>
               </div>
             ))}
-            {players.length === 0 ? <div style={styles.small}>Add players to get started.</div> : null}
+            {!players.length ? <div style={styles.small}>Add players to get started.</div> : null}
           </div>
         </Section>
 
@@ -2100,104 +1607,33 @@ export default function App() {
           title={`Teams (${teams.length})`}
           right={
             <div style={styles.row}>
-              <input
-                style={styles.input(220)}
-                value={newTeamName}
-                onChange={(e) => setNewTeamName(e.target.value)}
-                placeholder="Optional team name"
-              />
-              <button style={styles.btnPrimary} onClick={addTeam}>
+              <input style={styles.input(220)} value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} placeholder="Optional team name" />
+              <button style={styles.btnPrimary} onClick={() => { addTeam(); setNewTeamName(""); }}>
                 Add Team
               </button>
-              <button
-                style={styles.btnSecondary}
-                onClick={buildRandomTeams}
-                disabled={players.length < 2 || teams.length < 1}
-              >
+              <button style={styles.btnSecondary} onClick={buildRandomTeams} disabled={players.length < 2 || teams.length < 1}>
                 Randomize Teams (respects locks)
               </button>
             </div>
           }
         >
-          {teams.length === 0 ? (
+          {!teams.length ? (
             <div style={styles.small}>Add teams, then assign players.</div>
           ) : (
             <div style={styles.grid2}>
               {teams.map((t, idx) => (
-                <div key={t.id} style={styles.card}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 950 }}>Team #{idx + 1}</div>
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900, color: t.locked ? "#34d399" : "#94a3b8" }}>
-                        <input type="checkbox" checked={!!t.locked} onChange={(e) => toggleTeamLock(t.id, e.target.checked)} />
-                        Lock
-                      </label>
-                      <button style={styles.btnGhost} onClick={() => removeTeam(t.id)}>
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 10 }}>
-                    <div style={styles.small}>Team name</div>
-                    <input
-                      style={styles.input("100%")}
-                      value={t.name}
-                      onChange={(e) => renameTeam(t.id, e.target.value)}
-                      placeholder={`Team ${idx + 1}`}
-                    />
-                  </div>
-
-                  <div style={{ marginTop: 10, ...styles.grid2 }}>
-                    <div>
-                      <div style={styles.small}>Player 1</div>
-                      <select
-                        style={styles.select("100%")}
-                        value={t.playerIds?.[0] || ""}
-                        onChange={(e) => setTeamPlayer(t.id, 0, e.target.value)}
-                      >
-                        <option value="">— Select —</option>
-                        {players.map((p) => {
-                          const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
-                          return (
-                            <option key={p.id} value={p.id} disabled={taken}>
-                              {p.name}
-                              {taken ? " (used)" : ""}
-                            </option>
-                          );
-                        })}
-                      </select>
-                    </div>
-
-                    <div>
-                      <div style={styles.small}>Player 2</div>
-                      <select
-                        style={styles.select("100%")}
-                        value={t.playerIds?.[1] || ""}
-                        onChange={(e) => setTeamPlayer(t.id, 1, e.target.value)}
-                      >
-                        <option value="">— Select —</option>
-                        {players.map((p) => {
-                          const taken = usedPlayerIds.has(p.id) && !(t.playerIds || []).includes(p.id);
-                          return (
-                            <option key={p.id} value={p.id} disabled={taken}>
-                              {p.name}
-                              {taken ? " (used)" : ""}
-                            </option>
-                          );
-                        })}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 10, ...styles.small }}>
-                    Members:{" "}
-                    {(t.playerIds || [])
-                      .map((pid) => playerById.get(pid)?.name)
-                      .filter(Boolean)
-                      .join(" / ") || "—"}
-                  </div>
-                </div>
+                <TeamCard
+                  key={t.id}
+                  team={t}
+                  idx={idx}
+                  players={players}
+                  usedPlayerIds={usedPlayerIds}
+                  playerById={playerById}
+                  onToggleLock={(locked) => toggleTeamLock(t.id, locked)}
+                  onRemove={() => removeTeam(t.id)}
+                  onRename={(name) => renameTeam(t.id, name)}
+                  onSetPlayer={(slot, value) => setTeamPlayer(t.id, slot, value)}
+                />
               ))}
             </div>
           )}
@@ -2207,25 +1643,15 @@ export default function App() {
           title={`Tables / Matches (${matches.length})`}
           right={
             <div style={styles.row}>
-              <input
-                style={styles.input(180)}
-                value={newTableName}
-                onChange={(e) => setNewTableName(e.target.value)}
-                placeholder="Table name"
-              />
-              <input
-                style={styles.input(180)}
-                value={newMatchLabel}
-                onChange={(e) => setNewMatchLabel(e.target.value)}
-                placeholder="Match label"
-              />
+              <input style={styles.input(180)} value={newTableName} onChange={(e) => setNewTableName(e.target.value)} placeholder="Table name" />
+              <input style={styles.input(180)} value={newMatchLabel} onChange={(e) => setNewMatchLabel(e.target.value)} placeholder="Match label" />
               <button style={styles.btnPrimary} onClick={addMatch} disabled={teams.length < 1}>
                 Add Match
               </button>
             </div>
           }
         >
-          {matches.length === 0 ? (
+          {!matches.length ? (
             <div style={styles.small}>Add a match, then assign Team A / Team B.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -2258,32 +1684,15 @@ export default function App() {
           )}
         </Section>
 
-        <Section
-          title="Scoreboard + Fun Facts (Live)"
-          collapsible
-          defaultCollapsed
-        >
+        <Section title="Scoreboard + Fun Facts (Live)" collapsible defaultCollapsed>
           <div style={styles.grid2}>
             <div style={styles.card}>
               <div style={{ fontWeight: 950, marginBottom: 8 }}>Live Scoreboard</div>
               <ScoreboardTable rows={scoreboardRows} />
             </div>
-
             <div style={styles.card}>
               <div style={{ fontWeight: 950, marginBottom: 8 }}>Fun Facts</div>
-              <div style={styles.grid3}>
-                <StatCard label="Biggest Blowout" value={`${funStats.biggestBlowout.diff} pts`} sub={funStats.biggestBlowout.label} />
-                <StatCard label="Best Comeback" value={`${funStats.bestComeback.deficit} pts`} sub={funStats.bestComeback.label} />
-                <StatCard label="Closest Match" value={`${funStats.closest.diff} pts`} sub={funStats.closest.label} />
-                <StatCard label="Clutch Finish (last 3 hands)" value={`${funStats.clutchFinish.diff} pts`} sub={funStats.clutchFinish.label} />
-                <StatCard label="Momentum Monster" value={`${funStats.momentumMonster.swing} pts`} sub={funStats.momentumMonster.label} />
-                <StatCard label="Perfect Defense" value={funStats.perfectDefense.name} sub={`${funStats.perfectDefense.count} shutout hands`} />
-                <StatCard label="Coinche King" value={funStats.coincheKing.name} sub={`${funStats.coincheKing.v} coinches`} />
-                <StatCard label="Capot Hero" value={funStats.capotHero.name} sub={`${funStats.capotHero.v} capots`} />
-                <StatCard label="Belote Magnet" value={funStats.beloteMagnet.name} sub={`${funStats.beloteMagnet.v} belotes`} />
-                <StatCard label="Most Announces" value={funStats.mostAnnounces.name} sub={`${funStats.mostAnnounces.v} announces`} />
-                <StatCard label="Highest Announces" value={funStats.highestAnnounces.name} sub={`${funStats.highestAnnounces.v} pts announced`} />
-              </div>
+              <FunStatsGrid funStats={funStats} />
             </div>
           </div>
         </Section>
@@ -2298,11 +1707,7 @@ export default function App() {
                 <div style={{ fontWeight: 950, marginBottom: 6 }}>{t.label}</div>
                 <div style={styles.small}>Code: {t.code}</div>
                 <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    style={styles.btnSecondary}
-                    onClick={() => openTableRoute(t.code)}
-                  >
+                  <button type="button" style={styles.btnSecondary} onClick={() => openTableRoute(t.code)}>
                     Open
                   </button>
                   <button
@@ -2325,24 +1730,29 @@ export default function App() {
 }
 
 /* =========================
-   Shared components
+   Shared UI
 ========================= */
 
-function Section({
-  title,
-  right,
-  children,
-  collapsible = false,
-  defaultCollapsed = false,
-}) {
-  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+function Header({ title, subtitle, right }) {
+  return (
+    <div style={styles.topbar}>
+      <div>
+        <h1 style={styles.title}>{title}</h1>
+        <div style={styles.subtitle}>{subtitle}</div>
+      </div>
+      {right}
+    </div>
+  );
+}
 
+function Section({ title, right, children, collapsible = false, defaultCollapsed = false }) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
   return (
     <div style={styles.section}>
       <div style={styles.sectionHeader}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <h2 style={{ ...styles.h2, margin: 0 }}>{title}</h2>
-          {collapsible ? (
+          <h2 style={styles.h2}>{title}</h2>
+          {collapsible && (
             <button
               type="button"
               onClick={() => setCollapsed((v) => !v)}
@@ -2357,11 +1767,20 @@ function Section({
             >
               {collapsed ? "Expand" : "Collapse"}
             </button>
-          ) : null}
+          )}
         </div>
         <div>{right}</div>
       </div>
       {!collapsed ? children : null}
+    </div>
+  );
+}
+
+function InfoCard({ title, children }) {
+  return (
+    <div style={styles.card}>
+      <div style={styles.small}>{title}</div>
+      {children}
     </div>
   );
 }
@@ -2376,13 +1795,37 @@ function StatCard({ label, value, sub }) {
   );
 }
 
+function FunStatsGrid({ funStats }) {
+  const items = [
+    ["Biggest Blowout", `${funStats.biggestBlowout.diff} pts`, funStats.biggestBlowout.label],
+    ["Best Comeback", `${funStats.bestComeback.deficit} pts`, funStats.bestComeback.label],
+    ["Closest Match", `${funStats.closest.diff} pts`, funStats.closest.label],
+    ["Clutch Finish (last 3 hands)", `${funStats.clutchFinish.diff} pts`, funStats.clutchFinish.label],
+    ["Momentum Monster", `${funStats.momentumMonster.swing} pts`, funStats.momentumMonster.label],
+    ["Perfect Defense", funStats.perfectDefense.name, `${funStats.perfectDefense.count} shutout hands`],
+    ["Coinche King", funStats.coincheKing.name, `${funStats.coincheKing.v} coinches`],
+    ["Capot Hero", funStats.capotHero.name, `${funStats.capotHero.v} capots`],
+    ["Belote Magnet", funStats.beloteMagnet.name, `${funStats.beloteMagnet.v} belotes`],
+    ["Most Announces", funStats.mostAnnounces.name, `${funStats.mostAnnounces.v} announces`],
+    ["Highest Announces", funStats.highestAnnounces.name, `${funStats.highestAnnounces.v} pts announced`],
+  ];
+  return (
+    <div style={styles.grid3}>
+      {items.map(([label, value, sub]) => (
+        <StatCard key={label} label={label} value={value} sub={sub} />
+      ))}
+    </div>
+  );
+}
+
 function ScoreboardTable({ rows }) {
+  const headers = ["Rank", "Team", "MP", "W", "L", "PF", "PA", "+/-"];
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
         <thead>
           <tr>
-            {["Rank", "Team", "MP", "W", "L", "PF", "PA", "+/-"].map((h) => (
+            {headers.map((h) => (
               <th
                 key={h}
                 style={{
@@ -2414,31 +1857,22 @@ function ScoreboardTable({ rows }) {
               </tr>
             );
           })}
-          {rows.length === 0 ? (
+          {!rows.length && (
             <tr>
               <td colSpan={8} style={{ padding: 12, color: "#94a3b8" }}>
                 No data yet.
               </td>
             </tr>
-          ) : null}
+          )}
         </tbody>
       </table>
     </div>
   );
 }
 
-const td = {
-  padding: "10px 10px",
-  borderBottom: "1px solid rgba(148,163,184,0.10)",
-  fontWeight: 800,
-};
-const tdBold = { ...td, fontWeight: 950 };
-const tdStrong = { ...td, fontWeight: 1000 };
-
 function AnimatedNumber({ value }) {
   const [bump, setBump] = useState(false);
   const prevRef = useRef(value);
-
   useEffect(() => {
     if (prevRef.current !== value) {
       setBump(true);
@@ -2447,18 +1881,7 @@ function AnimatedNumber({ value }) {
       return () => clearTimeout(t);
     }
   }, [value]);
-
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        transform: bump ? "scale(1.06)" : "scale(1)",
-        transition: "transform 220ms ease",
-      }}
-    >
-      {value}
-    </span>
-  );
+  return <span style={{ display: "inline-block", transform: bump ? "scale(1.06)" : "scale(1)", transition: "transform 220ms ease" }}>{value}</span>;
 }
 
 function Fireworks({ seed = 0 }) {
@@ -2467,7 +1890,6 @@ function Fireworks({ seed = 0 }) {
     { x: 50 + (seed % 5) * 2, delay: 140 },
     { x: 75 - (seed % 6) * 2, delay: 260 },
   ];
-
   const particlesPerBurst = 14;
   const radius = 46;
 
@@ -2483,16 +1905,150 @@ function Fireworks({ seed = 0 }) {
               const dx = Math.cos(ang) * (radius + (pi % 3) * 10);
               const dy = Math.sin(ang) * (radius + (pi % 4) * 8);
               const hue = (hueBase + pi * 18) % 360;
-              return (
-                <span
-                  key={`${bi}_${pi}`}
-                  style={styles.fireworkParticle(b.x, b.delay + (pi % 6) * 35, dx, dy, hue)}
-                />
-              );
+              return <span key={`${bi}_${pi}`} style={styles.fireworkParticle(b.x, b.delay + (pi % 6) * 35, dx, dy, hue)} />;
             })}
           </React.Fragment>
         );
       })}
+    </div>
+  );
+}
+
+function ScoreCard({ name, score, pct, winner, leader, variant = "A", bigTotals = false, celebrateOn = false, seed = 0 }) {
+  const fill = variant === "A" ? styles.progressFillA : styles.progressFillB;
+  return (
+    <div style={{ ...styles.card, position: "relative", ...(leader ? styles.leaderGlow : {}), ...(winner ? styles.winnerGlow : {}) }}>
+      {winner ? (
+        <div style={styles.trophyBadge}>
+          <span style={styles.trophyCircle}>🏆</span>
+          <span>1</span>
+        </div>
+      ) : null}
+      {winner && celebrateOn ? (
+        <>
+          <Fireworks seed={seed} />
+          <div style={styles.confettiWrap}>
+            {Array.from({ length: 30 }).map((_, i) => (
+              <span key={i} style={styles.confettiPiece(i)} />
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      <div style={{ fontWeight: 900, marginBottom: 6 }}>{name}</div>
+      {bigTotals ? (
+        <div style={styles.bigTotal}>
+          <AnimatedNumber value={score} />
+        </div>
+      ) : (
+        <div style={styles.small}>
+          Total: <b style={{ color: "#e5e7eb" }}>{score}</b> / {TARGET_SCORE}
+        </div>
+      )}
+
+      <div style={{ marginTop: 8, ...styles.progressWrap }}>
+        <div style={fill(pct)} />
+      </div>
+    </div>
+  );
+}
+
+function LiveMatchCard({ match, teamById, onOpen }) {
+  const ta = teamById.get(match.teamAId)?.name ?? "Team A";
+  const tb = teamById.get(match.teamBId)?.name ?? "Team B";
+  const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
+  const pctB = Math.min(100, Math.round(((match.totalB || 0) / TARGET_SCORE) * 100));
+
+  return (
+    <div style={styles.card}>
+      <div style={{ fontWeight: 950, marginBottom: 6 }}>{match.tableName} • {match.label}</div>
+
+      <div style={{ marginTop: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontWeight: 900 }}>
+          <span>{ta}</span>
+          <span>{match.totalA}</span>
+        </div>
+        <div style={{ marginTop: 6, ...styles.progressWrap }}>
+          <div style={styles.progressFillA(pctA)} />
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontWeight: 900 }}>
+          <span>{tb}</span>
+          <span>{match.totalB}</span>
+        </div>
+        <div style={{ marginTop: 6, ...styles.progressWrap }}>
+          <div style={styles.progressFillB(pctB)} />
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        <button type="button" style={styles.btnSecondary} onClick={onOpen}>
+          Open Table
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TeamCard({
+  team,
+  idx,
+  players,
+  usedPlayerIds,
+  playerById,
+  onToggleLock,
+  onRemove,
+  onRename,
+  onSetPlayer,
+}) {
+  const selectOptions = () =>
+    players.map((p) => {
+      const taken = usedPlayerIds.has(p.id) && !(team.playerIds || []).includes(p.id);
+      return (
+        <option key={p.id} value={p.id} disabled={taken}>
+          {p.name}
+          {taken ? " (used)" : ""}
+        </option>
+      );
+    });
+
+  return (
+    <div style={styles.card}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 950 }}>Team #{idx + 1}</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900, color: team.locked ? "#34d399" : "#94a3b8" }}>
+            <input type="checkbox" checked={!!team.locked} onChange={(e) => onToggleLock(e.target.checked)} />
+            Lock
+          </label>
+          <button style={styles.btnGhost} onClick={onRemove}>
+            Remove
+          </button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        <div style={styles.small}>Team name</div>
+        <input style={styles.input("100%")} value={team.name} onChange={(e) => onRename(e.target.value)} placeholder={`Team ${idx + 1}`} />
+      </div>
+
+      <div style={{ marginTop: 10, ...styles.grid2 }}>
+        {[0, 1].map((slotIdx) => (
+          <div key={slotIdx}>
+            <div style={styles.small}>Player {slotIdx + 1}</div>
+            <select style={styles.select("100%")} value={team.playerIds?.[slotIdx] || ""} onChange={(e) => onSetPlayer(slotIdx, e.target.value)}>
+              <option value="">— Select —</option>
+              {selectOptions()}
+            </select>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 10, ...styles.small }}>
+        Members: {(team.playerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean).join(" / ") || "—"}
+      </div>
     </div>
   );
 }
@@ -2517,7 +2073,6 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
 
   useEffect(() => {
     if (!open) return;
-
     setErr("");
     setCaptured(null);
     setResult(null);
@@ -2529,11 +2084,7 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: "environment",
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
+          video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
           audio: false,
         });
         streamRef.current = stream;
@@ -2548,8 +2099,7 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
 
     return () => {
       try {
-        const s = streamRef.current;
-        if (s) s.getTracks().forEach((t) => t.stop());
+        streamRef.current?.getTracks().forEach((t) => t.stop());
       } catch {}
       streamRef.current = null;
     };
@@ -2561,28 +2111,19 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
     setManualPoints("");
     setConfidence(null);
     setCardCount(0);
-
     const v = videoRef.current;
     if (!v) return;
-
     const canvas = document.createElement("canvas");
-    const w = v.videoWidth || 1280;
-    const h = v.videoHeight || 720;
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = v.videoWidth || 1280;
+    canvas.height = v.videoHeight || 720;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.drawImage(v, 0, 0, w, h);
-
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-    setCaptured(dataUrl);
+    ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+    setCaptured(canvas.toDataURL("image/jpeg", 0.85));
   }
 
   async function submitToScan() {
-    if (!captured) {
-      setErr("Please capture a photo first.");
-      return;
-    }
+    if (!captured) return setErr("Please capture a photo first.");
     setBusy(true);
     setErr("");
     setResult(null);
@@ -2590,23 +2131,12 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
     setCardCount(0);
 
     try {
-      const j = await postScanToApi({
-        imageDataUrl: captured,
-        trumpSuit: trumpSuit || "S",
-        pileSide,
-        lastTrick,
-      });
-
+      const j = await postScanToApi({ imageDataUrl: captured, trumpSuit: trumpSuit || "S", pileSide, lastTrick });
       if (!j || j.ok === false) throw new Error(j?.error || "Scan error");
       setResult(j);
       setConfidence(typeof j.confidence === "number" ? j.confidence : null);
       setCardCount(normalizeScanCardCount(j.cardCount || j.cards?.length || 0));
-
-      if (typeof j.points === "number" && Number.isFinite(j.points)) {
-        setManualPoints(String(clamp(j.points, 0, 162)));
-      } else {
-        setManualPoints("");
-      }
+      setManualPoints(typeof j.points === "number" && Number.isFinite(j.points) ? String(clamp(j.points, 0, 162)) : "");
     } catch (e) {
       setErr(e?.message || "Scan failed.");
     } finally {
@@ -2616,10 +2146,7 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
 
   function applyDetectedPoints() {
     const p = safeInt(manualPoints);
-    if (p === null) {
-      setErr("Enter valid points before applying.");
-      return;
-    }
+    if (p === null) return setErr("Enter valid points before applying.");
     onApplyPoints?.({ pileSide, points: clamp(p, 0, 162) });
     onClose?.();
   }
@@ -2628,49 +2155,15 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
 
   return (
     <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.65)",
-        zIndex: 9999,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 14,
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose?.();
-      }}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 14 }}
+      onClick={(e) => e.target === e.currentTarget && onClose?.()}
     >
-      <div
-        style={{
-          width: "min(980px, 96vw)",
-          background: "rgba(2,6,23,0.95)",
-          border: "1px solid rgba(148,163,184,0.22)",
-          borderRadius: 18,
-          boxShadow: "0 18px 60px rgba(0,0,0,0.45)",
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            padding: 12,
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 10,
-            alignItems: "center",
-            borderBottom: "1px solid rgba(148,163,184,0.18)",
-          }}
-        >
+      <div style={{ width: "min(980px, 96vw)", background: "rgba(2,6,23,0.95)", border: bd, borderRadius: 18, boxShadow: "0 18px 60px rgba(0,0,0,0.45)", overflow: "hidden" }}>
+        <div style={{ padding: 12, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", borderBottom: "1px solid rgba(148,163,184,0.18)" }}>
           <div style={{ fontWeight: 950 }}>
-            Scan cards → compute trick points{" "}
-            <span style={{ color: "#94a3b8", fontWeight: 800 }}>
-              (Trump: <SuitIcon suit={trumpSuit || "S"} />)
-            </span>
+            Scan cards → compute trick points <span style={{ color: "#94a3b8", fontWeight: 800 }}>(Trump: <SuitIcon suit={trumpSuit || "S"} />)</span>
           </div>
-          <button style={styles.btnSecondary} onClick={onClose}>
-            Close
-          </button>
+          <button style={styles.btnSecondary} onClick={onClose}>Close</button>
         </div>
 
         <div style={{ padding: 12, display: "grid", gridTemplateColumns: "1fr 340px", gap: 12 }}>
@@ -2684,50 +2177,23 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
                   ref={videoRef}
                   playsInline
                   muted
-                  style={{
-                    width: "100%",
-                    borderRadius: 14,
-                    background: "rgba(0,0,0,0.35)",
-                    maxHeight: "62vh",
-                    objectFit: "cover",
-                  }}
+                  style={{ width: "100%", borderRadius: 14, background: "rgba(0,0,0,0.35)", maxHeight: "62vh", objectFit: "cover" }}
                 />
                 <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button style={styles.btnPrimary} onClick={captureFrame} disabled={!!err}>
-                    Capture Photo
-                  </button>
-                  <button style={styles.btnSecondary} onClick={onClose}>
-                    Cancel
-                  </button>
+                  <button style={styles.btnPrimary} onClick={captureFrame} disabled={!!err}>Capture Photo</button>
+                  <button style={styles.btnSecondary} onClick={onClose}>Cancel</button>
                 </div>
               </>
             ) : (
               <>
-                <img
-                  src={captured}
-                  alt="Captured"
-                  style={{
-                    width: "100%",
-                    borderRadius: 14,
-                    maxHeight: "62vh",
-                    objectFit: "contain",
-                    background: "rgba(0,0,0,0.25)",
-                  }}
-                />
+                <img src={captured} alt="Captured" style={{ width: "100%", borderRadius: 14, maxHeight: "62vh", objectFit: "contain", background: "rgba(0,0,0,0.25)" }} />
                 <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button style={styles.btnSecondary} onClick={() => setCaptured(null)} disabled={busy}>
-                    Retake
-                  </button>
-                  <button style={styles.btnPrimary} onClick={submitToScan} disabled={busy}>
-                    {busy ? "Scanning…" : "Use Photo & Calculate"}
-                  </button>
+                  <button style={styles.btnSecondary} onClick={() => setCaptured(null)} disabled={busy}>Retake</button>
+                  <button style={styles.btnPrimary} onClick={submitToScan} disabled={busy}>{busy ? "Scanning…" : "Use Photo & Calculate"}</button>
                 </div>
               </>
             )}
-
-            {err ? (
-              <div style={{ marginTop: 10, color: "#fb7185", fontWeight: 900 }}>{err}</div>
-            ) : null}
+            {err ? <div style={{ marginTop: 10, color: "#fb7185", fontWeight: 900 }}>{err}</div> : null}
           </div>
 
           <div style={{ ...styles.card, borderRadius: 16 }}>
@@ -2735,24 +2201,14 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
 
             <div style={{ marginBottom: 10 }}>
               <div style={styles.small}>Which pile is this photo?</div>
-              <select
-                style={styles.select("100%")}
-                value={pileSide}
-                onChange={(e) => setPileSide(e.target.value)}
-                disabled={busy}
-              >
+              <select style={styles.select("100%")} value={pileSide} onChange={(e) => setPileSide(e.target.value)} disabled={busy}>
                 <option value="BIDDER">Bidder pile</option>
                 <option value="NON">Non-bidder pile</option>
               </select>
             </div>
 
             <label style={{ display: "flex", gap: 10, alignItems: "center", fontWeight: 900 }}>
-              <input
-                type="checkbox"
-                checked={lastTrick}
-                onChange={(e) => setLastTrick(e.target.checked)}
-                disabled={busy}
-              />
+              <input type="checkbox" checked={lastTrick} onChange={(e) => setLastTrick(e.target.checked)} disabled={busy} />
               This pile includes last trick (+10)
             </label>
 
@@ -2768,30 +2224,18 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
                       Points: <span style={{ color: "#34d399" }}>{manualPoints || "—"}</span>
                     </div>
                     <span style={styles.tag}>{cardCount} cards</span>
-                    {confidence !== null ? (
-                      <span style={styles.tag}>
-                        Confidence {Math.round(confidence * 100)}%
-                      </span>
-                    ) : null}
+                    {confidence !== null && <span style={styles.tag}>Confidence {Math.round(confidence * 100)}%</span>}
                   </div>
 
                   <div style={{ marginTop: 10 }}>
                     <div style={styles.small}>Adjust points before applying</div>
-                    <input
-                      style={styles.input("100%")}
-                      value={manualPoints}
-                      onChange={(e) => setManualPoints(e.target.value)}
-                      inputMode="numeric"
-                      placeholder="0-162"
-                    />
+                    <input style={styles.input("100%")} value={manualPoints} onChange={(e) => setManualPoints(e.target.value)} inputMode="numeric" placeholder="0-162" />
                   </div>
 
                   {Array.isArray(result.warnings) && result.warnings.length ? (
                     <div style={{ marginTop: 8 }}>
                       {result.warnings.map((w, i) => (
-                        <div key={i} style={{ color: "#fbbf24", fontWeight: 900, fontSize: 12 }}>
-                          ⚠ {w}
-                        </div>
+                        <div key={i} style={{ color: "#fbbf24", fontWeight: 900, fontSize: 12 }}>⚠ {w}</div>
                       ))}
                     </div>
                   ) : null}
@@ -2800,18 +2244,13 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
                     <div style={{ marginTop: 10, fontSize: 12, color: "#94a3b8" }}>
                       Detected cards ({result.cards.length}):{" "}
                       <span style={{ color: "#e5e7eb", fontWeight: 900 }}>
-                        {result.cards
-                          .slice(0, 32)
-                          .map((c) => c.displayCode || `${c.rank}${c.suit}`)
-                          .join(" ")}
+                        {result.cards.slice(0, 32).map((c) => c.displayCode || `${c.rank}${c.suit}`).join(" ")}
                       </span>
                     </div>
                   ) : null}
 
                   <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    <button style={styles.btnPrimary} onClick={applyDetectedPoints}>
-                      Apply Points
-                    </button>
+                    <button style={styles.btnPrimary} onClick={applyDetectedPoints}>Apply Points</button>
                   </div>
                 </>
               )}
@@ -2828,7 +2267,7 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
 }
 
 /* =========================
-   Admin collapsed match card
+   Match cards
 ========================= */
 
 function CollapsibleMatchCard({
@@ -2853,101 +2292,47 @@ function CollapsibleMatchCard({
 
   return (
     <div style={styles.card}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          gap: 10,
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ fontWeight: 950 }}>
           {match.tableName} • {match.label} <span style={styles.small}>• Code {match.code}</span>
         </div>
-
         <div style={styles.row}>
-          <button type="button" style={styles.btnSecondary} onClick={onOpenTable}>
-            Open Table
-          </button>
-          <button type="button" style={styles.btnGhost} onClick={() => setCollapsed((v) => !v)}>
-            {collapsed ? "Expand" : "Collapse"}
-          </button>
+          <button type="button" style={styles.btnSecondary} onClick={onOpenTable}>Open Table</button>
+          <button type="button" style={styles.btnGhost} onClick={() => setCollapsed((v) => !v)}>{collapsed ? "Expand" : "Collapse"}</button>
         </div>
       </div>
 
       <div style={{ marginTop: 12, ...styles.grid2 }}>
-        <div style={styles.card}>
-          <div style={styles.small}>Table name</div>
-          <input
-            style={styles.input("100%")}
-            value={match.tableName}
-            onChange={(e) => onRenameMatch({ tableName: e.target.value })}
-          />
-        </div>
+        <InfoCard title="Table name">
+          <input style={styles.input("100%")} value={match.tableName} onChange={(e) => onRenameMatch({ tableName: e.target.value })} />
+        </InfoCard>
+        <InfoCard title="Match label">
+          <input style={styles.input("100%")} value={match.label} onChange={(e) => onRenameMatch({ label: e.target.value })} />
+        </InfoCard>
 
-        <div style={styles.card}>
-          <div style={styles.small}>Match label</div>
-          <input
-            style={styles.input("100%")}
-            value={match.label}
-            onChange={(e) => onRenameMatch({ label: e.target.value })}
-          />
-        </div>
-
-        <div>
-          <div style={styles.small}>Team A</div>
-          <select
-            style={styles.select("100%")}
-            value={match.teamAId || ""}
-            onChange={(e) => onSetMatchTeam("teamAId", e.target.value)}
-          >
-            <option value="">— Select —</option>
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <div style={styles.small}>Team B</div>
-          <select
-            style={styles.select("100%")}
-            value={match.teamBId || ""}
-            onChange={(e) => onSetMatchTeam("teamBId", e.target.value)}
-          >
-            <option value="">— Select —</option>
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        {["teamAId", "teamBId"].map((side, i) => (
+          <div key={side}>
+            <div style={styles.small}>Team {i === 0 ? "A" : "B"}</div>
+            <select style={styles.select("100%")} value={match[side] || ""} onChange={(e) => onSetMatchTeam(side, e.target.value)}>
+              <option value="">— Select —</option>
+              {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </div>
+        ))}
       </div>
 
-      {!collapsed ? (
+      {!collapsed && (
         <>
           <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button style={styles.btnSecondary} onClick={onCopyLink}>
-              Copy Link
-            </button>
-            <button style={styles.btnDanger} onClick={onRemove}>
-              Remove
-            </button>
+            <button style={styles.btnSecondary} onClick={onCopyLink}>Copy Link</button>
+            <button style={styles.btnDanger} onClick={onRemove}>Remove</button>
           </div>
 
           <div style={{ marginTop: 10, ...styles.card }}>
             <div style={{ fontWeight: 950, color: match.completed ? "#34d399" : "#94a3b8" }}>
-              {match.completed
-                ? `Completed • Winner: ${teamById.get(match.winnerId)?.name ?? "—"}`
-                : "In progress"}
+              {match.completed ? `Completed • Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "In progress"}
             </div>
-            <div style={styles.small}>
-              Score: {match.totalA} – {match.totalB}
-            </div>
+            <div style={styles.small}>Score: {match.totalA} – {match.totalB}</div>
           </div>
 
           <div style={{ marginTop: 12 }}>
@@ -2965,7 +2350,7 @@ function CollapsibleMatchCard({
             />
           </div>
         </>
-      ) : null}
+      )}
     </div>
   );
 }
@@ -2998,50 +2383,15 @@ function TableMatchPanel({
   const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
   const pctB = Math.min(100, Math.round(((match.totalB || 0) / TARGET_SCORE) * 100));
 
-  const d =
-    match.fastDraft || {
-      bidder: "A",
-      bid: "",
-      suit: "S",
-      coincheLevel: "NONE",
-      capot: false,
-      bidderTrickPoints: "",
-      nonBidderTrickPoints: "",
-      trickSource: "",
-      announceA1: "",
-      announceA1PlayerId: "",
-      announceA2: "",
-      announceA2PlayerId: "",
-      announceB1: "",
-      announceB1PlayerId: "",
-      announceB2: "",
-      announceB2PlayerId: "",
-      beloteTeam: "NONE",
-    };
-
+  const d = match.fastDraft || defaultFastDraft();
   const canPlay = !!match.teamAId && !!match.teamBId;
-  const setupReady =
-    canPlay &&
-    Array.isArray(match.tableOrderPlayerIds) &&
-    match.tableOrderPlayerIds.length === 4 &&
-    !!match.firstShufflerPlayerId;
-
-  const leader =
-    match.totalA === match.totalB ? null : match.totalA > match.totalB ? "A" : "B";
-
-  const winnerSide =
-    match.completed && match.winnerId
-      ? match.winnerId === match.teamAId
-        ? "A"
-        : match.winnerId === match.teamBId
-        ? "B"
-        : null
-      : null;
+  const setupReady = canPlay && Array.isArray(match.tableOrderPlayerIds) && match.tableOrderPlayerIds.length === 4 && !!match.firstShufflerPlayerId;
+  const leader = match.totalA === match.totalB ? null : match.totalA > match.totalB ? "A" : "B";
+  const winnerSide = !match.completed || !match.winnerId ? null : match.winnerId === match.teamAId ? "A" : match.winnerId === match.teamBId ? "B" : null;
 
   const [celebrateOn, setCelebrateOn] = useState(false);
   const prevWinnerRef = useRef(null);
   const [scanOpen, setScanOpen] = useState(false);
-
   const [setupCollapsed, setSetupCollapsed] = useState(setupReady);
   const setupAutoCollapsedRef = useRef(false);
 
@@ -3073,119 +2423,56 @@ function TableMatchPanel({
   }, [winnerSide]);
 
   const suitLabel =
-    d.suit === "H"
-      ? "Hearts"
-      : d.suit === "D"
-      ? "Diamonds"
-      : d.suit === "C"
-      ? "Clubs"
-      : "Spades";
-
-  const fieldLabelStyle = {
-    fontSize: (styles.small?.fontSize || 12) + 6,
-    color: "#cbd5e1",
-    fontWeight: 950,
-    marginBottom: 6,
-  };
-
+    d.suit === "H" ? "Hearts" : d.suit === "D" ? "Diamonds" : d.suit === "C" ? "Clubs" : "Spades";
+  const fieldLabelStyle = { fontSize: 18, color: "#cbd5e1", fontWeight: 950, marginBottom: 6 };
   const handInput = { ...styles.input("100%"), padding: "8px 10px" };
   const handSelect = { ...styles.select("100%"), padding: "8px 10px" };
+  const currentShuffler = getCurrentShufflerInfo(match, playerById);
+  const seatOrderNames = (match.tableOrderPlayerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean);
 
-  const currentShufflerName = getCurrentShufflerName(match, playerById);
-  const seatOrderNames = (match.tableOrderPlayerIds || [])
-    .map((pid) => playerById.get(pid)?.name)
-    .filter(Boolean);
-
-  function setSeat(slotIdx, playerIdOrEmpty) {
+  function setSeat(slotIdx, value) {
     const next = [...(match.tableOrderPlayerIds || [])];
     while (next.length < 4) next.push("");
-    next[slotIdx] = playerIdOrEmpty || "";
-
-    const cleaned = next.filter(Boolean);
+    next[slotIdx] = value || "";
     const unique = [];
-    for (const id of cleaned) {
-      if (!unique.includes(id)) unique.push(id);
-    }
-
-    while (unique.length < 4 && next.length >= unique.length + 1) {
-      const candidate = next[unique.length];
-      if (candidate && !unique.includes(candidate)) unique.push(candidate);
-      else break;
-    }
-
+    for (const id of next.filter(Boolean)) if (!unique.includes(id)) unique.push(id);
     onTableSetupPatch({
       tableOrderPlayerIds: unique,
-      firstShufflerPlayerId:
-        unique.includes(match.firstShufflerPlayerId) ? match.firstShufflerPlayerId : "",
+      firstShufflerPlayerId: unique.includes(match.firstShufflerPlayerId) ? match.firstShufflerPlayerId : "",
     });
   }
 
   function renderAnnounceBlock(side, label, teamPlayers) {
-    const key1 = `announce${side}1`;
-    const key2 = `announce${side}2`;
-    const p1 = `announce${side}1PlayerId`;
-    const p2 = `announce${side}2PlayerId`;
+    const keys = {
+      a1: `announce${side}1`,
+      a2: `announce${side}2`,
+      p1: `announce${side}1PlayerId`,
+      p2: `announce${side}2PlayerId`,
+    };
 
     return (
       <div style={styles.card}>
         <div style={{ fontWeight: 950, marginBottom: 10 }}>{label}</div>
-
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <div style={styles.small}>Announce 1</div>
-            <input
-              style={handInput}
-              value={d[key1]}
-              onChange={(e) => onDraftPatch({ [key1]: e.target.value })}
-              inputMode="numeric"
-              disabled={!setupReady}
-            />
-          </div>
-          <div>
-            <div style={styles.small}>Player</div>
-            <select
-              style={handSelect}
-              value={d[p1] || ""}
-              onChange={(e) => onDraftPatch({ [p1]: e.target.value })}
-              disabled={!setupReady}
-            >
-              <option value="">— Select —</option>
-              {teamPlayers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <div style={styles.small}>Announce 2</div>
-            <input
-              style={handInput}
-              value={d[key2]}
-              onChange={(e) => onDraftPatch({ [key2]: e.target.value })}
-              inputMode="numeric"
-              disabled={!setupReady}
-            />
-          </div>
-          <div>
-            <div style={styles.small}>Player</div>
-            <select
-              style={handSelect}
-              value={d[p2] || ""}
-              onChange={(e) => onDraftPatch({ [p2]: e.target.value })}
-              disabled={!setupReady}
-            >
-              <option value="">— Select —</option>
-              {teamPlayers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {[
+            [keys.a1, keys.p1, "Announce 1"],
+            [keys.a2, keys.p2, "Announce 2"],
+          ].map(([amountKey, playerKey, title]) => (
+            <React.Fragment key={amountKey}>
+              <div>
+                <div style={styles.small}>{title}</div>
+                <input style={handInput} value={d[amountKey]} onChange={(e) => onDraftPatch({ [amountKey]: e.target.value })} inputMode="numeric" disabled={!setupReady} />
+              </div>
+              <div>
+                <div style={styles.small}>Player</div>
+                <select style={handSelect} value={d[playerKey] || ""} onChange={(e) => onDraftPatch({ [playerKey]: e.target.value })} disabled={!setupReady}>
+                  <option value="">— Select —</option>
+                  {teamPlayers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            </React.Fragment>
+          ))}
         </div>
-
         <div style={{ marginTop: 8, ...styles.small }}>
           Total announces: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{sumAnnounces(d, side)}</span>
         </div>
@@ -3193,27 +2480,20 @@ function TableMatchPanel({
     );
   }
 
+  const announceWinnerLabel =
+    d.announceWinner === "A" ? ta : d.announceWinner === "B" ? tb : "None / tie";
+
   return (
     <div style={{ ...styles.card, borderRadius: 18 }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          gap: 10,
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
-        <div style={{ fontWeight: 950 }}>
-          {match.tableName} • {match.label}
-        </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ fontWeight: 950 }}>{match.tableName} • {match.label}</div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
             {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
           </div>
 
-          {!match.completed ? (
+          {!match.completed && (
             <button
               style={{ ...styles.btnDanger, ...(setupReady ? {} : styles.disabled) }}
               onClick={() => {
@@ -3225,207 +2505,75 @@ function TableMatchPanel({
             >
               Finish Game Now
             </button>
-          ) : null}
+          )}
         </div>
       </div>
 
       <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 10,
-            flexWrap: "wrap",
-            alignItems: "center",
-            marginBottom: 10,
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
           <div style={{ fontWeight: 950 }}>Table Setup</div>
-
-          {canPlay ? (
-            <button
-              type="button"
-              style={styles.btnSecondary}
-              onClick={() => setSetupCollapsed((v) => !v)}
-            >
-              {setupCollapsed ? "Expand Setup" : "Collapse Setup"}
-            </button>
-          ) : null}
+          {canPlay && <button type="button" style={styles.btnSecondary} onClick={() => setSetupCollapsed((v) => !v)}>{setupCollapsed ? "Expand Setup" : "Collapse Setup"}</button>}
         </div>
 
         {!canPlay ? (
           <div style={styles.small}>Select both teams first.</div>
+        ) : setupCollapsed ? (
+          <div style={styles.card}>
+            <div style={{ ...styles.small, marginBottom: 6 }}>Table setup completed. Expand to edit if needed.</div>
+            {seatOrderNames.length === 4 && <div style={{ fontWeight: 900 }}>Order: <span style={{ color: "#e5e7eb" }}>{seatOrderNames.join(" → ")}</span></div>}
+            {match.firstShufflerPlayerId && (
+              <div style={{ marginTop: 6, ...styles.small }}>
+                First shuffler: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{playerById.get(match.firstShufflerPlayerId)?.name || "—"}</span>
+              </div>
+            )}
+          </div>
         ) : (
           <>
-            {setupCollapsed ? (
-              <div style={styles.card}>
-                <div style={{ ...styles.small, marginBottom: 6 }}>
-                  Table setup completed. Expand to edit if needed.
-                </div>
-                {seatOrderNames.length === 4 ? (
-                  <div style={{ fontWeight: 900 }}>
-                    Order: <span style={{ color: "#e5e7eb" }}>{seatOrderNames.join(" → ")}</span>
-                  </div>
-                ) : null}
-                {match.firstShufflerPlayerId ? (
-                  <div style={{ marginTop: 6, ...styles.small }}>
-                    First shuffler:{" "}
-                    <span style={{ color: "#e5e7eb", fontWeight: 900 }}>
-                      {playerById.get(match.firstShufflerPlayerId)?.name || "—"}
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <>
-                <div style={{ ...styles.small, marginBottom: 10 }}>
-                  Choose the 4 players in table order, then select who shuffles first.
-                </div>
+            <div style={{ ...styles.small, marginBottom: 10 }}>Choose the 4 players in table order, then select who shuffles first.</div>
 
-                <div style={styles.grid4}>
-                  {[0, 1, 2, 3].map((idx) => (
-                    <div key={idx}>
-                      <div style={fieldLabelStyle}>Seat {idx + 1}</div>
-                      <select
-                        style={handSelect}
-                        value={match.tableOrderPlayerIds?.[idx] || ""}
-                        onChange={(e) => setSeat(idx, e.target.value)}
-                        disabled={(match.hands || []).length > 0}
-                      >
-                        <option value="">— Select —</option>
-                        {allTablePlayers.map((p) => {
-                          const taken =
-                            (match.tableOrderPlayerIds || []).includes(p.id) &&
-                            (match.tableOrderPlayerIds || [])[idx] !== p.id;
-                          return (
-                            <option key={p.id} value={p.id} disabled={taken}>
-                              {p.name}
-                            </option>
-                          );
-                        })}
-                      </select>
-                    </div>
-                  ))}
-                </div>
-
-                <div style={{ marginTop: 10, maxWidth: 320 }}>
-                  <div style={fieldLabelStyle}>First player to shuffle</div>
-                  <select
-                    style={handSelect}
-                    value={match.firstShufflerPlayerId || ""}
-                    onChange={(e) => onTableSetupPatch({ firstShufflerPlayerId: e.target.value })}
-                    disabled={(match.hands || []).length > 0 || (match.tableOrderPlayerIds || []).length !== 4}
-                  >
+            <div style={styles.grid4}>
+              {[0, 1, 2, 3].map((idx) => (
+                <div key={idx}>
+                  <div style={fieldLabelStyle}>Seat {idx + 1}</div>
+                  <select style={handSelect} value={match.tableOrderPlayerIds?.[idx] || ""} onChange={(e) => setSeat(idx, e.target.value)} disabled={(match.hands || []).length > 0}>
                     <option value="">— Select —</option>
-                    {(match.tableOrderPlayerIds || []).map((pid) => {
-                      const p = playerById.get(pid);
-                      if (!p) return null;
-                      return (
-                        <option key={pid} value={pid}>
-                          {p.name}
-                        </option>
-                      );
+                    {allTablePlayers.map((p) => {
+                      const taken = (match.tableOrderPlayerIds || []).includes(p.id) && (match.tableOrderPlayerIds || [])[idx] !== p.id;
+                      return <option key={p.id} value={p.id} disabled={taken}>{p.name}</option>;
                     })}
                   </select>
                 </div>
+              ))}
+            </div>
 
-                {seatOrderNames.length === 4 ? (
-                  <div style={{ marginTop: 10, ...styles.small }}>
-                    Order: <span style={{ color: "#e5e7eb" }}>{seatOrderNames.join(" → ")}</span>
-                  </div>
-                ) : null}
-              </>
+            <div style={{ marginTop: 10, maxWidth: 320 }}>
+              <div style={fieldLabelStyle}>First player to shuffle</div>
+              <select
+                style={handSelect}
+                value={match.firstShufflerPlayerId || ""}
+                onChange={(e) => onTableSetupPatch({ firstShufflerPlayerId: e.target.value })}
+                disabled={(match.hands || []).length > 0 || (match.tableOrderPlayerIds || []).length !== 4}
+              >
+                <option value="">— Select —</option>
+                {(match.tableOrderPlayerIds || []).map((pid) => {
+                  const p = playerById.get(pid);
+                  return p ? <option key={pid} value={pid}>{p.name}</option> : null;
+                })}
+              </select>
+            </div>
+
+            {seatOrderNames.length === 4 && (
+              <div style={{ marginTop: 10, ...styles.small }}>
+                Order: <span style={{ color: "#e5e7eb" }}>{seatOrderNames.join(" → ")}</span>
+              </div>
             )}
           </>
         )}
       </div>
 
       <div style={{ marginTop: 10, ...styles.grid2 }}>
-        <div
-          style={{
-            ...styles.card,
-            position: "relative",
-            ...(leader === "A" ? styles.leaderGlow : {}),
-            ...(winnerSide === "A" ? styles.winnerGlow : {}),
-          }}
-        >
-          {winnerSide === "A" ? (
-            <div style={styles.trophyBadge}>
-              <span style={styles.trophyCircle}>🏆</span>
-              <span>1</span>
-            </div>
-          ) : null}
-
-          {celebrateOn && winnerSide === "A" ? (
-            <>
-              <Fireworks seed={(match.id || "").length + (match.totalA || 0)} />
-              <div style={styles.confettiWrap}>
-                {Array.from({ length: 30 }).map((_, i) => (
-                  <span key={i} style={styles.confettiPiece(i)} />
-                ))}
-              </div>
-            </>
-          ) : null}
-
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>{ta}</div>
-
-          {bigTotals ? (
-            <div style={styles.bigTotal}>
-              <AnimatedNumber value={match.totalA} />
-            </div>
-          ) : (
-            <div style={styles.small}>
-              Total: <b style={{ color: "#e5e7eb" }}>{match.totalA}</b> / {TARGET_SCORE}
-            </div>
-          )}
-
-          <div style={{ marginTop: 8, ...styles.progressWrap }}>
-            <div style={styles.progressFillA(pctA)} />
-          </div>
-        </div>
-
-        <div
-          style={{
-            ...styles.card,
-            position: "relative",
-            ...(leader === "B" ? styles.leaderGlow : {}),
-            ...(winnerSide === "B" ? styles.winnerGlow : {}),
-          }}
-        >
-          {winnerSide === "B" ? (
-            <div style={styles.trophyBadge}>
-              <span style={styles.trophyCircle}>🏆</span>
-              <span>1</span>
-            </div>
-          ) : null}
-
-          {celebrateOn && winnerSide === "B" ? (
-            <>
-              <Fireworks seed={(match.id || "").length + (match.totalB || 0) + 7} />
-              <div style={styles.confettiWrap}>
-                {Array.from({ length: 30 }).map((_, i) => (
-                  <span key={i} style={styles.confettiPiece(i)} />
-                ))}
-              </div>
-            </>
-          ) : null}
-
-          <div style={{ fontWeight: 900, marginBottom: 6 }}>{tb}</div>
-
-          {bigTotals ? (
-            <div style={styles.bigTotal}>
-              <AnimatedNumber value={match.totalB} />
-            </div>
-          ) : (
-            <div style={styles.small}>
-              Total: <b style={{ color: "#e5e7eb" }}>{match.totalB}</b> / {TARGET_SCORE}
-            </div>
-          )}
-
-          <div style={{ marginTop: 8, ...styles.progressWrap }}>
-            <div style={styles.progressFillB(pctB)} />
-          </div>
-        </div>
+        <ScoreCard name={ta} score={match.totalA} pct={pctA} leader={leader === "A"} winner={winnerSide === "A"} variant="A" bigTotals={bigTotals} celebrateOn={celebrateOn} seed={(match.id || "").length + (match.totalA || 0)} />
+        <ScoreCard name={tb} score={match.totalB} pct={pctB} leader={leader === "B"} winner={winnerSide === "B"} variant="B" bigTotals={bigTotals} celebrateOn={celebrateOn} seed={(match.id || "").length + (match.totalB || 0) + 7} />
       </div>
 
       <div style={{ marginTop: 10, ...styles.small }}>
@@ -3435,104 +2583,59 @@ function TableMatchPanel({
       <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
           <div style={{ fontWeight: 950 }}>Hand Tracker</div>
-          {match.editingHandIdx ? (
-            <span style={styles.tag}>Editing Hand {match.editingHandIdx}</span>
-          ) : (
-            <span style={styles.tag}>New Hand</span>
-          )}
+          <span style={styles.tag}>{match.editingHandIdx ? `Editing Hand ${match.editingHandIdx}` : "New Hand"}</span>
         </div>
 
-        <div
-          style={{
-            marginTop: 10,
-            padding: 12,
-            borderRadius: 16,
-            background: "rgba(250,204,21,0.08)",
-            border: "1px solid rgba(250,204,21,0.28)",
-          }}
-        >
-          <div style={{ fontSize: 28, fontWeight: 950, lineHeight: 1.1, color: "#e5e7eb" }}>
-            Shuffle Order
-          </div>
+        <div style={{ marginTop: 10, padding: 12, borderRadius: 16, background: "rgba(250,204,21,0.08)", border: "1px solid rgba(250,204,21,0.28)" }}>
+          <div style={{ fontSize: 22, fontWeight: 950, lineHeight: 1.1, color: "#e5e7eb" }}>Shuffle Order</div>
 
-          <div style={{ marginTop: 6, fontSize: 32, fontWeight: 950, lineHeight: 1.05, color: "#e5e7eb" }}>
+          <div style={{ marginTop: 6, fontSize: 26, fontWeight: 950, lineHeight: 1.05, color: "#e5e7eb" }}>
             {seatOrderNames.length === 4 ? seatOrderNames.join(" → ") : "Set the 4-player order first"}
           </div>
 
-          <div style={{ marginTop: 8, fontSize: 32, fontWeight: 1000, lineHeight: 1.05 }}>
+          <div style={{ marginTop: 8, fontSize: 28, fontWeight: 1000, lineHeight: 1.05 }}>
             <span style={{ color: "#e5e7eb" }}>Now shuffling: </span>
-            <span style={{ color: "#facc15", fontSize: 36 }}>
-              {setupReady && currentShufflerName ? currentShufflerName : "Complete table setup before starting"}
+            <span style={{ color: "#facc15", fontSize: 30 }}>
+              {setupReady && currentShuffler.name ? currentShuffler.name : "Complete table setup before starting"}
             </span>
           </div>
         </div>
 
         <div style={styles.handRow1}>
-          <div>
-            <div style={fieldLabelStyle}>Bidder</div>
-            <select
-              style={handSelect}
-              value={d.bidder}
-              onChange={(e) => onDraftPatch({ bidder: e.target.value })}
-              disabled={!setupReady}
-            >
+          <Field label="Bidder" labelStyle={fieldLabelStyle}>
+            <select style={handSelect} value={d.bidder} onChange={(e) => onDraftPatch({ bidder: e.target.value })} disabled={!setupReady}>
               <option value="A">{ta}</option>
               <option value="B">{tb}</option>
             </select>
-          </div>
+          </Field>
 
-          <div>
-            <div style={fieldLabelStyle}>Bid</div>
-            <input
-              style={handInput}
-              value={d.bid}
-              onChange={(e) => onDraftPatch({ bid: e.target.value })}
-              placeholder='80, 90, 110... or "capot"'
-              disabled={!setupReady}
-            />
-          </div>
+          <Field label="Bid" labelStyle={fieldLabelStyle}>
+            <input style={handInput} value={d.bid} onChange={(e) => onDraftPatch({ bid: e.target.value })} placeholder='80, 90, 110... or "capot"' disabled={!setupReady} />
+          </Field>
 
-          <div>
-            <div style={fieldLabelStyle}>Suit</div>
-            <select
-              style={handSelect}
-              value={d.suit || "S"}
-              onChange={(e) => onDraftPatch({ suit: e.target.value })}
-              disabled={!setupReady}
-            >
+          <Field label="Suit" labelStyle={fieldLabelStyle}>
+            <select style={handSelect} value={d.suit || "S"} onChange={(e) => onDraftPatch({ suit: e.target.value })} disabled={!setupReady}>
               <option value="H">♥ Hearts</option>
               <option value="D">♦ Diamonds</option>
               <option value="C">♣ Clubs</option>
               <option value="S">♠ Spades</option>
             </select>
-          </div>
+          </Field>
 
-          <div>
-            <div style={fieldLabelStyle}>Coinche</div>
-            <select
-              style={handSelect}
-              value={d.coincheLevel}
-              onChange={(e) => onDraftPatch({ coincheLevel: e.target.value })}
-              disabled={!setupReady}
-            >
+          <Field label="Coinche" labelStyle={fieldLabelStyle}>
+            <select style={handSelect} value={d.coincheLevel} onChange={(e) => onDraftPatch({ coincheLevel: e.target.value })} disabled={!setupReady}>
               <option value="NONE">None</option>
               <option value="COINCHE">Coinche (x2)</option>
               <option value="SURCOINCHE">Surcoinche (x4)</option>
             </select>
-          </div>
+          </Field>
 
-          <div>
-            <div style={fieldLabelStyle}>Capot</div>
-            <select
-              style={handSelect}
-              value={d.capot ? "YES" : "NO"}
-              onChange={(e) => onDraftPatch({ capot: e.target.value === "YES" })}
-              disabled={!setupReady}
-            >
+          <Field label="Capot" labelStyle={fieldLabelStyle}>
+            <select style={handSelect} value={d.capot ? "YES" : "NO"} onChange={(e) => onDraftPatch({ capot: e.target.value === "YES" })} disabled={!setupReady}>
               <option value="NO">No</option>
               <option value="YES">Yes</option>
             </select>
-          </div>
+          </Field>
         </div>
 
         <div style={styles.handRow2}>
@@ -3541,105 +2644,80 @@ function TableMatchPanel({
         </div>
 
         <div style={styles.handRow3}>
-          <div>
-            <div style={fieldLabelStyle}>Belote</div>
+          <Field label="Announce winner" labelStyle={fieldLabelStyle}>
             <select
               style={handSelect}
-              value={d.beloteTeam}
-              onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })}
+              value={d.announceWinner}
+              onChange={(e) => onDraftPatch({ announceWinner: e.target.value })}
               disabled={!setupReady}
             >
+              <option value="NONE">None / tie</option>
+              <option value="A">{ta}</option>
+              <option value="B">{tb}</option>
+            </select>
+          </Field>
+
+          <Field label="Belote" labelStyle={fieldLabelStyle}>
+            <select style={handSelect} value={d.beloteTeam} onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })} disabled={!setupReady}>
               <option value="NONE">None</option>
               <option value="A">{ta}</option>
               <option value="B">{tb}</option>
             </select>
-          </div>
+          </Field>
 
-          <div>
-            <div style={fieldLabelStyle}>Bidder trick points (0–162)</div>
+          <Field label="Bidder trick points (0–162)" labelStyle={fieldLabelStyle}>
             <input
               style={handInput}
               value={d.bidderTrickPoints}
               onChange={(e) => {
                 const raw = e.target.value;
-                if (raw.trim() === "") {
-                  onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "" });
-                  return;
-                }
+                if (!raw.trim()) return onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "" });
                 const n = safeInt(raw);
-                if (n === null) {
-                  onDraftPatch({ bidderTrickPoints: raw, trickSource: "BIDDER" });
-                  return;
-                }
+                if (n === null) return onDraftPatch({ bidderTrickPoints: raw, trickSource: "BIDDER" });
                 const v = clamp(n, 0, 162);
-                onDraftPatch({
-                  bidderTrickPoints: String(v),
-                  nonBidderTrickPoints: String(162 - v),
-                  trickSource: "BIDDER",
-                });
+                onDraftPatch({ bidderTrickPoints: String(v), nonBidderTrickPoints: String(162 - v), trickSource: "BIDDER" });
               }}
               placeholder="ex: 81"
               inputMode="numeric"
               disabled={!setupReady || d.trickSource === "NON"}
             />
-          </div>
+          </Field>
 
-          <div>
-            <div style={fieldLabelStyle}>Non-bidder trick points (0–162)</div>
+          <Field label="Non-bidder trick points (0–162)" labelStyle={fieldLabelStyle}>
             <input
               style={handInput}
               value={d.nonBidderTrickPoints}
               onChange={(e) => {
                 const raw = e.target.value;
-                if (raw.trim() === "") {
-                  onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "" });
-                  return;
-                }
+                if (!raw.trim()) return onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "" });
                 const n = safeInt(raw);
-                if (n === null) {
-                  onDraftPatch({ nonBidderTrickPoints: raw, trickSource: "NON" });
-                  return;
-                }
+                if (n === null) return onDraftPatch({ nonBidderTrickPoints: raw, trickSource: "NON" });
                 const v = clamp(n, 0, 162);
-                onDraftPatch({
-                  nonBidderTrickPoints: String(v),
-                  bidderTrickPoints: String(162 - v),
-                  trickSource: "NON",
-                });
+                onDraftPatch({ nonBidderTrickPoints: String(v), bidderTrickPoints: String(162 - v), trickSource: "NON" });
               }}
               placeholder="ex: 81"
               inputMode="numeric"
               disabled={!setupReady || d.trickSource === "BIDDER"}
             />
-          </div>
+          </Field>
+        </div>
+
+        <div style={{ marginTop: 8, ...styles.small }}>
+          Valid announce side for this hand: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{announceWinnerLabel}</span>
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
-          <button
-            style={{ ...styles.btnPrimary, ...(setupReady ? {} : styles.disabled) }}
-            onClick={onAddHand}
-            disabled={!setupReady}
-          >
+          <button style={{ ...styles.btnPrimary, ...(setupReady ? {} : styles.disabled) }} onClick={onAddHand} disabled={!setupReady}>
             {match.editingHandIdx ? `Save Changes (Hand ${match.editingHandIdx})` : "Add Hand"}
           </button>
 
-          {match.editingHandIdx ? (
-            <button style={styles.btnSecondary} onClick={onCancelEdit}>
-              Cancel Edit
-            </button>
-          ) : null}
+          {match.editingHandIdx && <button style={styles.btnSecondary} onClick={onCancelEdit}>Cancel Edit</button>}
 
-          <button
-            style={{ ...styles.btnSecondary, ...(setupReady ? {} : styles.disabled) }}
-            onClick={() => setScanOpen(true)}
-            disabled={!setupReady}
-          >
+          <button style={{ ...styles.btnSecondary, ...(setupReady ? {} : styles.disabled) }} onClick={() => setScanOpen(true)} disabled={!setupReady}>
             Calculate points with picture
           </button>
 
-          <button style={styles.btnSecondary} onClick={onClearHands}>
-            Clear Match Hands
-          </button>
+          <button style={styles.btnSecondary} onClick={onClearHands}>Clear Match Hands</button>
 
           <span style={{ ...styles.small, marginLeft: "auto" }}>
             Suit: <SuitIcon suit={d.suit || "S"} /> {suitLabel}
@@ -3649,59 +2727,61 @@ function TableMatchPanel({
 
       <div style={{ marginTop: 14 }}>
         <div style={{ fontWeight: 950, marginBottom: 10 }}>Hands Played</div>
-        {(match.hands || []).length === 0 ? (
+        {!(match.hands || []).length ? (
           <div style={styles.small}>No hands yet.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {(match.hands || []).map((h) => {
               const ds = h.draftSnapshot || {};
-              const announceParts = [];
-              if ((Number(ds.announceA1) || 0) > 0) {
-                announceParts.push(
-                  `${playerById.get(ds.announceA1PlayerId)?.name || ta}: ${ds.announceA1}`
-                );
-              }
-              if ((Number(ds.announceA2) || 0) > 0) {
-                announceParts.push(
-                  `${playerById.get(ds.announceA2PlayerId)?.name || ta}: ${ds.announceA2}`
-                );
-              }
-              if ((Number(ds.announceB1) || 0) > 0) {
-                announceParts.push(
-                  `${playerById.get(ds.announceB1PlayerId)?.name || tb}: ${ds.announceB1}`
-                );
-              }
-              if ((Number(ds.announceB2) || 0) > 0) {
-                announceParts.push(
-                  `${playerById.get(ds.announceB2PlayerId)?.name || tb}: ${ds.announceB2}`
-                );
-              }
+              const announceParts = [
+                [ds.announceA1PlayerId, ds.announceA1, ta],
+                [ds.announceA2PlayerId, ds.announceA2, ta],
+                [ds.announceB1PlayerId, ds.announceB1, tb],
+                [ds.announceB2PlayerId, ds.announceB2, tb],
+              ]
+                .filter(([, pts]) => (Number(pts) || 0) > 0)
+                .map(([pid, pts, fallback]) => `${playerById.get(pid)?.name || fallback}: ${pts}`);
+
+              const announceWinnerText =
+                ds.announceWinner === "A" ? ta : ds.announceWinner === "B" ? tb : "None / tie";
 
               return (
                 <div key={h.idx} style={styles.handRow}>
-                  <div style={{ minWidth: 220 }}>
+                  <div style={{ minWidth: 260 }}>
                     <div style={{ fontWeight: 950 }}>Hand {h.idx}</div>
                     <div style={styles.small}>
                       Bid {ds.bid} <SuitIcon suit={ds.suit || "S"} /> • Bidder {ds.bidder === "A" ? ta : tb} • {ds.coincheLevel}
                       {ds.capot ? " • Capot" : ""} • Bidder tricks {ds.bidderTrickPoints} • Non-bidder tricks{" "}
-                      {typeof ds.nonBidderTrickPoints !== "undefined" && ds.nonBidderTrickPoints !== ""
+                      {ds.nonBidderTrickPoints !== "" && ds.nonBidderTrickPoints !== undefined
                         ? ds.nonBidderTrickPoints
                         : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162)}
                     </div>
+
+                    <div style={{ marginTop: 6, ...styles.small }}>
+                      Announces valid for: <span style={{ color: "#e5e7eb" }}>{announceWinnerText}</span>
+                      {ds.beloteTeam && ds.beloteTeam !== "NONE" ? (
+                        <>
+                          {" "}• Belote: <span style={{ color: "#e5e7eb" }}>{ds.beloteTeam === "A" ? ta : tb}</span>
+                        </>
+                      ) : null}
+                    </div>
+
                     {announceParts.length ? (
                       <div style={{ marginTop: 6, ...styles.small }}>
-                        Announces: <span style={{ color: "#e5e7eb" }}>{announceParts.join(" • ")}</span>
+                        Announces entered: <span style={{ color: "#e5e7eb" }}>{announceParts.join(" • ")}</span>
+                      </div>
+                    ) : null}
+
+                    {ds.shufflerName ? (
+                      <div style={{ marginTop: 6, ...styles.small }}>
+                        Shuffler: <span style={{ color: "#e5e7eb" }}>{ds.shufflerName}</span>
                       </div>
                     ) : null}
                   </div>
 
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <span style={styles.tag}>
-                      +{h.scoreA} / +{h.scoreB}
-                    </span>
-                    <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>
-                      Edit
-                    </button>
+                    <span style={styles.tag}>+{h.scoreA} / +{h.scoreB}</span>
+                    <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>Edit</button>
                   </div>
                 </div>
               );
@@ -3716,21 +2796,22 @@ function TableMatchPanel({
         trumpSuit={d.suit || "S"}
         onApplyPoints={({ pileSide, points }) => {
           const p = clamp(Number(points) || 0, 0, 162);
-          if (pileSide === "BIDDER") {
-            onDraftPatch({
-              bidderTrickPoints: String(p),
-              nonBidderTrickPoints: String(162 - p),
-              trickSource: "BIDDER",
-            });
-          } else {
-            onDraftPatch({
-              nonBidderTrickPoints: String(p),
-              bidderTrickPoints: String(162 - p),
-              trickSource: "NON",
-            });
-          }
+          onDraftPatch(
+            pileSide === "BIDDER"
+              ? { bidderTrickPoints: String(p), nonBidderTrickPoints: String(162 - p), trickSource: "BIDDER" }
+              : { nonBidderTrickPoints: String(p), bidderTrickPoints: String(162 - p), trickSource: "NON" }
+          );
         }}
       />
+    </div>
+  );
+}
+
+function Field({ label, labelStyle, children }) {
+  return (
+    <div>
+      <div style={labelStyle}>{label}</div>
+      {children}
     </div>
   );
 }
