@@ -1,19 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "./supabaseClient";
 
 /**
- * Coinche Scorekeeper (cleaned single-file App.jsx)
+ * Coinche Scorekeeper (Supabase live version)
  * Routes:
  *   #/admin
  *   #/public
  *   #/table?code=AB12
  */
 
-const LS_KEY = "coinche_scorekeeper_v1";
+const LS_KEY = "coinche_scorekeeper_local_admin_v2";
 const TARGET_SCORE = 2000;
-const BACKUP_URL =
-  "https://script.google.com/macros/s/AKfycbz-ok_dxCTExzV6LA8NixK6nYnw03MhOBZ3M6SgP_Na5-hlrhnMLX3bIUYqqq5laguSHw/exec";
-const BACKUP_SECRET = "CHANGE_ME_TO_A_LONG_RANDOM_STRING";
-const APP_UPDATED_EVENT = "coinche_state_updated";
 
 /* =========================
    Helpers
@@ -50,19 +47,6 @@ const clamp = (n, lo, hi) => {
 const num = (v, d = 0) => safeInt(v) ?? d;
 const normalizeScanCardCount = (n) => clamp(Math.round(Number(n) || 0), 0, 32);
 const parseBidValue = (v) => (String(v || "").trim().toLowerCase() === "capot" ? 250 : safeInt(v));
-
-function getDeviceId() {
-  try {
-    const key = "coinche_device_id";
-    const existing = localStorage.getItem(key);
-    if (existing) return existing;
-    const id = uid("dev");
-    localStorage.setItem(key, id);
-    return id;
-  } catch {
-    return `dev_${Date.now()}`;
-  }
-}
 
 function SuitIcon({ suit }) {
   const map = {
@@ -165,7 +149,6 @@ function resolveAnnounces({
   const totalValidAnnounces = validAnnounceA + validAnnounceB;
 
   const bidderValidAnnounces = bidder === "A" ? validAnnounceA : validAnnounceB;
-  const oppValidAnnounces = bidder === "A" ? validAnnounceB : validAnnounceA;
 
   const beloteA = beloteTeam === "A" ? 20 : 0;
   const beloteB = beloteTeam === "B" ? 20 : 0;
@@ -178,7 +161,6 @@ function resolveAnnounces({
     beloteA,
     beloteB,
     bidderValidAnnounces,
-    oppValidAnnounces,
     bidderBelote,
   };
 }
@@ -245,8 +227,12 @@ function computeFastCoincheScore({
   }
 
   if (bidderSucceeded) {
-    scoreA = bidderIsA ? bidderRounded + validAnnounceA + beloteA + bidVal : oppRounded + validAnnounceA + beloteA;
-    scoreB = bidderIsA ? oppRounded + validAnnounceB + beloteB : bidderRounded + validAnnounceB + beloteB + bidVal;
+    scoreA = bidderIsA
+      ? bidderRounded + validAnnounceA + beloteA + bidVal
+      : oppRounded + validAnnounceA + beloteA;
+    scoreB = bidderIsA
+      ? oppRounded + validAnnounceB + beloteB
+      : bidderRounded + validAnnounceB + beloteB + bidVal;
   } else {
     const oppGets = 160 + bidVal + totalValidAnnounces;
     scoreA = bidderIsA ? beloteA : oppGets + beloteA;
@@ -320,6 +306,10 @@ function makeEmptyMatch({ tableName, teamAId, teamBId, label }) {
     label: label || "Match",
     teamAId: teamAId || null,
     teamBId: teamBId || null,
+    teamAName: "",
+    teamBName: "",
+    teamAPlayers: [],
+    teamBPlayers: [],
     hands: [],
     totalA: 0,
     totalB: 0,
@@ -350,7 +340,24 @@ function recomputeMatch(m) {
 }
 
 const sumAnnounces = (d, side) => num(d?.[`announce${side}1`]) + num(d?.[`announce${side}2`]);
-const getTeamPlayers = (team, playerById) => (team?.playerIds || []).map((id) => playerById.get(id)).filter(Boolean);
+
+const getTeamPlayers = (team, playerById) =>
+  (team?.playerIds || []).map((id) => playerById.get(id)).filter(Boolean);
+
+function getTeamNameForMatch(match, side, teamById) {
+  const id = side === "A" ? match.teamAId : match.teamBId;
+  const localTeam = id ? teamById.get(id) : null;
+  if (localTeam?.name) return localTeam.name;
+  return side === "A" ? match.teamAName || "Team A" : match.teamBName || "Team B";
+}
+
+function getMatchSidePlayers(match, side, teamById, playerById) {
+  const id = side === "A" ? match.teamAId : match.teamBId;
+  const localTeam = id ? teamById.get(id) : null;
+  if (localTeam) return getTeamPlayers(localTeam, playerById);
+  const arr = side === "A" ? match.teamAPlayers : match.teamBPlayers;
+  return (arr || []).map((p) => ({ id: p.id, name: p.name })).filter((p) => p.id || p.name);
+}
 
 function getCurrentShufflerInfo(match, playerById) {
   const order = match.tableOrderPlayerIds || [];
@@ -359,7 +366,14 @@ function getCurrentShufflerInfo(match, playerById) {
   if (startIdx < 0) return { playerId: "", name: "" };
   const idx = (startIdx + (match.hands || []).length) % order.length;
   const playerId = order[idx] || "";
-  return { playerId, name: playerById.get(playerId)?.name || "" };
+  const snapPlayers = [...(match.teamAPlayers || []), ...(match.teamBPlayers || [])];
+  return {
+    playerId,
+    name:
+      playerById.get(playerId)?.name ||
+      snapPlayers.find((p) => p.id === playerId)?.name ||
+      "",
+  };
 }
 
 /* =========================
@@ -551,104 +565,6 @@ export default function App() {
   const [newMatchLabel, setNewMatchLabel] = useState("Match 1");
 
   const inputRef = useRef(null);
-  const deviceIdRef = useRef(getDeviceId());
-  const backupQueueRef = useRef([]);
-  const backupSendingRef = useRef(false);
-  const sentHandKeysRef = useRef(new Set());
-  const lastSavedAtRef = useRef(0);
-
-  const [backupState, setBackupState] = useState({ lastOk: null, lastErr: null, queued: 0 });
-
-  const persistNow = (next = {}) => {
-    try {
-      const payload = {
-        appName: next.appName ?? appName,
-        players: next.players ?? players,
-        teams: next.teams ?? teams,
-        avoidSameTeams: next.avoidSameTeams ?? avoidSameTeams,
-        pairHistory: next.pairHistory ?? pairHistory,
-        matches: next.matches ?? matches,
-        savedAt: Date.now(),
-      };
-      lastSavedAtRef.current = payload.savedAt;
-      localStorage.setItem(LS_KEY, JSON.stringify(payload));
-      window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { savedAt: payload.savedAt } }));
-    } catch {}
-  };
-
-  const saveField = (setter, key, value) => {
-    setter(value);
-    persistNow({ [key]: value });
-  };
-
-  const hydrateFromPayload = (d) => {
-    const savedAt = Number(d?.savedAt) || 0;
-    if (savedAt) lastSavedAtRef.current = savedAt;
-    setAppName(d.appName ?? "Coinche Scorekeeper");
-    setPlayers(d.players ?? []);
-    setTeams(d.teams ?? []);
-    setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
-    setPairHistory(d.pairHistory ?? []);
-    setMatches((d.matches ?? []).map(normalizeLoadedMatch));
-  };
-
-  const maybeHydrateLatest = () => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return false;
-      const d = JSON.parse(raw);
-      const savedAt = Number(d?.savedAt) || 0;
-      if (savedAt && savedAt <= lastSavedAtRef.current) return false;
-      hydrateFromPayload(d);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  const hydrateFromLocalStorageForTable = (code) => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return false;
-      const d = JSON.parse(raw);
-      const loadedMatches = (d.matches ?? []).map(normalizeLoadedMatch);
-      const found = loadedMatches.some(
-        (m) => (m.code || "").toUpperCase() === String(code || "").toUpperCase()
-      );
-      if (!found) return false;
-      hydrateFromPayload({ ...d, matches: loadedMatches });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  const updateMatches = (updater) => {
-    const nextMatches = typeof updater === "function" ? updater(matches) : updater;
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches });
-    return nextMatches;
-  };
-
-  const resetMatchState = (m) =>
-    recomputeMatch({
-      ...m,
-      hands: [],
-      forcedComplete: false,
-      editingHandIdx: null,
-      fastDraft: defaultFastDraft(),
-      tableOrderPlayerIds: [],
-      firstShufflerPlayerId: "",
-    });
-
-  const updateMatch = (matchId, fn, { skipRecompute = false } = {}) =>
-    updateMatches((prev) =>
-      prev.map((m) => {
-        if (m.id !== matchId) return m;
-        const next = fn(m);
-        return skipRecompute ? next : recomputeMatch(next);
-      })
-    );
 
   useEffect(() => ensureGlobalCSS(), []);
 
@@ -663,41 +579,227 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) hydrateFromPayload(JSON.parse(raw));
-    } catch {}
-    setLoaded(true);
-  }, []);
-
-  useEffect(() => {
-    if (!loaded) return;
-    persistNow();
-  }, [loaded, appName, players, teams, avoidSameTeams, pairHistory, matches]);
-
-  useEffect(() => {
-    const onStorage = (e) => {
-      if (!e || e.key === LS_KEY) maybeHydrateLatest();
-    };
-    const onAppUpdated = () => maybeHydrateLatest();
-
-    window.addEventListener("storage", onStorage);
-    window.addEventListener(APP_UPDATED_EVENT, onAppUpdated);
-    return () => {
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener(APP_UPDATED_EVENT, onAppUpdated);
-    };
-  }, []);
-
   const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
   const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
 
-  const usedPlayerIds = useMemo(() => {
-    const s = new Set();
-    teams.forEach((t) => (t.playerIds || []).forEach((pid) => s.add(pid)));
-    return s;
-  }, [teams]);
+  function persistLocal(next = {}) {
+    try {
+      localStorage.setItem(
+        LS_KEY,
+        JSON.stringify({
+          appName: next.appName ?? appName,
+          players: next.players ?? players,
+          teams: next.teams ?? teams,
+          avoidSameTeams: next.avoidSameTeams ?? avoidSameTeams,
+          pairHistory: next.pairHistory ?? pairHistory,
+          savedAt: Date.now(),
+        })
+      );
+    } catch {}
+  }
+
+  function hydrateLocalAdmin() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      setAppName(d.appName ?? "Coinche Scorekeeper");
+      setPlayers(d.players ?? []);
+      setTeams(d.teams ?? []);
+      setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
+      setPairHistory(d.pairHistory ?? []);
+    } catch {}
+  }
+
+  function snapshotTeam(teamId, fallbackName = "", fallbackPlayers = []) {
+    const team = teamId ? teamById.get(teamId) : null;
+    if (!team) {
+      return {
+        name: fallbackName || "",
+        players: fallbackPlayers || [],
+      };
+    }
+    return {
+      name: team.name || fallbackName || "",
+      players: getTeamPlayers(team, playerById).map((p) => ({ id: p.id, name: p.name })),
+    };
+  }
+
+  function matchToRow(m) {
+    const snapA = snapshotTeam(m.teamAId, m.teamAName, m.teamAPlayers);
+    const snapB = snapshotTeam(m.teamBId, m.teamBName, m.teamBPlayers);
+
+    return {
+      id: m.id,
+      code: m.code,
+      app_name: appName || "Coinche Scorekeeper",
+      table_name: m.tableName,
+      label: m.label,
+      team_a_id: m.teamAId,
+      team_b_id: m.teamBId,
+      team_a_name: snapA.name || "",
+      team_b_name: snapB.name || "",
+      team_a_players: snapA.players || [],
+      team_b_players: snapB.players || [],
+      total_a: m.totalA || 0,
+      total_b: m.totalB || 0,
+      winner_id: m.winnerId,
+      completed: !!m.completed,
+      forced_complete: !!m.forcedComplete,
+      table_order_player_ids: m.tableOrderPlayerIds || [],
+      first_shuffler_player_id: m.firstShufflerPlayerId || "",
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  async function loadMatchesFromSupabase() {
+    const { data, error } = await supabase
+      .from("matches")
+      .select("*")
+      .order("updated_at", { ascending: true });
+
+    if (error) {
+      console.error("Failed to load matches:", error);
+      return [];
+    }
+    return data || [];
+  }
+
+  async function loadHandsFromSupabase() {
+    const { data, error } = await supabase
+      .from("hands")
+      .select("*")
+      .order("match_id", { ascending: true })
+      .order("hand_idx", { ascending: true });
+
+    if (error) {
+      console.error("Failed to load hands:", error);
+      return [];
+    }
+    return data || [];
+  }
+
+  async function refreshFromSupabase() {
+    const [matchRows, handRows] = await Promise.all([
+      loadMatchesFromSupabase(),
+      loadHandsFromSupabase(),
+    ]);
+
+    const handsByMatch = new Map();
+
+    for (const row of handRows) {
+      if (!handsByMatch.has(row.match_id)) handsByMatch.set(row.match_id, []);
+      handsByMatch.get(row.match_id).push({
+        idx: row.hand_idx,
+        scoreA: row.score_a,
+        scoreB: row.score_b,
+        bidderSucceeded: !!row.bidder_succeeded,
+        draftSnapshot: row.draft_snapshot || {},
+        createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+        editedAt: row.edited_at ? new Date(row.edited_at).getTime() : undefined,
+      });
+    }
+
+    const rebuiltMatches = matchRows.map((row) =>
+      recomputeMatch(
+        normalizeLoadedMatch({
+          id: row.id,
+          code: row.code,
+          tableName: row.table_name,
+          label: row.label,
+          teamAId: row.team_a_id,
+          teamBId: row.team_b_id,
+          teamAName: row.team_a_name || "",
+          teamBName: row.team_b_name || "",
+          teamAPlayers: row.team_a_players || [],
+          teamBPlayers: row.team_b_players || [],
+          totalA: row.total_a || 0,
+          totalB: row.total_b || 0,
+          winnerId: row.winner_id,
+          completed: !!row.completed,
+          forcedComplete: !!row.forced_complete,
+          tableOrderPlayerIds: row.table_order_player_ids || [],
+          firstShufflerPlayerId: row.first_shuffler_player_id || "",
+          lastUpdatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now(),
+          hands: handsByMatch.get(row.id) || [],
+          fastDraft: defaultFastDraft(),
+          editingHandIdx: null,
+        })
+      )
+    );
+
+    setMatches(rebuiltMatches);
+    if (matchRows[0]?.app_name) setAppName(matchRows[0].app_name);
+  }
+
+  async function saveMatchToSupabase(match) {
+    const { error } = await supabase.from("matches").upsert(matchToRow(match));
+    if (error) console.error("Failed to save match:", error);
+  }
+
+  async function deleteMatchFromSupabase(matchId) {
+    const { error } = await supabase.from("matches").delete().eq("id", matchId);
+    if (error) console.error("Failed to delete match:", error);
+  }
+
+  async function saveHandToSupabase(matchId, hand) {
+    const { error } = await supabase.from("hands").upsert({
+      match_id: matchId,
+      hand_idx: hand.idx,
+      score_a: hand.scoreA,
+      score_b: hand.scoreB,
+      bidder_succeeded: !!hand.bidderSucceeded,
+      draft_snapshot: hand.draftSnapshot || {},
+      created_at: hand.createdAt ? new Date(hand.createdAt).toISOString() : new Date().toISOString(),
+      edited_at: hand.editedAt ? new Date(hand.editedAt).toISOString() : null,
+    });
+    if (error) console.error("Failed to save hand:", error);
+  }
+
+  async function clearHandsFromSupabase(matchId) {
+    const { error } = await supabase.from("hands").delete().eq("match_id", matchId);
+    if (error) console.error("Failed to clear hands:", error);
+  }
+
+  useEffect(() => {
+    let active = true;
+    hydrateLocalAdmin();
+
+    (async () => {
+      try {
+        await refreshFromSupabase();
+      } catch (err) {
+        console.error("Initial Supabase load failed:", err);
+      } finally {
+        if (active) setLoaded(true);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel("coinche-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, async () => {
+        await refreshFromSupabase();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "hands" }, async () => {
+        await refreshFromSupabase();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded || !matches.length) return;
+    Promise.all(matches.map((m) => saveMatchToSupabase(m))).catch(console.error);
+  }, [appName]);
 
   useEffect(() => {
     const current = parseHashRoute();
@@ -707,8 +809,14 @@ export default function App() {
   }, [matches]);
 
   useEffect(() => {
-    if (route.path !== "/table") return setTableMissingDelayDone(false);
-    if (!(route.query.code || "").trim()) return setTableMissingDelayDone(true);
+    if (route.path !== "/table") {
+      setTableMissingDelayDone(false);
+      return;
+    }
+    if (!(route.query.code || "").trim()) {
+      setTableMissingDelayDone(true);
+      return;
+    }
     const t = setTimeout(() => setTableMissingDelayDone(true), 350);
     return () => clearTimeout(t);
   }, [route.path, route.query.code]);
@@ -718,127 +826,45 @@ export default function App() {
     const code = String(route.query.code || "").toUpperCase();
     if (!code) return;
     if (matches.some((m) => (m.code || "").toUpperCase() === code)) return;
-
-    let tries = 0;
-    const timer = setInterval(() => {
-      tries += 1;
-      if (hydrateFromLocalStorageForTable(code) || tries >= 20) clearInterval(timer);
-    }, 120);
-
-    hydrateFromLocalStorageForTable(code);
-    maybeHydrateLatest();
-
-    return () => clearInterval(timer);
-  }, [route.path, route.query.code, matches]);
+    void refreshFromSupabase();
+  }, [route.path, route.query.code]);
 
   function openTableRoute(code) {
-    persistNow();
-    try {
-      localStorage.setItem("__coinche_last_opened_table_code", String(code || ""));
-    } catch {}
-    window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { code } }));
     navigateHash(`#/table?code=${code}`);
   }
 
-  async function sendHandRow(row) {
-    const res = await fetch(BACKUP_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...row, secret: BACKUP_SECRET }),
+  const usedPlayerIds = useMemo(() => {
+    const s = new Set();
+    teams.forEach((t) => (t.playerIds || []).forEach((pid) => s.add(pid)));
+    return s;
+  }, [teams]);
+
+  const setLocalField = (setter, key, value) => {
+    setter(value);
+    persistLocal({ [key]: value });
+  };
+
+  const updateMatchesLocalOnly = (updater) => {
+    setMatches((prev) => (typeof updater === "function" ? updater(prev) : updater));
+  };
+
+  const resetMatchState = (m) =>
+    recomputeMatch({
+      ...m,
+      hands: [],
+      forcedComplete: false,
+      editingHandIdx: null,
+      fastDraft: defaultFastDraft(),
+      tableOrderPlayerIds: [],
+      firstShufflerPlayerId: "",
     });
-    if (!res.ok) throw new Error(`Backup HTTP ${res.status}`);
-    try {
-      const j = await res.json();
-      if (j?.ok === false) throw new Error(j.error || "Backup failed");
-    } catch {}
-  }
-
-  function enqueueHandBackup(row) {
-    backupQueueRef.current.push(row);
-    setBackupState((s) => ({ ...s, queued: (s.queued || 0) + 1 }));
-    void flushHandBackupQueue();
-  }
-
-  async function flushHandBackupQueue() {
-    if (backupSendingRef.current || !backupQueueRef.current.length) return;
-    backupSendingRef.current = true;
-    try {
-      while (backupQueueRef.current.length) {
-        await sendHandRow(backupQueueRef.current[0]);
-        backupQueueRef.current.shift();
-        setBackupState((s) => ({
-          ...s,
-          lastOk: Date.now(),
-          lastErr: null,
-          queued: Math.max(0, (s.queued || 1) - 1),
-        }));
-      }
-    } catch {
-      setBackupState((s) => ({ ...s, lastErr: Date.now() }));
-      setTimeout(() => {
-        backupSendingRef.current = false;
-        void flushHandBackupQueue();
-      }, 2000);
-      return;
-    } finally {
-      backupSendingRef.current = false;
-    }
-  }
-
-  useEffect(() => {
-    if (!loaded) return;
-    for (const m of matches) {
-      if (!m?.code || !m.teamAId || !m.teamBId) continue;
-      const teamAName = teamById.get(m.teamAId)?.name ?? "Team A";
-      const teamBName = teamById.get(m.teamBId)?.name ?? "Team B";
-
-      for (const h of m.hands || []) {
-        const handKey = `${m.code}|${h.idx}|${h.createdAt || 0}|${h.editedAt || 0}`;
-        if (sentHandKeysRef.current.has(handKey)) continue;
-        sentHandKeysRef.current.add(handKey);
-
-        const ds = h.draftSnapshot || {};
-        enqueueHandBackup({
-          timestamp: new Date().toISOString(),
-          tournamentName: appName || "Coinche Scorekeeper",
-          matchCode: m.code,
-          matchLabel: `${m.tableName || ""} • ${m.label || ""}`.trim(),
-          teamA: teamAName,
-          teamB: teamBName,
-          handIdx: h.idx ?? "",
-          scoreA: h.scoreA ?? "",
-          scoreB: h.scoreB ?? "",
-          bidder: ds.bidder || "",
-          bid: ds.bid ?? "",
-          suit: ds.suit || "",
-          coincheLevel: ds.coincheLevel || "",
-          capot: !!ds.capot,
-          bidderTrickPoints: ds.bidderTrickPoints ?? "",
-          announceWinner: ds.announceWinner || "NONE",
-          announceA: sumAnnounces(ds, "A"),
-          announceB: sumAnnounces(ds, "B"),
-          beloteTeam: ds.beloteTeam || "",
-          shufflerPlayerId: ds.shufflerPlayerId || "",
-          shufflerName: ds.shufflerName || "",
-          bidderSucceeded: !!h.bidderSucceeded,
-          totalA: m.totalA ?? "",
-          totalB: m.totalB ?? "",
-          deviceId: deviceIdRef.current,
-        });
-      }
-    }
-  }, [loaded, matches, teamById, appName]);
-
-  useEffect(() => {
-    const onOnline = () => void flushHandBackupQueue();
-    window.addEventListener("online", onOnline);
-    return () => window.removeEventListener("online", onOnline);
-  }, []);
 
   const addPlayer = () => {
     const name = newPlayerName.trim();
     if (!name) return;
-    saveField(setPlayers, "players", [...players, { id: uid("p"), name }]);
+    const nextPlayers = [...players, { id: uid("p"), name }];
+    setPlayers(nextPlayers);
+    persistLocal({ players: nextPlayers });
     setNewPlayerName("");
     setTimeout(() => inputRef.current?.focus?.(), 0);
   };
@@ -848,57 +874,48 @@ export default function App() {
     setPlayers(nextPlayers);
     setTeams([]);
     setPairHistory([]);
-    setMatches([]);
-    persistNow({ players: nextPlayers, teams: [], pairHistory: [], matches: [] });
+    persistLocal({ players: nextPlayers, teams: [], pairHistory: [] });
   };
 
-  const addTeam = () =>
-    saveField(setTeams, "teams", [
+  const addTeam = () => {
+    const nextTeams = [
       ...teams,
       { id: uid("t"), name: (newTeamName || "").trim() || `Team ${teams.length + 1}`, playerIds: [], locked: false },
-    ]);
+    ];
+    setTeams(nextTeams);
+    persistLocal({ teams: nextTeams });
+  };
 
   const removeTeam = (teamId) => {
     const nextTeams = teams.filter((t) => t.id !== teamId);
-    const nextMatches = matches.map((m) => {
-      let next = { ...m };
-      if (next.teamAId === teamId) next.teamAId = null;
-      if (next.teamBId === teamId) next.teamBId = null;
-      return resetMatchState(next);
-    });
     setTeams(nextTeams);
-    setMatches(nextMatches);
-    persistNow({ teams: nextTeams, matches: nextMatches });
+    persistLocal({ teams: nextTeams });
   };
 
-  const toggleTeamLock = (teamId, locked) =>
-    saveField(
-      setTeams,
-      "teams",
-      teams.map((t) => (t.id === teamId ? { ...t, locked: Boolean(locked) } : t))
-    );
+  const toggleTeamLock = (teamId, locked) => {
+    const nextTeams = teams.map((t) => (t.id === teamId ? { ...t, locked: Boolean(locked) } : t));
+    setTeams(nextTeams);
+    persistLocal({ teams: nextTeams });
+  };
 
   function setTeamPlayer(teamId, slotIdx, value) {
-    saveField(
-      setTeams,
-      "teams",
-      teams.map((t) => {
-        if (t.id !== teamId) return t;
-        const ids = [...(t.playerIds || [])];
-        while (ids.length < 2) ids.push("");
-        ids[slotIdx] = value;
-        if (ids[0] && ids[0] === ids[1]) ids[slotIdx === 0 ? 1 : 0] = "";
-        return { ...t, playerIds: ids.filter(Boolean) };
-      })
-    );
+    const nextTeams = teams.map((t) => {
+      if (t.id !== teamId) return t;
+      const ids = [...(t.playerIds || [])];
+      while (ids.length < 2) ids.push("");
+      ids[slotIdx] = value;
+      if (ids[0] && ids[0] === ids[1]) ids[slotIdx === 0 ? 1 : 0] = "";
+      return { ...t, playerIds: ids.filter(Boolean) };
+    });
+    setTeams(nextTeams);
+    persistLocal({ teams: nextTeams });
   }
 
-  const renameTeam = (teamId, name) =>
-    saveField(
-      setTeams,
-      "teams",
-      teams.map((t) => (t.id === teamId ? { ...t, name } : t))
-    );
+  const renameTeam = (teamId, name) => {
+    const nextTeams = teams.map((t) => (t.id === teamId ? { ...t, name } : t));
+    setTeams(nextTeams);
+    persistLocal({ teams: nextTeams });
+  };
 
   function buildRandomTeams() {
     if (players.length < 2) return;
@@ -934,58 +951,80 @@ export default function App() {
           .map((t) => [...t.playerIds].sort().join("|")),
       ])
     );
-    const nextMatches = matches.map(resetMatchState);
 
     setTeams(nextTeams);
     setPairHistory(nextPairHistory);
-    setMatches(nextMatches);
-    persistNow({ teams: nextTeams, pairHistory: nextPairHistory, matches: nextMatches });
+    persistLocal({ teams: nextTeams, pairHistory: nextPairHistory });
   }
 
-  const addMatch = () => {
+  const addMatch = async () => {
     if (!teams.length) return;
-    updateMatches([...matches, recomputeMatch(makeEmptyMatch({
-      tableName: newTableName.trim() || `Table ${matches.length + 1}`,
-      label: newMatchLabel.trim() || `Match ${matches.length + 1}`,
-    }))]);
-  };
-
-  const removeMatch = (matchId) => updateMatches(matches.filter((m) => m.id !== matchId));
-
-  const setMatchTeam = (matchId, side, value) =>
-    updateMatch(matchId, (m) => resetMatchState({ ...m, [side]: value || null }));
-
-  const renameMatch = (matchId, patch) =>
-    updateMatches(matches.map((m) => (m.id === matchId ? { ...m, ...patch, lastUpdatedAt: Date.now() } : m)));
-
-  const updateTableSetup = (matchId, patch) => renameMatch(matchId, patch);
-
-  const finishMatchNow = (matchId) =>
-    updateMatches(
-      matches.map((m) => {
-        if (m.id !== matchId) return m;
-        const a = Number(m.totalA) || 0;
-        const b = Number(m.totalB) || 0;
-        return {
-          ...m,
-          forcedComplete: true,
-          completed: true,
-          winnerId: a === b ? null : a > b ? m.teamAId : m.teamBId,
-          lastUpdatedAt: Date.now(),
-        };
+    const nextMatch = recomputeMatch(
+      makeEmptyMatch({
+        tableName: newTableName.trim() || `Table ${matches.length + 1}`,
+        label: newMatchLabel.trim() || `Match ${matches.length + 1}`,
       })
     );
+    await saveMatchToSupabase(nextMatch);
+    await refreshFromSupabase();
+  };
+
+  const removeMatch = async (matchId) => {
+    await deleteMatchFromSupabase(matchId);
+    await refreshFromSupabase();
+  };
+
+  const setMatchTeam = async (matchId, side, value) => {
+    const match = matches.find((m) => m.id === matchId);
+    if (!match) return;
+    const next = resetMatchState({ ...match, [side]: value || null });
+    await saveMatchToSupabase(next);
+    await clearHandsFromSupabase(matchId);
+    await refreshFromSupabase();
+  };
+
+  const renameMatch = async (matchId, patch) => {
+    const match = matches.find((m) => m.id === matchId);
+    if (!match) return;
+    const next = recomputeMatch({ ...match, ...patch, lastUpdatedAt: Date.now() });
+    await saveMatchToSupabase(next);
+    await refreshFromSupabase();
+  };
+
+  const updateTableSetup = async (matchId, patch) => {
+    const match = matches.find((m) => m.id === matchId);
+    if (!match) return;
+    const next = recomputeMatch({ ...match, ...patch, lastUpdatedAt: Date.now() });
+    await saveMatchToSupabase(next);
+    await refreshFromSupabase();
+  };
+
+  const finishMatchNow = async (matchId) => {
+    const match = matches.find((m) => m.id === matchId);
+    if (!match) return;
+    const a = Number(match.totalA) || 0;
+    const b = Number(match.totalB) || 0;
+    const next = {
+      ...match,
+      forcedComplete: true,
+      completed: true,
+      winnerId: a === b ? null : a > b ? match.teamAId : match.teamBId,
+      lastUpdatedAt: Date.now(),
+    };
+    await saveMatchToSupabase(next);
+    await refreshFromSupabase();
+  };
 
   const updateDraft = (matchId, patch) =>
-    updateMatches(
-      matches.map((m) =>
+    updateMatchesLocalOnly((prev) =>
+      prev.map((m) =>
         m.id === matchId ? { ...m, fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch } } : m
       )
     );
 
   function startEditHand(matchId, handIdx) {
-    updateMatches(
-      matches.map((m) => {
+    updateMatchesLocalOnly((prev) =>
+      prev.map((m) => {
         if (m.id !== matchId) return m;
         const hand = (m.hands || []).find((h) => h.idx === handIdx);
         if (!hand) return m;
@@ -1020,148 +1059,199 @@ export default function App() {
   }
 
   const cancelEditHand = (matchId) =>
-    updateMatches(
-      matches.map((m) =>
+    updateMatchesLocalOnly((prev) =>
+      prev.map((m) =>
         m.id === matchId ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() } : m
       )
     );
 
-  function addOrSaveHand(matchId) {
-    updateMatches(
-      matches.map((m) => {
-        if (m.id !== matchId) return m;
-        const d = m.fastDraft || defaultFastDraft();
-        const canPlay = !!m.teamAId && !!m.teamBId;
-        const setupReady =
-          canPlay && Array.isArray(m.tableOrderPlayerIds) && m.tableOrderPlayerIds.length === 4 && !!m.firstShufflerPlayerId;
-        if (!setupReady) return m;
+  async function addOrSaveHand(matchId) {
+    const match = matches.find((m) => m.id === matchId);
+    if (!match) return;
 
-        const bidVal = parseBidValue(d.bid);
-        const capotFlag = Boolean(d.capot) || String(d.bid || "").trim().toLowerCase() === "capot";
+    const d = match.fastDraft || defaultFastDraft();
+    const canPlay = !!match.teamAId && !!match.teamBId;
+    const setupReady =
+      canPlay &&
+      Array.isArray(match.tableOrderPlayerIds) &&
+      match.tableOrderPlayerIds.length === 4 &&
+      !!match.firstShufflerPlayerId;
 
-        let trickVal = null;
-        const bidderTP = safeInt(d.bidderTrickPoints);
-        const nonBidderTP = safeInt(d.nonBidderTrickPoints);
-        if (d.trickSource === "BIDDER") {
-          if (bidderTP === null) return m;
-          trickVal = bidderTP;
-        } else if (d.trickSource === "NON") {
-          if (nonBidderTP === null) return m;
-          trickVal = 162 - nonBidderTP;
-        } else {
-          trickVal = bidderTP !== null ? bidderTP : nonBidderTP !== null ? 162 - nonBidderTP : null;
-        }
-        if (bidVal === null || trickVal === null) return m;
-        trickVal = clamp(trickVal, 0, 162);
+    if (!setupReady) return;
 
-        const announceA = sumAnnounces(d, "A");
-        const announceB = sumAnnounces(d, "B");
-        const shuffler = getCurrentShufflerInfo(m, playerById);
+    const bidVal = parseBidValue(d.bid);
+    const capotFlag = Boolean(d.capot) || String(d.bid || "").trim().toLowerCase() === "capot";
 
-        const res = computeFastCoincheScore({
-          bidder: d.bidder,
-          bid: bidVal,
-          coincheLevel: d.coincheLevel || "NONE",
-          capot: capotFlag,
-          bidderTrickPoints: trickVal,
-          announceA,
-          announceB,
-          announceWinner: d.announceWinner || "NONE",
-          beloteTeam: d.beloteTeam || "NONE",
-        });
+    let trickVal = null;
+    const bidderTP = safeInt(d.bidderTrickPoints);
+    const nonBidderTP = safeInt(d.nonBidderTrickPoints);
 
-        const snap = {
-          bidder: d.bidder,
-          bid: bidVal,
-          suit: d.suit || "S",
-          coincheLevel: d.coincheLevel || "NONE",
-          capot: capotFlag,
-          bidderTrickPoints: trickVal,
-          nonBidderTrickPoints:
-            d.trickSource === "NON"
-              ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
-              : clamp(162 - trickVal, 0, 162),
-          trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
-          announceWinner: d.announceWinner || "NONE",
-          announceA1: num(d.announceA1),
-          announceA1PlayerId: d.announceA1PlayerId || "",
-          announceA2: num(d.announceA2),
-          announceA2PlayerId: d.announceA2PlayerId || "",
-          announceB1: num(d.announceB1),
-          announceB1PlayerId: d.announceB1PlayerId || "",
-          announceB2: num(d.announceB2),
-          announceB2PlayerId: d.announceB2PlayerId || "",
-          announceA,
-          announceB,
-          beloteTeam: d.beloteTeam || "NONE",
-          shufflerPlayerId: shuffler.playerId,
-          shufflerName: shuffler.name,
-        };
+    if (d.trickSource === "BIDDER") {
+      if (bidderTP === null) return;
+      trickVal = bidderTP;
+    } else if (d.trickSource === "NON") {
+      if (nonBidderTP === null) return;
+      trickVal = 162 - nonBidderTP;
+    } else {
+      trickVal = bidderTP !== null ? bidderTP : nonBidderTP !== null ? 162 - nonBidderTP : null;
+    }
 
-        if (m.editingHandIdx) {
-          return recomputeMatch({
-            ...m,
-            hands: (m.hands || []).map((h) =>
-              h.idx !== m.editingHandIdx
-                ? h
-                : {
-                    ...h,
-                    draftSnapshot: snap,
-                    scoreA: res.scoreA,
-                    scoreB: res.scoreB,
-                    bidderSucceeded: res.bidderSucceeded,
-                    editedAt: Date.now(),
-                  }
-            ),
-            fastDraft: defaultFastDraft(),
-            editingHandIdx: null,
-          });
-        }
+    if (bidVal === null || trickVal === null) return;
+    trickVal = clamp(trickVal, 0, 162);
 
-        if (recomputeMatch(m).completed) return recomputeMatch(m);
+    const announceA = sumAnnounces(d, "A");
+    const announceB = sumAnnounces(d, "B");
+    const shuffler = getCurrentShufflerInfo(match, playerById);
 
-        const nextHand = {
-          idx: (m.hands?.length || 0) + 1,
-          createdAt: Date.now(),
-          draftSnapshot: snap,
-          scoreA: res.scoreA,
-          scoreB: res.scoreB,
-          bidderSucceeded: res.bidderSucceeded,
-        };
+    const res = computeFastCoincheScore({
+      bidder: d.bidder,
+      bid: bidVal,
+      coincheLevel: d.coincheLevel || "NONE",
+      capot: capotFlag,
+      bidderTrickPoints: trickVal,
+      announceA,
+      announceB,
+      announceWinner: d.announceWinner || "NONE",
+      beloteTeam: d.beloteTeam || "NONE",
+    });
 
-        return recomputeMatch({ ...m, hands: [...(m.hands || []), nextHand], fastDraft: defaultFastDraft() });
+    const snap = {
+      bidder: d.bidder,
+      bid: bidVal,
+      suit: d.suit || "S",
+      coincheLevel: d.coincheLevel || "NONE",
+      capot: capotFlag,
+      bidderTrickPoints: trickVal,
+      nonBidderTrickPoints:
+        d.trickSource === "NON"
+          ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
+          : clamp(162 - trickVal, 0, 162),
+      trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
+      announceWinner: d.announceWinner || "NONE",
+      announceA1: num(d.announceA1),
+      announceA1PlayerId: d.announceA1PlayerId || "",
+      announceA2: num(d.announceA2),
+      announceA2PlayerId: d.announceA2PlayerId || "",
+      announceB1: num(d.announceB1),
+      announceB1PlayerId: d.announceB1PlayerId || "",
+      announceB2: num(d.announceB2),
+      announceB2PlayerId: d.announceB2PlayerId || "",
+      announceA,
+      announceB,
+      beloteTeam: d.beloteTeam || "NONE",
+      shufflerPlayerId: shuffler.playerId,
+      shufflerName: shuffler.name,
+    };
+
+    if (match.editingHandIdx) {
+      const existingHand = (match.hands || []).find((h) => h.idx === match.editingHandIdx);
+      if (!existingHand) return;
+
+      await saveHandToSupabase(match.id, {
+        ...existingHand,
+        idx: match.editingHandIdx,
+        draftSnapshot: snap,
+        scoreA: res.scoreA,
+        scoreB: res.scoreB,
+        bidderSucceeded: res.bidderSucceeded,
+        editedAt: Date.now(),
+      });
+    } else {
+      const nextHand = {
+        idx: (match.hands?.length || 0) + 1,
+        createdAt: Date.now(),
+        draftSnapshot: snap,
+        scoreA: res.scoreA,
+        scoreB: res.scoreB,
+        bidderSucceeded: res.bidderSucceeded,
+      };
+      await saveHandToSupabase(match.id, nextHand);
+    }
+
+    await refreshFromSupabase();
+
+    const refreshed = await loadMatchesFromSupabase();
+    const row = refreshed.find((r) => r.id === match.id);
+
+    const updatedMatch = recomputeMatch(
+      normalizeLoadedMatch({
+        id: row?.id || match.id,
+        code: row?.code || match.code,
+        tableName: row?.table_name || match.tableName,
+        label: row?.label || match.label,
+        teamAId: row?.team_a_id || match.teamAId,
+        teamBId: row?.team_b_id || match.teamBId,
+        teamAName: row?.team_a_name || match.teamAName,
+        teamBName: row?.team_b_name || match.teamBName,
+        teamAPlayers: row?.team_a_players || match.teamAPlayers || [],
+        teamBPlayers: row?.team_b_players || match.teamBPlayers || [],
+        totalA: row?.total_a || 0,
+        totalB: row?.total_b || 0,
+        winnerId: row?.winner_id || null,
+        completed: !!row?.completed,
+        forcedComplete: !!row?.forced_complete,
+        tableOrderPlayerIds: row?.table_order_player_ids || match.tableOrderPlayerIds || [],
+        firstShufflerPlayerId: row?.first_shuffler_player_id || match.firstShufflerPlayerId || "",
+        hands: [],
+        fastDraft: defaultFastDraft(),
+        editingHandIdx: null,
       })
     );
+
+    await saveMatchToSupabase({
+      ...updatedMatch,
+      fastDraft: defaultFastDraft(),
+      editingHandIdx: null,
+    });
+    await refreshFromSupabase();
   }
 
-  const clearMatchHands = (matchId) =>
-    updateMatch(matchId, (m) =>
-      recomputeMatch({
-        ...m,
-        hands: [],
-        forcedComplete: false,
-        editingHandIdx: null,
-        fastDraft: defaultFastDraft(),
-      })
-    );
+  const clearMatchHands = async (matchId) => {
+    const match = matches.find((m) => m.id === matchId);
+    if (!match) return;
+
+    await clearHandsFromSupabase(matchId);
+
+    const reset = recomputeMatch({
+      ...match,
+      hands: [],
+      totalA: 0,
+      totalB: 0,
+      winnerId: null,
+      completed: false,
+      forcedComplete: false,
+      editingHandIdx: null,
+      fastDraft: defaultFastDraft(),
+      lastUpdatedAt: Date.now(),
+    });
+
+    await saveMatchToSupabase(reset);
+    await refreshFromSupabase();
+  };
 
   const scoreboardRows = useMemo(() => {
-    const rows = teams.map((t) => ({
-      teamId: t.id,
-      name: t.name,
-      matchesPlayed: 0,
-      wins: 0,
-      losses: 0,
-      pointsFor: 0,
-      pointsAgainst: 0,
-    }));
-    const byId = new Map(rows.map((r) => [r.teamId, r]));
+    const byId = new Map();
+
+    const touchTeam = (id, name) => {
+      const key = id || name || uid("anonteam");
+      if (!byId.has(key)) {
+        byId.set(key, {
+          teamId: key,
+          name: name || "Team",
+          matchesPlayed: 0,
+          wins: 0,
+          losses: 0,
+          pointsFor: 0,
+          pointsAgainst: 0,
+        });
+      }
+      return byId.get(key);
+    };
 
     for (const m of matches) {
       if (!m.teamAId || !m.teamBId) continue;
-      const a = byId.get(m.teamAId);
-      const b = byId.get(m.teamBId);
-      if (!a || !b) continue;
+      const a = touchTeam(m.teamAId, getTeamNameForMatch(m, "A", teamById));
+      const b = touchTeam(m.teamBId, getTeamNameForMatch(m, "B", teamById));
 
       a.pointsFor += Number(m.totalA) || 0;
       a.pointsAgainst += Number(m.totalB) || 0;
@@ -1172,6 +1262,7 @@ export default function App() {
         a.matchesPlayed += 1;
         b.matchesPlayed += 1;
       }
+
       if (m.winnerId === m.teamAId) {
         a.wins += 1;
         b.losses += 1;
@@ -1181,7 +1272,7 @@ export default function App() {
       }
     }
 
-    return rows.sort((x, y) => {
+    return [...byId.values()].sort((x, y) => {
       if (y.wins !== x.wins) return y.wins - x.wins;
       const dx = x.pointsFor - x.pointsAgainst;
       const dy = y.pointsFor - y.pointsAgainst;
@@ -1189,12 +1280,12 @@ export default function App() {
       if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
       return x.name.localeCompare(y.name);
     });
-  }, [teams, matches]);
+  }, [matches, teamById]);
 
   const funStats = useMemo(() => {
     const completed = matches.filter((m) => m.completed && m.teamAId && m.teamBId);
     const labelFor = (m) =>
-      `${teamById.get(m.teamAId)?.name ?? "Team A"} vs ${teamById.get(m.teamBId)?.name ?? "Team B"} (${m.label})`;
+      `${getTeamNameForMatch(m, "A", teamById)} vs ${getTeamNameForMatch(m, "B", teamById)} (${m.label})`;
 
     let biggestBlowout = { diff: 0, label: "—" };
     let closest = { diff: Infinity, label: "—" };
@@ -1240,12 +1331,20 @@ export default function App() {
 
     let perfectDefense = { name: "—", count: 0 };
     for (const [tid, count] of defenseCounts.entries()) {
-      if (count > perfectDefense.count) perfectDefense = { name: teamById.get(tid)?.name ?? "—", count };
+      const refMatch = matches.find((m) => m.teamAId === tid || m.teamBId === tid);
+      const name =
+        refMatch?.teamAId === tid
+          ? getTeamNameForMatch(refMatch, "A", teamById)
+          : refMatch
+          ? getTeamNameForMatch(refMatch, "B", teamById)
+          : "—";
+      if (count > perfectDefense.count) perfectDefense = { name, count };
     }
 
     const teamFun = new Map();
     const announceCountByPlayer = new Map();
     const announceTotalByPlayer = new Map();
+
     const bump = (tid, key, n = 1) => {
       if (!tid) return;
       const cur = teamFun.get(tid) || { coinches: 0, surcoinches: 0, capots: 0, belotes: 0 };
@@ -1264,10 +1363,10 @@ export default function App() {
         if (d.beloteTeam === "B") bump(m.teamBId, "belotes");
 
         [
-          [d.announceA1PlayerId, d.announceA1],
-          [d.announceA2PlayerId, d.announceA2],
-          [d.announceB1PlayerId, d.announceB1],
-          [d.announceB2PlayerId, d.announceB2],
+          [d.announceA1PlayerId, d.announceA1, d.announceA1PlayerName],
+          [d.announceA2PlayerId, d.announceA2, d.announceA2PlayerName],
+          [d.announceB1PlayerId, d.announceB1, d.announceB1PlayerName],
+          [d.announceB2PlayerId, d.announceB2, d.announceB2PlayerName],
         ].forEach(([pid, val]) => {
           const pts = Number(val) || 0;
           if (!pid || pts <= 0) return;
@@ -1283,13 +1382,53 @@ export default function App() {
         const v = obj[key] || 0;
         if (!best || v > best.v) best = { tid, v };
       }
-      return !best || best.v === 0 ? { name: "—", v: 0 } : { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
+      if (!best || best.v === 0) return { name: "—", v: 0 };
+      const refMatch = matches.find((m) => m.teamAId === best.tid || m.teamBId === best.tid);
+      const name =
+        refMatch?.teamAId === best.tid
+          ? getTeamNameForMatch(refMatch, "A", teamById)
+          : refMatch
+          ? getTeamNameForMatch(refMatch, "B", teamById)
+          : "—";
+      return { name, v: best.v };
     };
 
     let mostAnnounces = { name: "—", v: 0 };
     let highestAnnounces = { name: "—", v: 0 };
-    for (const [pid, v] of announceCountByPlayer.entries()) if (v > mostAnnounces.v) mostAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
-    for (const [pid, v] of announceTotalByPlayer.entries()) if (v > highestAnnounces.v) highestAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
+
+    for (const [pid, v] of announceCountByPlayer.entries()) {
+      const snapName =
+        matches
+          .flatMap((m) => m.hands || [])
+          .flatMap((h) => {
+            const d = h.draftSnapshot || {};
+            return [
+              [d.announceA1PlayerId, d.announceA1PlayerName],
+              [d.announceA2PlayerId, d.announceA2PlayerName],
+              [d.announceB1PlayerId, d.announceB1PlayerName],
+              [d.announceB2PlayerId, d.announceB2PlayerName],
+            ];
+          })
+          .find(([id]) => id === pid)?.[1] || playerById.get(pid)?.name || "—";
+      if (v > mostAnnounces.v) mostAnnounces = { name: snapName, v };
+    }
+
+    for (const [pid, v] of announceTotalByPlayer.entries()) {
+      const snapName =
+        matches
+          .flatMap((m) => m.hands || [])
+          .flatMap((h) => {
+            const d = h.draftSnapshot || {};
+            return [
+              [d.announceA1PlayerId, d.announceA1PlayerName],
+              [d.announceA2PlayerId, d.announceA2PlayerName],
+              [d.announceB1PlayerId, d.announceB1PlayerName],
+              [d.announceB2PlayerId, d.announceB2PlayerName],
+            ];
+          })
+          .find(([id]) => id === pid)?.[1] || playerById.get(pid)?.name || "—";
+      if (v > highestAnnounces.v) highestAnnounces = { name: snapName, v };
+    }
 
     return {
       biggestBlowout,
@@ -1321,15 +1460,7 @@ export default function App() {
   const tableMatch = useMemo(() => {
     const code = (query.code || "").toUpperCase();
     if (!code) return null;
-    const direct = matches.find((m) => (m.code || "").toUpperCase() === code);
-    if (direct) return direct;
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      const parsed = raw ? JSON.parse(raw) : null;
-      return (parsed?.matches || []).find((m) => (m.code || "").toUpperCase() === code) || null;
-    } catch {
-      return null;
-    }
+    return matches.find((m) => (m.code || "").toUpperCase() === code) || null;
   }, [query.code, matches]);
 
   const NavPills = ({ showAdmin = true }) => (
@@ -1342,11 +1473,7 @@ export default function App() {
       <a href="#/public" style={{ ...styles.tag, textDecoration: "none" }}>
         Public View
       </a>
-      <span style={styles.tag}>
-        Backup: {backupState.lastOk ? `OK (${new Date(backupState.lastOk).toLocaleTimeString()})` : "—"}
-        {backupState.lastErr ? " • retrying…" : ""}
-        {backupState.queued ? ` • queued: ${backupState.queued}` : ""}
-      </span>
+      <span style={styles.tag}>Live: Supabase</span>
     </div>
   );
 
@@ -1388,7 +1515,7 @@ export default function App() {
 
           <Section title="Table Entry Links">
             <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
-              Each table uses their own link to enter hands/scores.
+              Each table uses their own link to enter hands and scores.
             </div>
             <div style={styles.grid3}>
               {tableLinks.map((t) => (
@@ -1476,7 +1603,7 @@ export default function App() {
       <div style={styles.container}>
         <Header
           title={appName}
-          subtitle="Admin • Setup players/teams • Create table matches • Share links • Auto-backup to Google Sheet"
+          subtitle="Admin • Setup players/teams • Create table matches • Share links • Live sync with Supabase"
           right={<NavPills showAdmin={false} />}
         />
 
@@ -1501,13 +1628,8 @@ export default function App() {
             </div>
           }
         >
-          <div style={styles.small}>Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span></div>
-          <div style={{ marginTop: 8, ...styles.small }}>
-            GoogleSheet backup: {backupState.lastOk ? "✅ OK" : "—"} {backupState.lastErr ? "• retrying…" : ""}{" "}
-            {backupState.queued ? `• queued: ${backupState.queued}` : ""}
-          </div>
-          <div style={{ marginTop: 6, ...styles.small }}>
-            Device: <span style={{ color: "#e5e7eb" }}>{deviceIdRef.current}</span>
+          <div style={styles.small}>
+            Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span>
           </div>
         </Section>
 
@@ -1521,32 +1643,30 @@ export default function App() {
                 <input
                   type="checkbox"
                   checked={avoidSameTeams}
-                  onChange={(e) => saveField(setAvoidSameTeams, "avoidSameTeams", e.target.checked)}
+                  onChange={(e) => setLocalField(setAvoidSameTeams, "avoidSameTeams", e.target.checked)}
                 />
                 Avoid repeating pairs
               </label>
 
               <button
-                style={styles.btnSecondary}
-                onClick={() => {
-                  void flushHandBackupQueue();
-                  alert("Backup retry triggered (if anything is queued).");
-                }}
-              >
-                Backup Now
-              </button>
-
-              <button
                 style={styles.btnDanger}
-                onClick={() => {
-                  if (!confirm("Full reset? This clears everything.")) return;
+                onClick={async () => {
+                  if (!confirm("Full reset? This clears local players/teams and all live matches/hands.")) return;
                   setAppName("Coinche Scorekeeper");
                   setPlayers([]);
                   setTeams([]);
                   setPairHistory([]);
-                  setMatches([]);
-                  sentHandKeysRef.current = new Set();
-                  persistNow({ appName: "Coinche Scorekeeper", players: [], teams: [], pairHistory: [], matches: [] });
+                  persistLocal({
+                    appName: "Coinche Scorekeeper",
+                    players: [],
+                    teams: [],
+                    pairHistory: [],
+                  });
+
+                  for (const m of matches) {
+                    await deleteMatchFromSupabase(m.id);
+                  }
+                  await refreshFromSupabase();
                 }}
               >
                 Full Reset
@@ -1559,15 +1679,15 @@ export default function App() {
               <input
                 style={styles.input("100%")}
                 value={appName}
-                onChange={(e) => saveField(setAppName, "appName", e.target.value)}
+                onChange={(e) => setLocalField(setAppName, "appName", e.target.value)}
               />
             </InfoCard>
             <InfoCard title="Target score">
               <div style={{ fontWeight: 950, fontSize: 18 }}>{TARGET_SCORE}</div>
               <div style={styles.small}>Match ends immediately at {TARGET_SCORE}+.</div>
             </InfoCard>
-            <InfoCard title="Backup endpoint">
-              <div style={{ fontWeight: 900, fontSize: 12, color: "#cbd5e1", wordBreak: "break-all" }}>{BACKUP_URL}</div>
+            <InfoCard title="Live backend">
+              <div style={{ fontWeight: 900, fontSize: 12, color: "#cbd5e1" }}>Supabase realtime</div>
             </InfoCard>
           </div>
         </Section>
@@ -1608,7 +1728,13 @@ export default function App() {
           right={
             <div style={styles.row}>
               <input style={styles.input(220)} value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} placeholder="Optional team name" />
-              <button style={styles.btnPrimary} onClick={() => { addTeam(); setNewTeamName(""); }}>
+              <button
+                style={styles.btnPrimary}
+                onClick={() => {
+                  addTeam();
+                  setNewTeamName("");
+                }}
+              >
                 Add Team
               </button>
               <button style={styles.btnSecondary} onClick={buildRandomTeams} disabled={players.length < 2 || teams.length < 1}>
@@ -1699,7 +1825,7 @@ export default function App() {
 
         <Section title="Table Links (share to each table)">
           <div style={styles.small}>
-            Each match has a unique code + link. Teams should open their match link to enter hands.
+            Each match has a unique code and link. Teams should open their match link to enter hands.
           </div>
           <div style={{ marginTop: 10, ...styles.grid3 }}>
             {tableLinks.map((t) => (
@@ -1954,8 +2080,8 @@ function ScoreCard({ name, score, pct, winner, leader, variant = "A", bigTotals 
 }
 
 function LiveMatchCard({ match, teamById, onOpen }) {
-  const ta = teamById.get(match.teamAId)?.name ?? "Team A";
-  const tb = teamById.get(match.teamBId)?.name ?? "Team B";
+  const ta = getTeamNameForMatch(match, "A", teamById);
+  const tb = getTeamNameForMatch(match, "B", teamById);
   const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
   const pctB = Math.min(100, Math.round(((match.totalB || 0) / TARGET_SCORE) * 100));
 
@@ -2330,7 +2456,7 @@ function CollapsibleMatchCard({
 
           <div style={{ marginTop: 10, ...styles.card }}>
             <div style={{ fontWeight: 950, color: match.completed ? "#34d399" : "#94a3b8" }}>
-              {match.completed ? `Completed • Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "In progress"}
+              {match.completed ? `Completed • Winner: ${match.winnerId === match.teamAId ? getTeamNameForMatch(match, "A", teamById) : getTeamNameForMatch(match, "B", teamById)}` : "In progress"}
             </div>
             <div style={styles.small}>Score: {match.totalA} – {match.totalB}</div>
           </div>
@@ -2372,12 +2498,10 @@ function TableMatchPanel({
   onFinishNow,
   bigTotals = false,
 }) {
-  const teamA = teamById.get(match.teamAId) || null;
-  const teamB = teamById.get(match.teamBId) || null;
-  const ta = teamA?.name ?? "TBD";
-  const tb = teamB?.name ?? "TBD";
-  const playersA = getTeamPlayers(teamA, playerById);
-  const playersB = getTeamPlayers(teamB, playerById);
+  const ta = getTeamNameForMatch(match, "A", teamById);
+  const tb = getTeamNameForMatch(match, "B", teamById);
+  const playersA = getMatchSidePlayers(match, "A", teamById, playerById);
+  const playersB = getMatchSidePlayers(match, "B", teamById, playerById);
   const allTablePlayers = [...playersA, ...playersB];
 
   const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
@@ -2428,7 +2552,9 @@ function TableMatchPanel({
   const handInput = { ...styles.input("100%"), padding: "8px 10px" };
   const handSelect = { ...styles.select("100%"), padding: "8px 10px" };
   const currentShuffler = getCurrentShufflerInfo(match, playerById);
-  const seatOrderNames = (match.tableOrderPlayerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean);
+  const seatOrderNames = (match.tableOrderPlayerIds || [])
+    .map((pid) => playerById.get(pid)?.name || [...playersA, ...playersB].find((p) => p.id === pid)?.name)
+    .filter(Boolean);
 
   function setSeat(slotIdx, value) {
     const next = [...(match.tableOrderPlayerIds || [])];
@@ -2440,6 +2566,10 @@ function TableMatchPanel({
       tableOrderPlayerIds: unique,
       firstShufflerPlayerId: unique.includes(match.firstShufflerPlayerId) ? match.firstShufflerPlayerId : "",
     });
+  }
+
+  function playerName(pid, fallback) {
+    return playerById.get(pid)?.name || [...playersA, ...playersB].find((p) => p.id === pid)?.name || fallback;
   }
 
   function renderAnnounceBlock(side, label, teamPlayers) {
@@ -2490,7 +2620,7 @@ function TableMatchPanel({
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
-            {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
+            {match.completed ? `Winner: ${winnerSide === "A" ? ta : tb}` : "Live"}
           </div>
 
           {!match.completed && (
@@ -2523,7 +2653,7 @@ function TableMatchPanel({
             {seatOrderNames.length === 4 && <div style={{ fontWeight: 900 }}>Order: <span style={{ color: "#e5e7eb" }}>{seatOrderNames.join(" → ")}</span></div>}
             {match.firstShufflerPlayerId && (
               <div style={{ marginTop: 6, ...styles.small }}>
-                First shuffler: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{playerById.get(match.firstShufflerPlayerId)?.name || "—"}</span>
+                First shuffler: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{playerName(match.firstShufflerPlayerId, "—")}</span>
               </div>
             )}
           </div>
@@ -2556,8 +2686,8 @@ function TableMatchPanel({
               >
                 <option value="">— Select —</option>
                 {(match.tableOrderPlayerIds || []).map((pid) => {
-                  const p = playerById.get(pid);
-                  return p ? <option key={pid} value={pid}>{p.name}</option> : null;
+                  const name = playerName(pid, "");
+                  return name ? <option key={pid} value={pid}>{name}</option> : null;
                 })}
               </select>
             </div>
@@ -2740,7 +2870,7 @@ function TableMatchPanel({
                 [ds.announceB2PlayerId, ds.announceB2, tb],
               ]
                 .filter(([, pts]) => (Number(pts) || 0) > 0)
-                .map(([pid, pts, fallback]) => `${playerById.get(pid)?.name || fallback}: ${pts}`);
+                .map(([pid, pts, fallback]) => `${playerName(pid, fallback)}: ${pts}`);
 
               const announceWinnerText =
                 ds.announceWinner === "A" ? ta : ds.announceWinner === "B" ? tb : "None / tie";
