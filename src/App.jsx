@@ -2,15 +2,16 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./supabaseClient";
 
 /**
- * Coinche Scorekeeper (Supabase live version)
+ * Coinche Scorekeeper (single-file App.jsx)
  * Routes:
  *   #/admin
  *   #/public
  *   #/table?code=AB12
  */
 
-const LS_KEY = "coinche_scorekeeper_local_admin_v2";
+const LS_KEY = "coinche_scorekeeper_v1";
 const TARGET_SCORE = 2000;
+const APP_UPDATED_EVENT = "coinche_state_updated";
 
 /* =========================
    Helpers
@@ -47,6 +48,15 @@ const clamp = (n, lo, hi) => {
 const num = (v, d = 0) => safeInt(v) ?? d;
 const normalizeScanCardCount = (n) => clamp(Math.round(Number(n) || 0), 0, 32);
 const parseBidValue = (v) => (String(v || "").trim().toLowerCase() === "capot" ? 250 : safeInt(v));
+const jsonSafe = (v, fallback) => {
+  try {
+    if (v === null || v === undefined) return fallback;
+    if (typeof v === "string") return JSON.parse(v);
+    return v;
+  } catch {
+    return fallback;
+  }
+};
 
 function SuitIcon({ suit }) {
   const map = {
@@ -126,43 +136,49 @@ function roundTrickPointsPair(rawBidderPoints) {
   const oppRaw = 162 - bidderRaw;
   const bidderOnes = bidderRaw % 10;
 
-  if (bidderOnes === 5) return { bidderRounded: bidderRaw - 5, oppRounded: oppRaw + 5 };
-  if (bidderOnes === 6) return { bidderRounded: bidderRaw + 4, oppRounded: oppRaw + 4 };
+  // Rules:
+  // - ending in 5 => round down
+  // - ending in 6 => both teams round up
+  if (bidderOnes === 5) {
+    return {
+      bidderRounded: bidderRaw - 5,
+      oppRounded: oppRaw + 5,
+    };
+  }
+
+  if (bidderOnes === 6) {
+    return {
+      bidderRounded: bidderRaw + 4,
+      oppRounded: oppRaw + 4,
+    };
+  }
 
   const bidderRounded = Math.round(bidderRaw / 10) * 10;
   const oppOnes = oppRaw % 10;
   const oppRounded =
-    oppOnes === 5 ? oppRaw - 5 : oppOnes === 6 ? oppRaw + 4 : Math.round(oppRaw / 10) * 10;
+    oppOnes === 5
+      ? oppRaw - 5
+      : oppOnes === 6
+      ? oppRaw + 4
+      : Math.round(oppRaw / 10) * 10;
 
   return { bidderRounded, oppRounded };
 }
 
-function resolveAnnounces({
-  bidder,
-  announceA,
-  announceB,
-  announceWinner,
-  beloteTeam,
-}) {
-  const validAnnounceA = announceWinner === "A" ? Number(announceA) || 0 : 0;
-  const validAnnounceB = announceWinner === "B" ? Number(announceB) || 0 : 0;
-  const totalValidAnnounces = validAnnounceA + validAnnounceB;
+function computeContractRequirement({ bid, bidder, announceA, announceB, beloteTeam }) {
+  const bidVal = Number(bid) || 0;
+  const aAnn = Number(announceA) || 0;
+  const bAnn = Number(announceB) || 0;
 
-  const bidderValidAnnounces = bidder === "A" ? validAnnounceA : validAnnounceB;
+  const bidderAnnounces = bidder === "A" ? aAnn : bAnn;
+  const bidderHasBelote =
+    (bidder === "A" && beloteTeam === "A") || (bidder === "B" && beloteTeam === "B");
 
-  const beloteA = beloteTeam === "A" ? 20 : 0;
-  const beloteB = beloteTeam === "B" ? 20 : 0;
-  const bidderBelote = bidder === "A" ? beloteA : beloteB;
+  const floor = bidderHasBelote ? 71 : 81;
 
-  return {
-    validAnnounceA,
-    validAnnounceB,
-    totalValidAnnounces,
-    beloteA,
-    beloteB,
-    bidderValidAnnounces,
-    bidderBelote,
-  };
+  if (bidVal === 80) return floor;
+
+  return Math.max(floor, bidVal - bidderAnnounces);
 }
 
 function computeFastCoincheScore({
@@ -173,70 +189,95 @@ function computeFastCoincheScore({
   bidderTrickPoints,
   announceA,
   announceB,
-  announceWinner,
   beloteTeam,
 }) {
   const bidderIsA = bidder === "A";
   const bidVal = Number(bid) || 0;
+
+  const aAnn = Number(announceA) || 0;
+  const bAnn = Number(announceB) || 0;
+
+  const beloteA = beloteTeam === "A" ? 20 : 0;
+  const beloteB = beloteTeam === "B" ? 20 : 0;
+
   const rawBidder = clamp(Number(bidderTrickPoints) || 0, 0, 162);
   const { bidderRounded, oppRounded } = roundTrickPointsPair(rawBidder);
-  const {
-    validAnnounceA,
-    validAnnounceB,
-    totalValidAnnounces,
-    beloteA,
-    beloteB,
-    bidderValidAnnounces,
-    bidderBelote,
-  } = resolveAnnounces({
+
+  const required = computeContractRequirement({
+    bid: bidVal,
     bidder,
-    announceA,
-    announceB,
-    announceWinner,
+    announceA: aAnn,
+    announceB: bAnn,
     beloteTeam,
   });
 
-  const minRequired = bidderBelote > 0 ? 71 : 81;
-  const special80 = bidVal === 80 ? 81 : 0;
-  const required = Math.max(minRequired, special80, bidVal - bidderValidAnnounces - bidderBelote);
-
   const bidderSucceeded = capot ? true : rawBidder >= required;
-  const mult = coincheLevel === "SURCOINCHE" ? 4 : coincheLevel === "COINCHE" ? 2 : 1;
   const isCoinche = coincheLevel !== "NONE";
+  const mult =
+    coincheLevel === "SURCOINCHE" ? 4 : coincheLevel === "COINCHE" ? 2 : 1;
 
   let scoreA = 0;
   let scoreB = 0;
 
+  // Capot: winner gets 250 + bid + all announces including belote.
   if (capot) {
-    const winnerTotal = 250 + totalValidAnnounces + beloteA + beloteB + bidVal;
-    return bidderIsA
-      ? { scoreA: winnerTotal, scoreB: 0, bidderSucceeded: true }
-      : { scoreA: 0, scoreB: winnerTotal, bidderSucceeded: true };
+    const winnerTotal = 250 + bidVal + aAnn + bAnn + beloteA + beloteB;
+    if (bidderIsA) {
+      scoreA = winnerTotal;
+      scoreB = 0;
+    } else {
+      scoreB = winnerTotal;
+      scoreA = 0;
+    }
+    return { scoreA, scoreB, bidderSucceeded: true };
   }
 
+  // Coinche / Surcoinche:
+  // winner gets 160 + all announces + doubled/quadrupled bid
+  // loser gets 0, except belote stays with team that declared it.
   if (isCoinche) {
-    const winnerTotal = 160 + totalValidAnnounces + mult * bidVal;
+    const winnerTotal = 160 + aAnn + bAnn + mult * bidVal;
     if (bidderSucceeded) {
-      scoreA = bidderIsA ? winnerTotal + beloteA : beloteA;
-      scoreB = bidderIsA ? beloteB : winnerTotal + beloteB;
+      if (bidderIsA) {
+        scoreA = winnerTotal + beloteA;
+        scoreB = beloteB;
+      } else {
+        scoreB = winnerTotal + beloteB;
+        scoreA = beloteA;
+      }
     } else {
-      scoreA = bidderIsA ? beloteA : winnerTotal + beloteA;
-      scoreB = bidderIsA ? winnerTotal + beloteB : beloteB;
+      if (bidderIsA) {
+        scoreA = beloteA;
+        scoreB = winnerTotal + beloteB;
+      } else {
+        scoreB = beloteB;
+        scoreA = winnerTotal + beloteA;
+      }
     }
     return { scoreA, scoreB, bidderSucceeded };
   }
 
+  // Normal hand.
   if (bidderSucceeded) {
-    scoreA = bidderIsA
-      ? bidderRounded + validAnnounceA + beloteA + bidVal
-      : oppRounded + validAnnounceA + beloteA;
-    scoreB = bidderIsA
-      ? oppRounded + validAnnounceB + beloteB
-      : bidderRounded + validAnnounceB + beloteB + bidVal;
+    if (bidderIsA) {
+      scoreA = bidderRounded + aAnn + bidVal + beloteA;
+      scoreB = oppRounded + bAnn + beloteB;
+    } else {
+      scoreB = bidderRounded + bAnn + bidVal + beloteB;
+      scoreA = oppRounded + aAnn + beloteA;
+    }
   } else {
-    const oppGets = 160 + bidVal + totalValidAnnounces;
-    scoreA = bidderIsA ? beloteA : oppGets + beloteA;
-    scoreB = bidderIsA ? oppGets + beloteB : beloteB;
+    // Failed contract:
+    // bidder scores 0 but keeps belote
+    // defenders score 160 + bid + all non-belote announces + their own belote
+    const stolenAnnounces = aAnn + bAnn;
+    if (bidderIsA) {
+      scoreA = beloteA;
+      scoreB = 160 + bidVal + stolenAnnounces + beloteB;
+    } else {
+      scoreB = beloteB;
+      scoreA = 160 + bidVal + stolenAnnounces + beloteA;
+    }
   }
 
   return { scoreA, scoreB, bidderSucceeded };
@@ -280,7 +321,6 @@ const defaultFastDraft = () => ({
   nonBidderTrickPoints: "",
   trickSource: "",
   beloteTeam: "NONE",
-  announceWinner: "NONE",
   announceA1: "",
   announceA1PlayerId: "",
   announceA2: "",
@@ -293,6 +333,10 @@ const defaultFastDraft = () => ({
 
 const normalizeLoadedMatch = (m) => ({
   ...m,
+  hands: (m.hands || []).map((h) => ({
+    ...h,
+    draftSnapshot: { ...defaultFastDraft(), ...(h.draftSnapshot || {}) },
+  })),
   fastDraft: { ...defaultFastDraft(), ...(m.fastDraft || {}) },
   tableOrderPlayerIds: m.tableOrderPlayerIds ?? [],
   firstShufflerPlayerId: m.firstShufflerPlayerId ?? "",
@@ -306,10 +350,6 @@ function makeEmptyMatch({ tableName, teamAId, teamBId, label }) {
     label: label || "Match",
     teamAId: teamAId || null,
     teamBId: teamBId || null,
-    teamAName: "",
-    teamBName: "",
-    teamAPlayers: [],
-    teamBPlayers: [],
     hands: [],
     totalA: 0,
     totalB: 0,
@@ -336,28 +376,21 @@ function recomputeMatch(m) {
   }
   const completed = Boolean(m.forcedComplete) || totalA >= TARGET_SCORE || totalB >= TARGET_SCORE;
   const winnerId = completed && totalA !== totalB ? (totalA > totalB ? m.teamAId : m.teamBId) : null;
-  return { ...m, totalA, totalB, completed, winnerId, timelineDiffs: diffs, lastUpdatedAt: Date.now() };
+  return {
+    ...m,
+    totalA,
+    totalB,
+    completed,
+    winnerId,
+    timelineDiffs: diffs,
+    lastUpdatedAt: Date.now(),
+  };
 }
 
 const sumAnnounces = (d, side) => num(d?.[`announce${side}1`]) + num(d?.[`announce${side}2`]);
 
 const getTeamPlayers = (team, playerById) =>
   (team?.playerIds || []).map((id) => playerById.get(id)).filter(Boolean);
-
-function getTeamNameForMatch(match, side, teamById) {
-  const id = side === "A" ? match.teamAId : match.teamBId;
-  const localTeam = id ? teamById.get(id) : null;
-  if (localTeam?.name) return localTeam.name;
-  return side === "A" ? match.teamAName || "Team A" : match.teamBName || "Team B";
-}
-
-function getMatchSidePlayers(match, side, teamById, playerById) {
-  const id = side === "A" ? match.teamAId : match.teamBId;
-  const localTeam = id ? teamById.get(id) : null;
-  if (localTeam) return getTeamPlayers(localTeam, playerById);
-  const arr = side === "A" ? match.teamAPlayers : match.teamBPlayers;
-  return (arr || []).map((p) => ({ id: p.id, name: p.name })).filter((p) => p.id || p.name);
-}
 
 function getCurrentShufflerInfo(match, playerById) {
   const order = match.tableOrderPlayerIds || [];
@@ -366,13 +399,127 @@ function getCurrentShufflerInfo(match, playerById) {
   if (startIdx < 0) return { playerId: "", name: "" };
   const idx = (startIdx + (match.hands || []).length) % order.length;
   const playerId = order[idx] || "";
-  const snapPlayers = [...(match.teamAPlayers || []), ...(match.teamBPlayers || [])];
+  return { playerId, name: playerById.get(playerId)?.name || "" };
+}
+
+/* =========================
+   Supabase mapping
+========================= */
+
+function matchToRow(match, teamById, playerById, appName) {
+  const teamA = teamById.get(match.teamAId) || null;
+  const teamB = teamById.get(match.teamBId) || null;
+  const teamAPlayers = getTeamPlayers(teamA, playerById).map((p) => ({ id: p.id, name: p.name }));
+  const teamBPlayers = getTeamPlayers(teamB, playerById).map((p) => ({ id: p.id, name: p.name }));
+
   return {
-    playerId,
-    name:
-      playerById.get(playerId)?.name ||
-      snapPlayers.find((p) => p.id === playerId)?.name ||
-      "",
+    id: match.id,
+    code: match.code,
+    table_name: match.tableName,
+    label: match.label,
+    team_a_id: match.teamAId,
+    team_b_id: match.teamBId,
+    total_a: match.totalA,
+    total_b: match.totalB,
+    winner_id: match.winnerId,
+    completed: !!match.completed,
+    forced_complete: !!match.forcedComplete,
+    editing_hand_idx: match.editingHandIdx,
+    last_updated_at: new Date(match.lastUpdatedAt || Date.now()).toISOString(),
+    table_order_player_ids: match.tableOrderPlayerIds || [],
+    first_shuffler_player_id: match.firstShufflerPlayerId || "",
+    fast_draft: match.fastDraft || defaultFastDraft(),
+    app_name: appName || "Coinche Scorekeeper",
+    team_a_name: teamA?.name || "",
+    team_b_name: teamB?.name || "",
+    team_a_players: teamAPlayers,
+    team_b_players: teamBPlayers,
+  };
+}
+
+function handToRow(match, hand) {
+  return {
+    id: `${match.id}_${hand.idx}`,
+    match_id: match.id,
+    hand_idx: hand.idx,
+    created_at_ts: hand.createdAt || Date.now(),
+    edited_at: hand.editedAt || null,
+    score_a: hand.scoreA,
+    score_b: hand.scoreB,
+    bidder_succeeded: !!hand.bidderSucceeded,
+    draft_snapshot: hand.draftSnapshot || {},
+  };
+}
+
+function rowToMatch(row) {
+  return normalizeLoadedMatch({
+    id: row.id,
+    code: row.code,
+    tableName: row.table_name || "Table",
+    label: row.label || "Match",
+    teamAId: row.team_a_id || null,
+    teamBId: row.team_b_id || null,
+    hands: [],
+    totalA: Number(row.total_a) || 0,
+    totalB: Number(row.total_b) || 0,
+    winnerId: row.winner_id || null,
+    completed: !!row.completed,
+    forcedComplete: !!row.forced_complete,
+    fastDraft: jsonSafe(row.fast_draft, defaultFastDraft()),
+    editingHandIdx: row.editing_hand_idx ?? null,
+    timelineDiffs: [],
+    lastUpdatedAt: row.last_updated_at ? new Date(row.last_updated_at).getTime() : Date.now(),
+    tableOrderPlayerIds: jsonSafe(row.table_order_player_ids, []),
+    firstShufflerPlayerId: row.first_shuffler_player_id || "",
+  });
+}
+
+function rowToHand(row) {
+  return {
+    idx: Number(row.hand_idx) || 0,
+    createdAt: Number(row.created_at_ts) || Date.now(),
+    editedAt: row.edited_at ? new Date(row.edited_at).getTime() : null,
+    scoreA: Number(row.score_a) || 0,
+    scoreB: Number(row.score_b) || 0,
+    bidderSucceeded: !!row.bidder_succeeded,
+    draftSnapshot: { ...defaultFastDraft(), ...jsonSafe(row.draft_snapshot, {}) },
+  };
+}
+
+function derivePeopleAndTeams(matchRows) {
+  const playersMap = new Map();
+  const teamsMap = new Map();
+
+  for (const row of matchRows) {
+    const aPlayers = jsonSafe(row.team_a_players, []);
+    const bPlayers = jsonSafe(row.team_b_players, []);
+
+    if (row.team_a_id) {
+      teamsMap.set(row.team_a_id, {
+        id: row.team_a_id,
+        name: row.team_a_name || "Team A",
+        playerIds: aPlayers.map((p) => p.id).filter(Boolean),
+        locked: false,
+      });
+    }
+
+    if (row.team_b_id) {
+      teamsMap.set(row.team_b_id, {
+        id: row.team_b_id,
+        name: row.team_b_name || "Team B",
+        playerIds: bPlayers.map((p) => p.id).filter(Boolean),
+        locked: false,
+      });
+    }
+
+    [...aPlayers, ...bPlayers].forEach((p) => {
+      if (p?.id && p?.name) playersMap.set(p.id, { id: p.id, name: p.name });
+    });
+  }
+
+  return {
+    players: Array.from(playersMap.values()),
+    teams: Array.from(teamsMap.values()),
   };
 }
 
@@ -424,7 +571,7 @@ const styles = {
   grid4: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 },
   handRow1: { display: "grid", gridTemplateColumns: "repeat(5, minmax(160px, 1fr))", gap: 10, marginTop: 12, alignItems: "start" },
   handRow2: { display: "grid", gridTemplateColumns: "repeat(2, minmax(280px, 1fr))", gap: 10, marginTop: 10, alignItems: "start" },
-  handRow3: { display: "grid", gridTemplateColumns: "repeat(4, minmax(180px, 1fr))", gap: 10, marginTop: 10, alignItems: "start" },
+  handRow3: { display: "grid", gridTemplateColumns: "repeat(3, minmax(180px, 1fr))", gap: 10, marginTop: 10, alignItems: "start" },
   handRow: { border: "1px solid rgba(148,163,184,0.16)", background: bg, borderRadius: 16, padding: 12, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" },
   input: (w = 240) => ({ ...inputBase, width: typeof w === "number" ? `${w}px` : w, padding: "10px 12px" }),
   select: (w = 180) => ({ ...inputBase, width: typeof w === "number" ? `${w}px` : w, padding: "10px 12px" }),
@@ -455,7 +602,15 @@ const styles = {
     cursor: "pointer",
     fontWeight: 900,
   },
-  btnGhost: { padding: "8px 10px", borderRadius: 12, border: "1px solid transparent", background: "transparent", color: "#94a3b8", cursor: "pointer", fontWeight: 900 },
+  btnGhost: {
+    padding: "8px 10px",
+    borderRadius: 12,
+    border: "1px solid transparent",
+    background: "transparent",
+    color: "#94a3b8",
+    cursor: "pointer",
+    fontWeight: 900,
+  },
   disabled: { opacity: 0.55, cursor: "not-allowed" },
   tag: {
     display: "inline-flex",
@@ -551,6 +706,7 @@ export default function App() {
   const [route, setRoute] = useState(() => parseHashRoute());
   const [loaded, setLoaded] = useState(false);
   const [tableMissingDelayDone, setTableMissingDelayDone] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("Connecting…");
 
   const [appName, setAppName] = useState("Coinche Scorekeeper");
   const [players, setPlayers] = useState([]);
@@ -565,8 +721,170 @@ export default function App() {
   const [newMatchLabel, setNewMatchLabel] = useState("Match 1");
 
   const inputRef = useRef(null);
+  const lastSavedAtRef = useRef(0);
+  const isPushingRef = useRef(false);
 
   useEffect(() => ensureGlobalCSS(), []);
+
+  const persistNow = (next = {}) => {
+    try {
+      const payload = {
+        appName: next.appName ?? appName,
+        players: next.players ?? players,
+        teams: next.teams ?? teams,
+        avoidSameTeams: next.avoidSameTeams ?? avoidSameTeams,
+        pairHistory: next.pairHistory ?? pairHistory,
+        matches: next.matches ?? matches,
+        savedAt: Date.now(),
+      };
+      lastSavedAtRef.current = payload.savedAt;
+      localStorage.setItem(LS_KEY, JSON.stringify(payload));
+      window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { savedAt: payload.savedAt } }));
+    } catch {}
+  };
+
+  const saveField = (setter, key, value) => {
+    setter(value);
+    persistNow({ [key]: value });
+  };
+
+  const hydrateFromPayload = (d) => {
+    const savedAt = Number(d?.savedAt) || 0;
+    if (savedAt) lastSavedAtRef.current = savedAt;
+    setAppName(d.appName ?? "Coinche Scorekeeper");
+    setPlayers(d.players ?? []);
+    setTeams(d.teams ?? []);
+    setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
+    setPairHistory(d.pairHistory ?? []);
+    setMatches((d.matches ?? []).map(normalizeLoadedMatch));
+  };
+
+  const maybeHydrateLatest = () => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return false;
+      const d = JSON.parse(raw);
+      const savedAt = Number(d?.savedAt) || 0;
+      if (savedAt && savedAt <= lastSavedAtRef.current) return false;
+      hydrateFromPayload(d);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
+  const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
+
+  const hydrateFromRemote = (matchRows, handRows) => {
+    const baseMatches = (matchRows || []).map(rowToMatch);
+    const handsByMatchId = new Map();
+
+    (handRows || []).forEach((row) => {
+      const arr = handsByMatchId.get(row.match_id) || [];
+      arr.push(rowToHand(row));
+      handsByMatchId.set(row.match_id, arr);
+    });
+
+    const fullMatches = baseMatches.map((m) =>
+      recomputeMatch({
+        ...m,
+        hands: (handsByMatchId.get(m.id) || []).sort((a, b) => a.idx - b.idx),
+      })
+    );
+
+    const derived = derivePeopleAndTeams(matchRows || []);
+    const payload = {
+      appName: matchRows?.[0]?.app_name || appName || "Coinche Scorekeeper",
+      players: derived.players.length ? derived.players : players,
+      teams: derived.teams.length ? derived.teams : teams,
+      avoidSameTeams,
+      pairHistory,
+      matches: fullMatches,
+      savedAt: Date.now(),
+    };
+
+    hydrateFromPayload(payload);
+    persistNow(payload);
+  };
+
+  const refreshFromSupabase = async () => {
+    try {
+      const [{ data: matchRows, error: matchErr }, { data: handRows, error: handErr }] = await Promise.all([
+        supabase.from("matches").select("*").order("last_updated_at", { ascending: false }),
+        supabase.from("hands").select("*").order("match_id", { ascending: true }).order("hand_idx", { ascending: true }),
+      ]);
+
+      if (matchErr) throw matchErr;
+      if (handErr) throw handErr;
+
+      hydrateFromRemote(matchRows || [], handRows || []);
+      setSyncStatus("Live: Supabase");
+    } catch (err) {
+      console.error("Refresh from Supabase failed:", err);
+      setSyncStatus("Local fallback");
+      maybeHydrateLatest();
+    }
+  };
+
+  const saveMatchBundleToSupabase = async (nextMatch, nextAppName = appName) => {
+    isPushingRef.current = true;
+    try {
+      const matchRow = matchToRow(nextMatch, teamById, playerById, nextAppName);
+      const { error: matchErr } = await supabase.from("matches").upsert(matchRow);
+      if (matchErr) throw matchErr;
+
+      const { error: deleteErr } = await supabase.from("hands").delete().eq("match_id", nextMatch.id);
+      if (deleteErr) throw deleteErr;
+
+      if ((nextMatch.hands || []).length) {
+        const handRows = nextMatch.hands.map((h) => handToRow(nextMatch, h));
+        const { error: handsErr } = await supabase.from("hands").insert(handRows);
+        if (handsErr) throw handsErr;
+      }
+
+      setSyncStatus("Live: Supabase");
+    } finally {
+      isPushingRef.current = false;
+    }
+  };
+
+  const deleteMatchFromSupabase = async (matchId) => {
+    isPushingRef.current = true;
+    try {
+      const { error: handsErr } = await supabase.from("hands").delete().eq("match_id", matchId);
+      if (handsErr) throw handsErr;
+
+      const { error: matchErr } = await supabase.from("matches").delete().eq("id", matchId);
+      if (matchErr) throw matchErr;
+
+      setSyncStatus("Live: Supabase");
+    } finally {
+      isPushingRef.current = false;
+    }
+  };
+
+  const syncMatchLocalAndRemote = async (nextMatch, nextMatches, nextAppName = appName) => {
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches, appName: nextAppName });
+    try {
+      await saveMatchBundleToSupabase(nextMatch, nextAppName);
+    } catch (err) {
+      console.error("Failed to save match:", err);
+      alert(`Failed to save match: ${err.message || "Unknown error"}`);
+    }
+  };
+
+  const replaceMatchesLocalAndRemote = async (nextMatches) => {
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
+    try {
+      await Promise.all(nextMatches.map((m) => saveMatchBundleToSupabase(m)));
+    } catch (err) {
+      console.error("Failed to sync matches:", err);
+      alert(`Failed to sync matches: ${err.message || "Unknown error"}`);
+    }
+  };
 
   useEffect(() => {
     const syncRoute = () => setRoute(parseHashRoute());
@@ -579,227 +897,52 @@ export default function App() {
     };
   }, []);
 
-  const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
-  const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
-
-  function persistLocal(next = {}) {
-    try {
-      localStorage.setItem(
-        LS_KEY,
-        JSON.stringify({
-          appName: next.appName ?? appName,
-          players: next.players ?? players,
-          teams: next.teams ?? teams,
-          avoidSameTeams: next.avoidSameTeams ?? avoidSameTeams,
-          pairHistory: next.pairHistory ?? pairHistory,
-          savedAt: Date.now(),
-        })
-      );
-    } catch {}
-  }
-
-  function hydrateLocalAdmin() {
+  useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return;
-      const d = JSON.parse(raw);
-      setAppName(d.appName ?? "Coinche Scorekeeper");
-      setPlayers(d.players ?? []);
-      setTeams(d.teams ?? []);
-      setAvoidSameTeams(Boolean(d.avoidSameTeams ?? true));
-      setPairHistory(d.pairHistory ?? []);
+      if (raw) hydrateFromPayload(JSON.parse(raw));
     } catch {}
-  }
-
-  function snapshotTeam(teamId, fallbackName = "", fallbackPlayers = []) {
-    const team = teamId ? teamById.get(teamId) : null;
-    if (!team) {
-      return {
-        name: fallbackName || "",
-        players: fallbackPlayers || [],
-      };
-    }
-    return {
-      name: team.name || fallbackName || "",
-      players: getTeamPlayers(team, playerById).map((p) => ({ id: p.id, name: p.name })),
-    };
-  }
-
-  function matchToRow(m) {
-    const snapA = snapshotTeam(m.teamAId, m.teamAName, m.teamAPlayers);
-    const snapB = snapshotTeam(m.teamBId, m.teamBName, m.teamBPlayers);
-
-    return {
-      id: m.id,
-      code: m.code,
-      app_name: appName || "Coinche Scorekeeper",
-      table_name: m.tableName,
-      label: m.label,
-      team_a_id: m.teamAId,
-      team_b_id: m.teamBId,
-      team_a_name: snapA.name || "",
-      team_b_name: snapB.name || "",
-      team_a_players: snapA.players || [],
-      team_b_players: snapB.players || [],
-      total_a: m.totalA || 0,
-      total_b: m.totalB || 0,
-      winner_id: m.winnerId,
-      completed: !!m.completed,
-      forced_complete: !!m.forcedComplete,
-      table_order_player_ids: m.tableOrderPlayerIds || [],
-      first_shuffler_player_id: m.firstShufflerPlayerId || "",
-      updated_at: new Date().toISOString(),
-    };
-  }
-
-  async function loadMatchesFromSupabase() {
-    const { data, error } = await supabase
-      .from("matches")
-      .select("*")
-      .order("updated_at", { ascending: true });
-
-    if (error) {
-      console.error("Failed to load matches:", error);
-      return [];
-    }
-    return data || [];
-  }
-
-  async function loadHandsFromSupabase() {
-    const { data, error } = await supabase
-      .from("hands")
-      .select("*")
-      .order("match_id", { ascending: true })
-      .order("hand_idx", { ascending: true });
-
-    if (error) {
-      console.error("Failed to load hands:", error);
-      return [];
-    }
-    return data || [];
-  }
-
-  async function refreshFromSupabase() {
-    const [matchRows, handRows] = await Promise.all([
-      loadMatchesFromSupabase(),
-      loadHandsFromSupabase(),
-    ]);
-
-    const handsByMatch = new Map();
-
-    for (const row of handRows) {
-      if (!handsByMatch.has(row.match_id)) handsByMatch.set(row.match_id, []);
-      handsByMatch.get(row.match_id).push({
-        idx: row.hand_idx,
-        scoreA: row.score_a,
-        scoreB: row.score_b,
-        bidderSucceeded: !!row.bidder_succeeded,
-        draftSnapshot: row.draft_snapshot || {},
-        createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
-        editedAt: row.edited_at ? new Date(row.edited_at).getTime() : undefined,
-      });
-    }
-
-    const rebuiltMatches = matchRows.map((row) =>
-      recomputeMatch(
-        normalizeLoadedMatch({
-          id: row.id,
-          code: row.code,
-          tableName: row.table_name,
-          label: row.label,
-          teamAId: row.team_a_id,
-          teamBId: row.team_b_id,
-          teamAName: row.team_a_name || "",
-          teamBName: row.team_b_name || "",
-          teamAPlayers: row.team_a_players || [],
-          teamBPlayers: row.team_b_players || [],
-          totalA: row.total_a || 0,
-          totalB: row.total_b || 0,
-          winnerId: row.winner_id,
-          completed: !!row.completed,
-          forcedComplete: !!row.forced_complete,
-          tableOrderPlayerIds: row.table_order_player_ids || [],
-          firstShufflerPlayerId: row.first_shuffler_player_id || "",
-          lastUpdatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now(),
-          hands: handsByMatch.get(row.id) || [],
-          fastDraft: defaultFastDraft(),
-          editingHandIdx: null,
-        })
-      )
-    );
-
-    setMatches(rebuiltMatches);
-    if (matchRows[0]?.app_name) setAppName(matchRows[0].app_name);
-  }
-
-  async function saveMatchToSupabase(match) {
-    const { error } = await supabase.from("matches").upsert(matchToRow(match));
-    if (error) console.error("Failed to save match:", error);
-  }
-
-  async function deleteMatchFromSupabase(matchId) {
-    const { error } = await supabase.from("matches").delete().eq("id", matchId);
-    if (error) console.error("Failed to delete match:", error);
-  }
-
-  async function saveHandToSupabase(matchId, hand) {
-    const { error } = await supabase.from("hands").upsert({
-      match_id: matchId,
-      hand_idx: hand.idx,
-      score_a: hand.scoreA,
-      score_b: hand.scoreB,
-      bidder_succeeded: !!hand.bidderSucceeded,
-      draft_snapshot: hand.draftSnapshot || {},
-      created_at: hand.createdAt ? new Date(hand.createdAt).toISOString() : new Date().toISOString(),
-      edited_at: hand.editedAt ? new Date(hand.editedAt).toISOString() : null,
-    });
-    if (error) console.error("Failed to save hand:", error);
-  }
-
-  async function clearHandsFromSupabase(matchId) {
-    const { error } = await supabase.from("hands").delete().eq("match_id", matchId);
-    if (error) console.error("Failed to clear hands:", error);
-  }
+    setLoaded(true);
+    void refreshFromSupabase();
+  }, []);
 
   useEffect(() => {
-    let active = true;
-    hydrateLocalAdmin();
+    const onStorage = (e) => {
+      if (!e || e.key === LS_KEY) maybeHydrateLatest();
+    };
+    const onAppUpdated = () => maybeHydrateLatest();
 
-    (async () => {
-      try {
-        await refreshFromSupabase();
-      } catch (err) {
-        console.error("Initial Supabase load failed:", err);
-      } finally {
-        if (active) setLoaded(true);
-      }
-    })();
-
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(APP_UPDATED_EVENT, onAppUpdated);
     return () => {
-      active = false;
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(APP_UPDATED_EVENT, onAppUpdated);
     };
   }, []);
 
   useEffect(() => {
     const channel = supabase
       .channel("coinche-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, async () => {
-        await refreshFromSupabase();
+      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, () => {
+        if (!isPushingRef.current) void refreshFromSupabase();
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "hands" }, async () => {
-        await refreshFromSupabase();
+      .on("postgres_changes", { event: "*", schema: "public", table: "hands" }, () => {
+        if (!isPushingRef.current) void refreshFromSupabase();
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") setSyncStatus("Live: Supabase");
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [appName, players, teams, avoidSameTeams, pairHistory]);
 
-  useEffect(() => {
-    if (!loaded || !matches.length) return;
-    Promise.all(matches.map((m) => saveMatchToSupabase(m))).catch(console.error);
-  }, [appName]);
+  const usedPlayerIds = useMemo(() => {
+    const s = new Set();
+    teams.forEach((t) => (t.playerIds || []).forEach((pid) => s.add(pid)));
+    return s;
+  }, [teams]);
 
   useEffect(() => {
     const current = parseHashRoute();
@@ -809,44 +952,44 @@ export default function App() {
   }, [matches]);
 
   useEffect(() => {
-    if (route.path !== "/table") {
-      setTableMissingDelayDone(false);
-      return;
-    }
-    if (!(route.query.code || "").trim()) {
-      setTableMissingDelayDone(true);
-      return;
-    }
+    if (route.path !== "/table") return setTableMissingDelayDone(false);
+    if (!(route.query.code || "").trim()) return setTableMissingDelayDone(true);
     const t = setTimeout(() => setTableMissingDelayDone(true), 350);
     return () => clearTimeout(t);
   }, [route.path, route.query.code]);
 
-  useEffect(() => {
-    if (route.path !== "/table") return;
-    const code = String(route.query.code || "").toUpperCase();
-    if (!code) return;
-    if (matches.some((m) => (m.code || "").toUpperCase() === code)) return;
-    void refreshFromSupabase();
-  }, [route.path, route.query.code]);
-
   function openTableRoute(code) {
+    persistNow();
     navigateHash(`#/table?code=${code}`);
   }
 
-  const usedPlayerIds = useMemo(() => {
-    const s = new Set();
-    teams.forEach((t) => (t.playerIds || []).forEach((pid) => s.add(pid)));
-    return s;
-  }, [teams]);
-
-  const setLocalField = (setter, key, value) => {
-    setter(value);
-    persistLocal({ [key]: value });
+  const addPlayer = () => {
+    const name = newPlayerName.trim();
+    if (!name) return;
+    saveField(setPlayers, "players", [...players, { id: uid("p"), name }]);
+    setNewPlayerName("");
+    setTimeout(() => inputRef.current?.focus?.(), 0);
   };
 
-  const updateMatchesLocalOnly = (updater) => {
-    setMatches((prev) => (typeof updater === "function" ? updater(prev) : updater));
+  const removePlayer = (id) => {
+    const nextPlayers = players.filter((p) => p.id !== id);
+    setPlayers(nextPlayers);
+    setTeams([]);
+    setPairHistory([]);
+    setMatches([]);
+    persistNow({ players: nextPlayers, teams: [], pairHistory: [], matches: [] });
   };
+
+  const addTeam = () =>
+    saveField(setTeams, "teams", [
+      ...teams,
+      {
+        id: uid("t"),
+        name: (newTeamName || "").trim() || `Team ${teams.length + 1}`,
+        playerIds: [],
+        locked: false,
+      },
+    ]);
 
   const resetMatchState = (m) =>
     recomputeMatch({
@@ -859,69 +1002,51 @@ export default function App() {
       firstShufflerPlayerId: "",
     });
 
-  const addPlayer = () => {
-    const name = newPlayerName.trim();
-    if (!name) return;
-    const nextPlayers = [...players, { id: uid("p"), name }];
-    setPlayers(nextPlayers);
-    persistLocal({ players: nextPlayers });
-    setNewPlayerName("");
-    setTimeout(() => inputRef.current?.focus?.(), 0);
-  };
-
-  const removePlayer = (id) => {
-    const nextPlayers = players.filter((p) => p.id !== id);
-    setPlayers(nextPlayers);
-    setTeams([]);
-    setPairHistory([]);
-    persistLocal({ players: nextPlayers, teams: [], pairHistory: [] });
-  };
-
-  const addTeam = () => {
-    const nextTeams = [
-      ...teams,
-      { id: uid("t"), name: (newTeamName || "").trim() || `Team ${teams.length + 1}`, playerIds: [], locked: false },
-    ];
-    setTeams(nextTeams);
-    persistLocal({ teams: nextTeams });
-  };
-
   const removeTeam = (teamId) => {
     const nextTeams = teams.filter((t) => t.id !== teamId);
-    setTeams(nextTeams);
-    persistLocal({ teams: nextTeams });
-  };
-
-  const toggleTeamLock = (teamId, locked) => {
-    const nextTeams = teams.map((t) => (t.id === teamId ? { ...t, locked: Boolean(locked) } : t));
-    setTeams(nextTeams);
-    persistLocal({ teams: nextTeams });
-  };
-
-  function setTeamPlayer(teamId, slotIdx, value) {
-    const nextTeams = teams.map((t) => {
-      if (t.id !== teamId) return t;
-      const ids = [...(t.playerIds || [])];
-      while (ids.length < 2) ids.push("");
-      ids[slotIdx] = value;
-      if (ids[0] && ids[0] === ids[1]) ids[slotIdx === 0 ? 1 : 0] = "";
-      return { ...t, playerIds: ids.filter(Boolean) };
+    const nextMatches = matches.map((m) => {
+      let next = { ...m };
+      if (next.teamAId === teamId) next.teamAId = null;
+      if (next.teamBId === teamId) next.teamBId = null;
+      return resetMatchState(next);
     });
     setTeams(nextTeams);
-    persistLocal({ teams: nextTeams });
+    setMatches(nextMatches);
+    persistNow({ teams: nextTeams, matches: nextMatches });
+  };
+
+  const toggleTeamLock = (teamId, locked) =>
+    saveField(
+      setTeams,
+      "teams",
+      teams.map((t) => (t.id === teamId ? { ...t, locked: Boolean(locked) } : t))
+    );
+
+  function setTeamPlayer(teamId, slotIdx, value) {
+    saveField(
+      setTeams,
+      "teams",
+      teams.map((t) => {
+        if (t.id !== teamId) return t;
+        const ids = [...(t.playerIds || [])];
+        while (ids.length < 2) ids.push("");
+        ids[slotIdx] = value;
+        if (ids[0] && ids[0] === ids[1]) ids[slotIdx === 0 ? 1 : 0] = "";
+        return { ...t, playerIds: ids.filter(Boolean) };
+      })
+    );
   }
 
-  const renameTeam = (teamId, name) => {
-    const nextTeams = teams.map((t) => (t.id === teamId ? { ...t, name } : t));
-    setTeams(nextTeams);
-    persistLocal({ teams: nextTeams });
-  };
+  const renameTeam = (teamId, name) =>
+    saveField(
+      setTeams,
+      "teams",
+      teams.map((t) => (t.id === teamId ? { ...t, name } : t))
+    );
 
   function buildRandomTeams() {
     if (players.length < 2) return;
-    const lockedPlayers = new Set(
-      teams.flatMap((t) => (t.locked ? t.playerIds || [] : []))
-    );
+    const lockedPlayers = new Set(teams.flatMap((t) => (t.locked ? t.playerIds || [] : [])));
     const available = players.map((p) => p.id).filter((id) => !lockedPlayers.has(id));
     const historySet = new Set(pairHistory);
     let best = null;
@@ -952,9 +1077,12 @@ export default function App() {
       ])
     );
 
+    const nextMatches = matches.map(resetMatchState);
+
     setTeams(nextTeams);
     setPairHistory(nextPairHistory);
-    persistLocal({ teams: nextTeams, pairHistory: nextPairHistory });
+    setMatches(nextMatches);
+    persistNow({ teams: nextTeams, pairHistory: nextPairHistory, matches: nextMatches });
   }
 
   const addMatch = async () => {
@@ -965,293 +1093,268 @@ export default function App() {
         label: newMatchLabel.trim() || `Match ${matches.length + 1}`,
       })
     );
-    await saveMatchToSupabase(nextMatch);
-    await refreshFromSupabase();
+    const nextMatches = [...matches, nextMatch];
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
   };
 
   const removeMatch = async (matchId) => {
-    await deleteMatchFromSupabase(matchId);
-    await refreshFromSupabase();
+    const nextMatches = matches.filter((m) => m.id !== matchId);
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
+    try {
+      await deleteMatchFromSupabase(matchId);
+    } catch (err) {
+      console.error("Failed to delete match:", err);
+      alert(`Failed to delete match: ${err.message || "Unknown error"}`);
+    }
   };
 
   const setMatchTeam = async (matchId, side, value) => {
-    const match = matches.find((m) => m.id === matchId);
-    if (!match) return;
-    const next = resetMatchState({ ...match, [side]: value || null });
-    await saveMatchToSupabase(next);
-    await clearHandsFromSupabase(matchId);
-    await refreshFromSupabase();
+    const nextMatches = matches.map((m) =>
+      m.id === matchId ? resetMatchState({ ...m, [side]: value || null }) : m
+    );
+    const nextMatch = nextMatches.find((m) => m.id === matchId);
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
   };
 
   const renameMatch = async (matchId, patch) => {
-    const match = matches.find((m) => m.id === matchId);
-    if (!match) return;
-    const next = recomputeMatch({ ...match, ...patch, lastUpdatedAt: Date.now() });
-    await saveMatchToSupabase(next);
-    await refreshFromSupabase();
+    const nextMatches = matches.map((m) =>
+      m.id === matchId ? { ...m, ...patch, lastUpdatedAt: Date.now() } : m
+    );
+    const nextMatch = nextMatches.find((m) => m.id === matchId);
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
   };
 
-  const updateTableSetup = async (matchId, patch) => {
-    const match = matches.find((m) => m.id === matchId);
-    if (!match) return;
-    const next = recomputeMatch({ ...match, ...patch, lastUpdatedAt: Date.now() });
-    await saveMatchToSupabase(next);
-    await refreshFromSupabase();
-  };
+  const updateTableSetup = (matchId, patch) => renameMatch(matchId, patch);
 
   const finishMatchNow = async (matchId) => {
-    const match = matches.find((m) => m.id === matchId);
-    if (!match) return;
-    const a = Number(match.totalA) || 0;
-    const b = Number(match.totalB) || 0;
-    const next = {
-      ...match,
-      forcedComplete: true,
-      completed: true,
-      winnerId: a === b ? null : a > b ? match.teamAId : match.teamBId,
-      lastUpdatedAt: Date.now(),
-    };
-    await saveMatchToSupabase(next);
-    await refreshFromSupabase();
+    const nextMatches = matches.map((m) => {
+      if (m.id !== matchId) return m;
+      const a = Number(m.totalA) || 0;
+      const b = Number(m.totalB) || 0;
+      return {
+        ...m,
+        forcedComplete: true,
+        completed: true,
+        winnerId: a === b ? null : a > b ? m.teamAId : m.teamBId,
+        lastUpdatedAt: Date.now(),
+      };
+    });
+    const nextMatch = nextMatches.find((m) => m.id === matchId);
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
   };
 
-  const updateDraft = (matchId, patch) =>
-    updateMatchesLocalOnly((prev) =>
-      prev.map((m) =>
-        m.id === matchId ? { ...m, fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch } } : m
-      )
+  const updateDraft = async (matchId, patch) => {
+    const nextMatches = matches.map((m) =>
+      m.id === matchId ? { ...m, fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch } } : m
     );
+    const nextMatch = nextMatches.find((m) => m.id === matchId);
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
+  };
 
-  function startEditHand(matchId, handIdx) {
-    updateMatchesLocalOnly((prev) =>
-      prev.map((m) => {
-        if (m.id !== matchId) return m;
-        const hand = (m.hands || []).find((h) => h.idx === handIdx);
-        if (!hand) return m;
-        const d = hand.draftSnapshot || {};
-        return {
-          ...m,
-          editingHandIdx: handIdx,
-          fastDraft: {
-            ...defaultFastDraft(),
-            bidder: d.bidder ?? "A",
-            bid: String(d.bid ?? ""),
-            suit: d.suit ?? "S",
-            coincheLevel: d.coincheLevel ?? "NONE",
-            capot: Boolean(d.capot),
-            bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
-            nonBidderTrickPoints: String(d.nonBidderTrickPoints ?? ""),
-            trickSource: d.trickSource ?? "",
-            announceWinner: d.announceWinner ?? "NONE",
-            announceA1: String(d.announceA1 ?? ""),
-            announceA1PlayerId: d.announceA1PlayerId ?? "",
-            announceA2: String(d.announceA2 ?? ""),
-            announceA2PlayerId: d.announceA2PlayerId ?? "",
-            announceB1: String(d.announceB1 ?? ""),
-            announceB1PlayerId: d.announceB1PlayerId ?? "",
-            announceB2: String(d.announceB2 ?? ""),
-            announceB2PlayerId: d.announceB2PlayerId ?? "",
-            beloteTeam: d.beloteTeam ?? "NONE",
-          },
-        };
-      })
-    );
+  async function startEditHand(matchId, handIdx) {
+    const nextMatches = matches.map((m) => {
+      if (m.id !== matchId) return m;
+      const hand = (m.hands || []).find((h) => h.idx === handIdx);
+      if (!hand) return m;
+      const d = hand.draftSnapshot || {};
+      return {
+        ...m,
+        editingHandIdx: handIdx,
+        fastDraft: {
+          ...defaultFastDraft(),
+          bidder: d.bidder ?? "A",
+          bid: String(d.bid ?? ""),
+          suit: d.suit ?? "S",
+          coincheLevel: d.coincheLevel ?? "NONE",
+          capot: Boolean(d.capot),
+          bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
+          nonBidderTrickPoints: String(d.nonBidderTrickPoints ?? ""),
+          trickSource: d.trickSource ?? "",
+          announceA1: String(d.announceA1 ?? ""),
+          announceA1PlayerId: d.announceA1PlayerId ?? "",
+          announceA2: String(d.announceA2 ?? ""),
+          announceA2PlayerId: d.announceA2PlayerId ?? "",
+          announceB1: String(d.announceB1 ?? ""),
+          announceB1PlayerId: d.announceB1PlayerId ?? "",
+          announceB2: String(d.announceB2 ?? ""),
+          announceB2PlayerId: d.announceB2PlayerId ?? "",
+          beloteTeam: d.beloteTeam ?? "NONE",
+        },
+      };
+    });
+    const nextMatch = nextMatches.find((m) => m.id === matchId);
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
   }
 
-  const cancelEditHand = (matchId) =>
-    updateMatchesLocalOnly((prev) =>
-      prev.map((m) =>
-        m.id === matchId ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() } : m
-      )
+  const cancelEditHand = async (matchId) => {
+    const nextMatches = matches.map((m) =>
+      m.id === matchId ? { ...m, editingHandIdx: null, fastDraft: defaultFastDraft() } : m
     );
+    const nextMatch = nextMatches.find((m) => m.id === matchId);
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
+  };
 
   async function addOrSaveHand(matchId) {
-    const match = matches.find((m) => m.id === matchId);
-    if (!match) return;
+    const nextMatches = matches.map((m) => {
+      if (m.id !== matchId) return m;
+      const d = m.fastDraft || defaultFastDraft();
+      const canPlay = !!m.teamAId && !!m.teamBId;
+      const setupReady =
+        canPlay &&
+        Array.isArray(m.tableOrderPlayerIds) &&
+        m.tableOrderPlayerIds.length === 4 &&
+        !!m.firstShufflerPlayerId;
+      if (!setupReady) return m;
 
-    const d = match.fastDraft || defaultFastDraft();
-    const canPlay = !!match.teamAId && !!match.teamBId;
-    const setupReady =
-      canPlay &&
-      Array.isArray(match.tableOrderPlayerIds) &&
-      match.tableOrderPlayerIds.length === 4 &&
-      !!match.firstShufflerPlayerId;
+      const bidVal = parseBidValue(d.bid);
+      const capotFlag = Boolean(d.capot) || String(d.bid || "").trim().toLowerCase() === "capot";
 
-    if (!setupReady) return;
+      let trickVal = null;
+      const bidderTP = safeInt(d.bidderTrickPoints);
+      const nonBidderTP = safeInt(d.nonBidderTrickPoints);
 
-    const bidVal = parseBidValue(d.bid);
-    const capotFlag = Boolean(d.capot) || String(d.bid || "").trim().toLowerCase() === "capot";
+      if (d.trickSource === "BIDDER") {
+        if (bidderTP === null) return m;
+        trickVal = bidderTP;
+      } else if (d.trickSource === "NON") {
+        if (nonBidderTP === null) return m;
+        trickVal = 162 - nonBidderTP;
+      } else {
+        trickVal = bidderTP !== null ? bidderTP : nonBidderTP !== null ? 162 - nonBidderTP : null;
+      }
 
-    let trickVal = null;
-    const bidderTP = safeInt(d.bidderTrickPoints);
-    const nonBidderTP = safeInt(d.nonBidderTrickPoints);
+      if (bidVal === null || trickVal === null) return m;
+      trickVal = clamp(trickVal, 0, 162);
 
-    if (d.trickSource === "BIDDER") {
-      if (bidderTP === null) return;
-      trickVal = bidderTP;
-    } else if (d.trickSource === "NON") {
-      if (nonBidderTP === null) return;
-      trickVal = 162 - nonBidderTP;
-    } else {
-      trickVal = bidderTP !== null ? bidderTP : nonBidderTP !== null ? 162 - nonBidderTP : null;
-    }
+      const announceA = sumAnnounces(d, "A");
+      const announceB = sumAnnounces(d, "B");
+      const shuffler = getCurrentShufflerInfo(m, playerById);
+      const playersA = getTeamPlayers(teamById.get(m.teamAId), playerById);
+      const playersB = getTeamPlayers(teamById.get(m.teamBId), playerById);
 
-    if (bidVal === null || trickVal === null) return;
-    trickVal = clamp(trickVal, 0, 162);
-
-    const announceA = sumAnnounces(d, "A");
-    const announceB = sumAnnounces(d, "B");
-    const shuffler = getCurrentShufflerInfo(match, playerById);
-
-    const res = computeFastCoincheScore({
-      bidder: d.bidder,
-      bid: bidVal,
-      coincheLevel: d.coincheLevel || "NONE",
-      capot: capotFlag,
-      bidderTrickPoints: trickVal,
-      announceA,
-      announceB,
-      announceWinner: d.announceWinner || "NONE",
-      beloteTeam: d.beloteTeam || "NONE",
-    });
-
-    const snap = {
-      bidder: d.bidder,
-      bid: bidVal,
-      suit: d.suit || "S",
-      coincheLevel: d.coincheLevel || "NONE",
-      capot: capotFlag,
-      bidderTrickPoints: trickVal,
-      nonBidderTrickPoints:
-        d.trickSource === "NON"
-          ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
-          : clamp(162 - trickVal, 0, 162),
-      trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
-      announceWinner: d.announceWinner || "NONE",
-      announceA1: num(d.announceA1),
-      announceA1PlayerId: d.announceA1PlayerId || "",
-      announceA2: num(d.announceA2),
-      announceA2PlayerId: d.announceA2PlayerId || "",
-      announceB1: num(d.announceB1),
-      announceB1PlayerId: d.announceB1PlayerId || "",
-      announceB2: num(d.announceB2),
-      announceB2PlayerId: d.announceB2PlayerId || "",
-      announceA,
-      announceB,
-      beloteTeam: d.beloteTeam || "NONE",
-      shufflerPlayerId: shuffler.playerId,
-      shufflerName: shuffler.name,
-    };
-
-    if (match.editingHandIdx) {
-      const existingHand = (match.hands || []).find((h) => h.idx === match.editingHandIdx);
-      if (!existingHand) return;
-
-      await saveHandToSupabase(match.id, {
-        ...existingHand,
-        idx: match.editingHandIdx,
-        draftSnapshot: snap,
-        scoreA: res.scoreA,
-        scoreB: res.scoreB,
-        bidderSucceeded: res.bidderSucceeded,
-        editedAt: Date.now(),
+      const res = computeFastCoincheScore({
+        bidder: d.bidder,
+        bid: bidVal,
+        coincheLevel: d.coincheLevel || "NONE",
+        capot: capotFlag,
+        bidderTrickPoints: trickVal,
+        announceA,
+        announceB,
+        beloteTeam: d.beloteTeam || "NONE",
       });
-    } else {
+
+      const snap = {
+        bidder: d.bidder,
+        bid: bidVal,
+        suit: d.suit || "S",
+        coincheLevel: d.coincheLevel || "NONE",
+        capot: capotFlag,
+        bidderTrickPoints: trickVal,
+        nonBidderTrickPoints:
+          d.trickSource === "NON"
+            ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
+            : clamp(162 - trickVal, 0, 162),
+        trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
+        announceA1: num(d.announceA1),
+        announceA1PlayerId: d.announceA1PlayerId || "",
+        announceA1PlayerName: playersA.find((p) => p.id === d.announceA1PlayerId)?.name || "",
+        announceA2: num(d.announceA2),
+        announceA2PlayerId: d.announceA2PlayerId || "",
+        announceA2PlayerName: playersA.find((p) => p.id === d.announceA2PlayerId)?.name || "",
+        announceB1: num(d.announceB1),
+        announceB1PlayerId: d.announceB1PlayerId || "",
+        announceB1PlayerName: playersB.find((p) => p.id === d.announceB1PlayerId)?.name || "",
+        announceB2: num(d.announceB2),
+        announceB2PlayerId: d.announceB2PlayerId || "",
+        announceB2PlayerName: playersB.find((p) => p.id === d.announceB2PlayerId)?.name || "",
+        announceA,
+        announceB,
+        beloteTeam: d.beloteTeam || "NONE",
+        shufflerPlayerId: shuffler.playerId,
+        shufflerName: shuffler.name,
+      };
+
+      if (m.editingHandIdx) {
+        return recomputeMatch({
+          ...m,
+          hands: (m.hands || []).map((h) =>
+            h.idx !== m.editingHandIdx
+              ? h
+              : {
+                  ...h,
+                  draftSnapshot: snap,
+                  scoreA: res.scoreA,
+                  scoreB: res.scoreB,
+                  bidderSucceeded: res.bidderSucceeded,
+                  editedAt: Date.now(),
+                }
+          ),
+          fastDraft: defaultFastDraft(),
+          editingHandIdx: null,
+        });
+      }
+
+      if (recomputeMatch(m).completed) return recomputeMatch(m);
+
       const nextHand = {
-        idx: (match.hands?.length || 0) + 1,
+        idx: (m.hands?.length || 0) + 1,
         createdAt: Date.now(),
         draftSnapshot: snap,
         scoreA: res.scoreA,
         scoreB: res.scoreB,
         bidderSucceeded: res.bidderSucceeded,
       };
-      await saveHandToSupabase(match.id, nextHand);
-    }
 
-    await refreshFromSupabase();
-
-    const refreshed = await loadMatchesFromSupabase();
-    const row = refreshed.find((r) => r.id === match.id);
-
-    const updatedMatch = recomputeMatch(
-      normalizeLoadedMatch({
-        id: row?.id || match.id,
-        code: row?.code || match.code,
-        tableName: row?.table_name || match.tableName,
-        label: row?.label || match.label,
-        teamAId: row?.team_a_id || match.teamAId,
-        teamBId: row?.team_b_id || match.teamBId,
-        teamAName: row?.team_a_name || match.teamAName,
-        teamBName: row?.team_b_name || match.teamBName,
-        teamAPlayers: row?.team_a_players || match.teamAPlayers || [],
-        teamBPlayers: row?.team_b_players || match.teamBPlayers || [],
-        totalA: row?.total_a || 0,
-        totalB: row?.total_b || 0,
-        winnerId: row?.winner_id || null,
-        completed: !!row?.completed,
-        forcedComplete: !!row?.forced_complete,
-        tableOrderPlayerIds: row?.table_order_player_ids || match.tableOrderPlayerIds || [],
-        firstShufflerPlayerId: row?.first_shuffler_player_id || match.firstShufflerPlayerId || "",
-        hands: [],
+      return recomputeMatch({
+        ...m,
+        hands: [...(m.hands || []), nextHand],
         fastDraft: defaultFastDraft(),
-        editingHandIdx: null,
-      })
-    );
-
-    await saveMatchToSupabase({
-      ...updatedMatch,
-      fastDraft: defaultFastDraft(),
-      editingHandIdx: null,
+      });
     });
-    await refreshFromSupabase();
+
+    const nextMatch = nextMatches.find((m) => m.id === matchId);
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
   }
 
   const clearMatchHands = async (matchId) => {
-    const match = matches.find((m) => m.id === matchId);
-    if (!match) return;
-
-    await clearHandsFromSupabase(matchId);
-
-    const reset = recomputeMatch({
-      ...match,
-      hands: [],
-      totalA: 0,
-      totalB: 0,
-      winnerId: null,
-      completed: false,
-      forcedComplete: false,
-      editingHandIdx: null,
-      fastDraft: defaultFastDraft(),
-      lastUpdatedAt: Date.now(),
-    });
-
-    await saveMatchToSupabase(reset);
-    await refreshFromSupabase();
+    const nextMatches = matches.map((m) =>
+      m.id === matchId
+        ? recomputeMatch({
+            ...m,
+            hands: [],
+            forcedComplete: false,
+            editingHandIdx: null,
+            fastDraft: defaultFastDraft(),
+          })
+        : m
+    );
+    const nextMatch = nextMatches.find((m) => m.id === matchId);
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
   };
 
   const scoreboardRows = useMemo(() => {
-    const byId = new Map();
-
-    const touchTeam = (id, name) => {
-      const key = id || name || uid("anonteam");
-      if (!byId.has(key)) {
-        byId.set(key, {
-          teamId: key,
-          name: name || "Team",
-          matchesPlayed: 0,
-          wins: 0,
-          losses: 0,
-          pointsFor: 0,
-          pointsAgainst: 0,
-        });
-      }
-      return byId.get(key);
-    };
+    const rows = teams.map((t) => ({
+      teamId: t.id,
+      name: t.name,
+      matchesPlayed: 0,
+      wins: 0,
+      losses: 0,
+      pointsFor: 0,
+      pointsAgainst: 0,
+    }));
+    const byId = new Map(rows.map((r) => [r.teamId, r]));
 
     for (const m of matches) {
       if (!m.teamAId || !m.teamBId) continue;
-      const a = touchTeam(m.teamAId, getTeamNameForMatch(m, "A", teamById));
-      const b = touchTeam(m.teamBId, getTeamNameForMatch(m, "B", teamById));
+      if (!byId.has(m.teamAId)) {
+        byId.set(m.teamAId, { teamId: m.teamAId, name: teamById.get(m.teamAId)?.name || "Team A", matchesPlayed: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0 });
+      }
+      if (!byId.has(m.teamBId)) {
+        byId.set(m.teamBId, { teamId: m.teamBId, name: teamById.get(m.teamBId)?.name || "Team B", matchesPlayed: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0 });
+      }
+      const a = byId.get(m.teamAId);
+      const b = byId.get(m.teamBId);
 
       a.pointsFor += Number(m.totalA) || 0;
       a.pointsAgainst += Number(m.totalB) || 0;
@@ -1262,7 +1365,6 @@ export default function App() {
         a.matchesPlayed += 1;
         b.matchesPlayed += 1;
       }
-
       if (m.winnerId === m.teamAId) {
         a.wins += 1;
         b.losses += 1;
@@ -1272,7 +1374,7 @@ export default function App() {
       }
     }
 
-    return [...byId.values()].sort((x, y) => {
+    return Array.from(byId.values()).sort((x, y) => {
       if (y.wins !== x.wins) return y.wins - x.wins;
       const dx = x.pointsFor - x.pointsAgainst;
       const dy = y.pointsFor - y.pointsAgainst;
@@ -1280,12 +1382,12 @@ export default function App() {
       if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
       return x.name.localeCompare(y.name);
     });
-  }, [matches, teamById]);
+  }, [teams, matches, teamById]);
 
   const funStats = useMemo(() => {
     const completed = matches.filter((m) => m.completed && m.teamAId && m.teamBId);
     const labelFor = (m) =>
-      `${getTeamNameForMatch(m, "A", teamById)} vs ${getTeamNameForMatch(m, "B", teamById)} (${m.label})`;
+      `${teamById.get(m.teamAId)?.name ?? "Team A"} vs ${teamById.get(m.teamBId)?.name ?? "Team B"} (${m.label})`;
 
     let biggestBlowout = { diff: 0, label: "—" };
     let closest = { diff: Infinity, label: "—" };
@@ -1331,20 +1433,12 @@ export default function App() {
 
     let perfectDefense = { name: "—", count: 0 };
     for (const [tid, count] of defenseCounts.entries()) {
-      const refMatch = matches.find((m) => m.teamAId === tid || m.teamBId === tid);
-      const name =
-        refMatch?.teamAId === tid
-          ? getTeamNameForMatch(refMatch, "A", teamById)
-          : refMatch
-          ? getTeamNameForMatch(refMatch, "B", teamById)
-          : "—";
-      if (count > perfectDefense.count) perfectDefense = { name, count };
+      if (count > perfectDefense.count) perfectDefense = { name: teamById.get(tid)?.name ?? "—", count };
     }
 
     const teamFun = new Map();
     const announceCountByPlayer = new Map();
     const announceTotalByPlayer = new Map();
-
     const bump = (tid, key, n = 1) => {
       if (!tid) return;
       const cur = teamFun.get(tid) || { coinches: 0, surcoinches: 0, capots: 0, belotes: 0 };
@@ -1363,10 +1457,10 @@ export default function App() {
         if (d.beloteTeam === "B") bump(m.teamBId, "belotes");
 
         [
-          [d.announceA1PlayerId, d.announceA1, d.announceA1PlayerName],
-          [d.announceA2PlayerId, d.announceA2, d.announceA2PlayerName],
-          [d.announceB1PlayerId, d.announceB1, d.announceB1PlayerName],
-          [d.announceB2PlayerId, d.announceB2, d.announceB2PlayerName],
+          [d.announceA1PlayerId, d.announceA1],
+          [d.announceA2PlayerId, d.announceA2],
+          [d.announceB1PlayerId, d.announceB1],
+          [d.announceB2PlayerId, d.announceB2],
         ].forEach(([pid, val]) => {
           const pts = Number(val) || 0;
           if (!pid || pts <= 0) return;
@@ -1382,53 +1476,13 @@ export default function App() {
         const v = obj[key] || 0;
         if (!best || v > best.v) best = { tid, v };
       }
-      if (!best || best.v === 0) return { name: "—", v: 0 };
-      const refMatch = matches.find((m) => m.teamAId === best.tid || m.teamBId === best.tid);
-      const name =
-        refMatch?.teamAId === best.tid
-          ? getTeamNameForMatch(refMatch, "A", teamById)
-          : refMatch
-          ? getTeamNameForMatch(refMatch, "B", teamById)
-          : "—";
-      return { name, v: best.v };
+      return !best || best.v === 0 ? { name: "—", v: 0 } : { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
     };
 
     let mostAnnounces = { name: "—", v: 0 };
     let highestAnnounces = { name: "—", v: 0 };
-
-    for (const [pid, v] of announceCountByPlayer.entries()) {
-      const snapName =
-        matches
-          .flatMap((m) => m.hands || [])
-          .flatMap((h) => {
-            const d = h.draftSnapshot || {};
-            return [
-              [d.announceA1PlayerId, d.announceA1PlayerName],
-              [d.announceA2PlayerId, d.announceA2PlayerName],
-              [d.announceB1PlayerId, d.announceB1PlayerName],
-              [d.announceB2PlayerId, d.announceB2PlayerName],
-            ];
-          })
-          .find(([id]) => id === pid)?.[1] || playerById.get(pid)?.name || "—";
-      if (v > mostAnnounces.v) mostAnnounces = { name: snapName, v };
-    }
-
-    for (const [pid, v] of announceTotalByPlayer.entries()) {
-      const snapName =
-        matches
-          .flatMap((m) => m.hands || [])
-          .flatMap((h) => {
-            const d = h.draftSnapshot || {};
-            return [
-              [d.announceA1PlayerId, d.announceA1PlayerName],
-              [d.announceA2PlayerId, d.announceA2PlayerName],
-              [d.announceB1PlayerId, d.announceB1PlayerName],
-              [d.announceB2PlayerId, d.announceB2PlayerName],
-            ];
-          })
-          .find(([id]) => id === pid)?.[1] || playerById.get(pid)?.name || "—";
-      if (v > highestAnnounces.v) highestAnnounces = { name: snapName, v };
-    }
+    for (const [pid, v] of announceCountByPlayer.entries()) if (v > mostAnnounces.v) mostAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
+    for (const [pid, v] of announceTotalByPlayer.entries()) if (v > highestAnnounces.v) highestAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
 
     return {
       biggestBlowout,
@@ -1473,7 +1527,7 @@ export default function App() {
       <a href="#/public" style={{ ...styles.tag, textDecoration: "none" }}>
         Public View
       </a>
-      <span style={styles.tag}>Live: Supabase</span>
+      <span style={styles.tag}>{syncStatus}</span>
     </div>
   );
 
@@ -1482,9 +1536,7 @@ export default function App() {
   ========================= */
 
   if (path === "/public") {
-    const liveMatches = matches
-      .filter((m) => m.teamAId && m.teamBId && !m.completed)
-      .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
+    const liveMatches = matches.filter((m) => m.teamAId && m.teamBId && !m.completed).sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
 
     return (
       <div style={styles.page}>
@@ -1515,7 +1567,7 @@ export default function App() {
 
           <Section title="Table Entry Links">
             <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
-              Each table uses their own link to enter hands and scores.
+              Each table uses their own link to enter hands/scores.
             </div>
             <div style={styles.grid3}>
               {tableLinks.map((t) => (
@@ -1631,6 +1683,9 @@ export default function App() {
           <div style={styles.small}>
             Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span>
           </div>
+          <div style={{ marginTop: 8, ...styles.small }}>
+            Sync: <span style={{ color: "#e5e7eb" }}>{syncStatus}</span>
+          </div>
         </Section>
 
         <Section
@@ -1640,33 +1695,29 @@ export default function App() {
           right={
             <div style={styles.row}>
               <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
-                <input
-                  type="checkbox"
-                  checked={avoidSameTeams}
-                  onChange={(e) => setLocalField(setAvoidSameTeams, "avoidSameTeams", e.target.checked)}
-                />
+                <input type="checkbox" checked={avoidSameTeams} onChange={(e) => saveField(setAvoidSameTeams, "avoidSameTeams", e.target.checked)} />
                 Avoid repeating pairs
               </label>
 
               <button
+                style={styles.btnSecondary}
+                onClick={() => {
+                  void refreshFromSupabase();
+                }}
+              >
+                Refresh Live Data
+              </button>
+
+              <button
                 style={styles.btnDanger}
-                onClick={async () => {
-                  if (!confirm("Full reset? This clears local players/teams and all live matches/hands.")) return;
+                onClick={() => {
+                  if (!confirm("Full reset? This clears local setup. Supabase matches remain until removed individually.")) return;
                   setAppName("Coinche Scorekeeper");
                   setPlayers([]);
                   setTeams([]);
                   setPairHistory([]);
-                  persistLocal({
-                    appName: "Coinche Scorekeeper",
-                    players: [],
-                    teams: [],
-                    pairHistory: [],
-                  });
-
-                  for (const m of matches) {
-                    await deleteMatchFromSupabase(m.id);
-                  }
-                  await refreshFromSupabase();
+                  setMatches([]);
+                  persistNow({ appName: "Coinche Scorekeeper", players: [], teams: [], pairHistory: [], matches: [] });
                 }}
               >
                 Full Reset
@@ -1676,17 +1727,13 @@ export default function App() {
         >
           <div style={styles.grid3}>
             <InfoCard title="App name">
-              <input
-                style={styles.input("100%")}
-                value={appName}
-                onChange={(e) => setLocalField(setAppName, "appName", e.target.value)}
-              />
+              <input style={styles.input("100%")} value={appName} onChange={(e) => saveField(setAppName, "appName", e.target.value)} />
             </InfoCard>
             <InfoCard title="Target score">
               <div style={{ fontWeight: 950, fontSize: 18 }}>{TARGET_SCORE}</div>
               <div style={styles.small}>Match ends immediately at {TARGET_SCORE}+.</div>
             </InfoCard>
-            <InfoCard title="Live backend">
+            <InfoCard title="Live storage">
               <div style={{ fontWeight: 900, fontSize: 12, color: "#cbd5e1" }}>Supabase realtime</div>
             </InfoCard>
           </div>
@@ -1824,9 +1871,7 @@ export default function App() {
         </Section>
 
         <Section title="Table Links (share to each table)">
-          <div style={styles.small}>
-            Each match has a unique code and link. Teams should open their match link to enter hands.
-          </div>
+          <div style={styles.small}>Each match has a unique code + link. Teams should open their match link to enter hands.</div>
           <div style={{ marginTop: 10, ...styles.grid3 }}>
             {tableLinks.map((t) => (
               <div key={t.code} style={styles.card}>
@@ -2080,8 +2125,8 @@ function ScoreCard({ name, score, pct, winner, leader, variant = "A", bigTotals 
 }
 
 function LiveMatchCard({ match, teamById, onOpen }) {
-  const ta = getTeamNameForMatch(match, "A", teamById);
-  const tb = getTeamNameForMatch(match, "B", teamById);
+  const ta = teamById.get(match.teamAId)?.name ?? "Team A";
+  const tb = teamById.get(match.teamBId)?.name ?? "Team B";
   const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
   const pctB = Math.min(100, Math.round(((match.totalB || 0) / TARGET_SCORE) * 100));
 
@@ -2118,17 +2163,7 @@ function LiveMatchCard({ match, teamById, onOpen }) {
   );
 }
 
-function TeamCard({
-  team,
-  idx,
-  players,
-  usedPlayerIds,
-  playerById,
-  onToggleLock,
-  onRemove,
-  onRename,
-  onSetPlayer,
-}) {
+function TeamCard({ team, idx, players, usedPlayerIds, playerById, onToggleLock, onRemove, onRename, onSetPlayer }) {
   const selectOptions = () =>
     players.map((p) => {
       const taken = usedPlayerIds.has(p.id) && !(team.playerIds || []).includes(p.id);
@@ -2289,7 +2324,9 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
           <div style={{ fontWeight: 950 }}>
             Scan cards → compute trick points <span style={{ color: "#94a3b8", fontWeight: 800 }}>(Trump: <SuitIcon suit={trumpSuit || "S"} />)</span>
           </div>
-          <button style={styles.btnSecondary} onClick={onClose}>Close</button>
+          <button style={styles.btnSecondary} onClick={onClose}>
+            Close
+          </button>
         </div>
 
         <div style={{ padding: 12, display: "grid", gridTemplateColumns: "1fr 340px", gap: 12 }}>
@@ -2299,23 +2336,26 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
                 <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 8 }}>
                   Tip: lay cards flat, avoid glare, keep all cards visible. Supports scans from 4 to 32 cards.
                 </div>
-                <video
-                  ref={videoRef}
-                  playsInline
-                  muted
-                  style={{ width: "100%", borderRadius: 14, background: "rgba(0,0,0,0.35)", maxHeight: "62vh", objectFit: "cover" }}
-                />
+                <video ref={videoRef} playsInline muted style={{ width: "100%", borderRadius: 14, background: "rgba(0,0,0,0.35)", maxHeight: "62vh", objectFit: "cover" }} />
                 <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button style={styles.btnPrimary} onClick={captureFrame} disabled={!!err}>Capture Photo</button>
-                  <button style={styles.btnSecondary} onClick={onClose}>Cancel</button>
+                  <button style={styles.btnPrimary} onClick={captureFrame} disabled={!!err}>
+                    Capture Photo
+                  </button>
+                  <button style={styles.btnSecondary} onClick={onClose}>
+                    Cancel
+                  </button>
                 </div>
               </>
             ) : (
               <>
                 <img src={captured} alt="Captured" style={{ width: "100%", borderRadius: 14, maxHeight: "62vh", objectFit: "contain", background: "rgba(0,0,0,0.25)" }} />
                 <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button style={styles.btnSecondary} onClick={() => setCaptured(null)} disabled={busy}>Retake</button>
-                  <button style={styles.btnPrimary} onClick={submitToScan} disabled={busy}>{busy ? "Scanning…" : "Use Photo & Calculate"}</button>
+                  <button style={styles.btnSecondary} onClick={() => setCaptured(null)} disabled={busy}>
+                    Retake
+                  </button>
+                  <button style={styles.btnPrimary} onClick={submitToScan} disabled={busy}>
+                    {busy ? "Scanning…" : "Use Photo & Calculate"}
+                  </button>
                 </div>
               </>
             )}
@@ -2361,7 +2401,9 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
                   {Array.isArray(result.warnings) && result.warnings.length ? (
                     <div style={{ marginTop: 8 }}>
                       {result.warnings.map((w, i) => (
-                        <div key={i} style={{ color: "#fbbf24", fontWeight: 900, fontSize: 12 }}>⚠ {w}</div>
+                        <div key={i} style={{ color: "#fbbf24", fontWeight: 900, fontSize: 12 }}>
+                          ⚠ {w}
+                        </div>
                       ))}
                     </div>
                   ) : null}
@@ -2376,15 +2418,15 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
                   ) : null}
 
                   <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    <button style={styles.btnPrimary} onClick={applyDetectedPoints}>Apply Points</button>
+                    <button style={styles.btnPrimary} onClick={applyDetectedPoints}>
+                      Apply Points
+                    </button>
                   </div>
                 </>
               )}
             </div>
 
-            <div style={{ marginTop: 12, ...styles.small }}>
-              Best results come from bright light, no glare, and all cards fully visible.
-            </div>
+            <div style={{ marginTop: 12, ...styles.small }}>Best results come from bright light, no glare, and all cards fully visible.</div>
           </div>
         </div>
       </div>
@@ -2423,8 +2465,12 @@ function CollapsibleMatchCard({
           {match.tableName} • {match.label} <span style={styles.small}>• Code {match.code}</span>
         </div>
         <div style={styles.row}>
-          <button type="button" style={styles.btnSecondary} onClick={onOpenTable}>Open Table</button>
-          <button type="button" style={styles.btnGhost} onClick={() => setCollapsed((v) => !v)}>{collapsed ? "Expand" : "Collapse"}</button>
+          <button type="button" style={styles.btnSecondary} onClick={onOpenTable}>
+            Open Table
+          </button>
+          <button type="button" style={styles.btnGhost} onClick={() => setCollapsed((v) => !v)}>
+            {collapsed ? "Expand" : "Collapse"}
+          </button>
         </div>
       </div>
 
@@ -2441,7 +2487,11 @@ function CollapsibleMatchCard({
             <div style={styles.small}>Team {i === 0 ? "A" : "B"}</div>
             <select style={styles.select("100%")} value={match[side] || ""} onChange={(e) => onSetMatchTeam(side, e.target.value)}>
               <option value="">— Select —</option>
-              {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
             </select>
           </div>
         ))}
@@ -2450,13 +2500,17 @@ function CollapsibleMatchCard({
       {!collapsed && (
         <>
           <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button style={styles.btnSecondary} onClick={onCopyLink}>Copy Link</button>
-            <button style={styles.btnDanger} onClick={onRemove}>Remove</button>
+            <button style={styles.btnSecondary} onClick={onCopyLink}>
+              Copy Link
+            </button>
+            <button style={styles.btnDanger} onClick={onRemove}>
+              Remove
+            </button>
           </div>
 
           <div style={{ marginTop: 10, ...styles.card }}>
             <div style={{ fontWeight: 950, color: match.completed ? "#34d399" : "#94a3b8" }}>
-              {match.completed ? `Completed • Winner: ${match.winnerId === match.teamAId ? getTeamNameForMatch(match, "A", teamById) : getTeamNameForMatch(match, "B", teamById)}` : "In progress"}
+              {match.completed ? `Completed • Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "In progress"}
             </div>
             <div style={styles.small}>Score: {match.totalA} – {match.totalB}</div>
           </div>
@@ -2498,10 +2552,12 @@ function TableMatchPanel({
   onFinishNow,
   bigTotals = false,
 }) {
-  const ta = getTeamNameForMatch(match, "A", teamById);
-  const tb = getTeamNameForMatch(match, "B", teamById);
-  const playersA = getMatchSidePlayers(match, "A", teamById, playerById);
-  const playersB = getMatchSidePlayers(match, "B", teamById, playerById);
+  const teamA = teamById.get(match.teamAId) || null;
+  const teamB = teamById.get(match.teamBId) || null;
+  const ta = teamA?.name ?? "TBD";
+  const tb = teamB?.name ?? "TBD";
+  const playersA = getTeamPlayers(teamA, playerById);
+  const playersB = getTeamPlayers(teamB, playerById);
   const allTablePlayers = [...playersA, ...playersB];
 
   const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
@@ -2546,15 +2602,12 @@ function TableMatchPanel({
     prevWinnerRef.current = winnerSide;
   }, [winnerSide]);
 
-  const suitLabel =
-    d.suit === "H" ? "Hearts" : d.suit === "D" ? "Diamonds" : d.suit === "C" ? "Clubs" : "Spades";
+  const suitLabel = d.suit === "H" ? "Hearts" : d.suit === "D" ? "Diamonds" : d.suit === "C" ? "Clubs" : "Spades";
   const fieldLabelStyle = { fontSize: 18, color: "#cbd5e1", fontWeight: 950, marginBottom: 6 };
   const handInput = { ...styles.input("100%"), padding: "8px 10px" };
   const handSelect = { ...styles.select("100%"), padding: "8px 10px" };
   const currentShuffler = getCurrentShufflerInfo(match, playerById);
-  const seatOrderNames = (match.tableOrderPlayerIds || [])
-    .map((pid) => playerById.get(pid)?.name || [...playersA, ...playersB].find((p) => p.id === pid)?.name)
-    .filter(Boolean);
+  const seatOrderNames = (match.tableOrderPlayerIds || []).map((pid) => playerById.get(pid)?.name).filter(Boolean);
 
   function setSeat(slotIdx, value) {
     const next = [...(match.tableOrderPlayerIds || [])];
@@ -2566,10 +2619,6 @@ function TableMatchPanel({
       tableOrderPlayerIds: unique,
       firstShufflerPlayerId: unique.includes(match.firstShufflerPlayerId) ? match.firstShufflerPlayerId : "",
     });
-  }
-
-  function playerName(pid, fallback) {
-    return playerById.get(pid)?.name || [...playersA, ...playersB].find((p) => p.id === pid)?.name || fallback;
   }
 
   function renderAnnounceBlock(side, label, teamPlayers) {
@@ -2597,7 +2646,11 @@ function TableMatchPanel({
                 <div style={styles.small}>Player</div>
                 <select style={handSelect} value={d[playerKey] || ""} onChange={(e) => onDraftPatch({ [playerKey]: e.target.value })} disabled={!setupReady}>
                   <option value="">— Select —</option>
-                  {teamPlayers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  {teamPlayers.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
                 </select>
               </div>
             </React.Fragment>
@@ -2610,17 +2663,16 @@ function TableMatchPanel({
     );
   }
 
-  const announceWinnerLabel =
-    d.announceWinner === "A" ? ta : d.announceWinner === "B" ? tb : "None / tie";
-
   return (
     <div style={{ ...styles.card, borderRadius: 18 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <div style={{ fontWeight: 950 }}>{match.tableName} • {match.label}</div>
+        <div style={{ fontWeight: 950 }}>
+          {match.tableName} • {match.label}
+        </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
-            {match.completed ? `Winner: ${winnerSide === "A" ? ta : tb}` : "Live"}
+            {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
           </div>
 
           {!match.completed && (
@@ -2642,7 +2694,11 @@ function TableMatchPanel({
       <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
           <div style={{ fontWeight: 950 }}>Table Setup</div>
-          {canPlay && <button type="button" style={styles.btnSecondary} onClick={() => setSetupCollapsed((v) => !v)}>{setupCollapsed ? "Expand Setup" : "Collapse Setup"}</button>}
+          {canPlay && (
+            <button type="button" style={styles.btnSecondary} onClick={() => setSetupCollapsed((v) => !v)}>
+              {setupCollapsed ? "Expand Setup" : "Collapse Setup"}
+            </button>
+          )}
         </div>
 
         {!canPlay ? (
@@ -2653,7 +2709,7 @@ function TableMatchPanel({
             {seatOrderNames.length === 4 && <div style={{ fontWeight: 900 }}>Order: <span style={{ color: "#e5e7eb" }}>{seatOrderNames.join(" → ")}</span></div>}
             {match.firstShufflerPlayerId && (
               <div style={{ marginTop: 6, ...styles.small }}>
-                First shuffler: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{playerName(match.firstShufflerPlayerId, "—")}</span>
+                First shuffler: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{playerById.get(match.firstShufflerPlayerId)?.name || "—"}</span>
               </div>
             )}
           </div>
@@ -2669,7 +2725,11 @@ function TableMatchPanel({
                     <option value="">— Select —</option>
                     {allTablePlayers.map((p) => {
                       const taken = (match.tableOrderPlayerIds || []).includes(p.id) && (match.tableOrderPlayerIds || [])[idx] !== p.id;
-                      return <option key={p.id} value={p.id} disabled={taken}>{p.name}</option>;
+                      return (
+                        <option key={p.id} value={p.id} disabled={taken}>
+                          {p.name}
+                        </option>
+                      );
                     })}
                   </select>
                 </div>
@@ -2686,8 +2746,12 @@ function TableMatchPanel({
               >
                 <option value="">— Select —</option>
                 {(match.tableOrderPlayerIds || []).map((pid) => {
-                  const name = playerName(pid, "");
-                  return name ? <option key={pid} value={pid}>{name}</option> : null;
+                  const p = playerById.get(pid);
+                  return p ? (
+                    <option key={pid} value={pid}>
+                      {p.name}
+                    </option>
+                  ) : null;
                 })}
               </select>
             </div>
@@ -2725,9 +2789,7 @@ function TableMatchPanel({
 
           <div style={{ marginTop: 8, fontSize: 28, fontWeight: 1000, lineHeight: 1.05 }}>
             <span style={{ color: "#e5e7eb" }}>Now shuffling: </span>
-            <span style={{ color: "#facc15", fontSize: 30 }}>
-              {setupReady && currentShuffler.name ? currentShuffler.name : "Complete table setup before starting"}
-            </span>
+            <span style={{ color: "#facc15", fontSize: 30 }}>{setupReady && currentShuffler.name ? currentShuffler.name : "Complete table setup before starting"}</span>
           </div>
         </div>
 
@@ -2774,19 +2836,6 @@ function TableMatchPanel({
         </div>
 
         <div style={styles.handRow3}>
-          <Field label="Announce winner" labelStyle={fieldLabelStyle}>
-            <select
-              style={handSelect}
-              value={d.announceWinner}
-              onChange={(e) => onDraftPatch({ announceWinner: e.target.value })}
-              disabled={!setupReady}
-            >
-              <option value="NONE">None / tie</option>
-              <option value="A">{ta}</option>
-              <option value="B">{tb}</option>
-            </select>
-          </Field>
-
           <Field label="Belote" labelStyle={fieldLabelStyle}>
             <select style={handSelect} value={d.beloteTeam} onChange={(e) => onDraftPatch({ beloteTeam: e.target.value })} disabled={!setupReady}>
               <option value="NONE">None</option>
@@ -2832,10 +2881,6 @@ function TableMatchPanel({
           </Field>
         </div>
 
-        <div style={{ marginTop: 8, ...styles.small }}>
-          Valid announce side for this hand: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{announceWinnerLabel}</span>
-        </div>
-
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
           <button style={{ ...styles.btnPrimary, ...(setupReady ? {} : styles.disabled) }} onClick={onAddHand} disabled={!setupReady}>
             {match.editingHandIdx ? `Save Changes (Hand ${match.editingHandIdx})` : "Add Hand"}
@@ -2864,16 +2909,13 @@ function TableMatchPanel({
             {(match.hands || []).map((h) => {
               const ds = h.draftSnapshot || {};
               const announceParts = [
-                [ds.announceA1PlayerId, ds.announceA1, ta],
-                [ds.announceA2PlayerId, ds.announceA2, ta],
-                [ds.announceB1PlayerId, ds.announceB1, tb],
-                [ds.announceB2PlayerId, ds.announceB2, tb],
+                [ds.announceA1PlayerName || playerById.get(ds.announceA1PlayerId)?.name || ta, ds.announceA1],
+                [ds.announceA2PlayerName || playerById.get(ds.announceA2PlayerId)?.name || ta, ds.announceA2],
+                [ds.announceB1PlayerName || playerById.get(ds.announceB1PlayerId)?.name || tb, ds.announceB1],
+                [ds.announceB2PlayerName || playerById.get(ds.announceB2PlayerId)?.name || tb, ds.announceB2],
               ]
                 .filter(([, pts]) => (Number(pts) || 0) > 0)
-                .map(([pid, pts, fallback]) => `${playerName(pid, fallback)}: ${pts}`);
-
-              const announceWinnerText =
-                ds.announceWinner === "A" ? ta : ds.announceWinner === "B" ? tb : "None / tie";
+                .map(([name, pts]) => `${name}: ${pts}`);
 
               return (
                 <div key={h.idx} style={styles.handRow}>
@@ -2887,14 +2929,11 @@ function TableMatchPanel({
                         : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162)}
                     </div>
 
-                    <div style={{ marginTop: 6, ...styles.small }}>
-                      Announces valid for: <span style={{ color: "#e5e7eb" }}>{announceWinnerText}</span>
-                      {ds.beloteTeam && ds.beloteTeam !== "NONE" ? (
-                        <>
-                          {" "}• Belote: <span style={{ color: "#e5e7eb" }}>{ds.beloteTeam === "A" ? ta : tb}</span>
-                        </>
-                      ) : null}
-                    </div>
+                    {ds.beloteTeam && ds.beloteTeam !== "NONE" ? (
+                      <div style={{ marginTop: 6, ...styles.small }}>
+                        Belote: <span style={{ color: "#e5e7eb" }}>{ds.beloteTeam === "A" ? ta : tb}</span>
+                      </div>
+                    ) : null}
 
                     {announceParts.length ? (
                       <div style={{ marginTop: 6, ...styles.small }}>
@@ -2910,8 +2949,12 @@ function TableMatchPanel({
                   </div>
 
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <span style={styles.tag}>+{h.scoreA} / +{h.scoreB}</span>
-                    <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>Edit</button>
+                    <span style={styles.tag}>
+                      +{h.scoreA} / +{h.scoreB}
+                    </span>
+                    <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>
+                      Edit
+                    </button>
                   </div>
                 </div>
               );
