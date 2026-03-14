@@ -719,6 +719,8 @@ export default function App() {
   const inputRef = useRef(null);
   const lastSavedAtRef = useRef(0);
   const isPushingRef = useRef(false);
+  const handSaveLocksRef = useRef(new Set());
+  const routeRefreshAttemptRef = useRef("");
 
   useEffect(() => ensureGlobalCSS(), []);
 
@@ -816,10 +818,12 @@ export default function App() {
 
       hydrateFromRemote(matchRows || [], handRows || []);
       setSyncStatus("Live: Supabase");
+      return { matchRows: matchRows || [], handRows: handRows || [] };
     } catch (err) {
       console.error("Refresh from Supabase failed:", err);
       setSyncStatus("Local fallback");
       maybeHydrateLatest();
+      return null;
     }
   };
 
@@ -827,16 +831,36 @@ export default function App() {
     isPushingRef.current = true;
     try {
       const matchRow = matchToRow(nextMatch, teamById, playerById, nextAppName);
-      const { error: matchErr } = await supabase.from("matches").upsert(matchRow);
+      const { error: matchErr } = await supabase.from("matches").upsert(matchRow, { onConflict: "id" });
       if (matchErr) throw matchErr;
 
-      const { error: deleteErr } = await supabase.from("hands").delete().eq("match_id", nextMatch.id);
-      if (deleteErr) throw deleteErr;
+      const nextHandRows = (nextMatch.hands || []).map((h) => handToRow(nextMatch, h));
 
-      if ((nextMatch.hands || []).length) {
-        const handRows = nextMatch.hands.map((h) => handToRow(nextMatch, h));
-        const { error: handsErr } = await supabase.from("hands").insert(handRows);
+      if (nextHandRows.length) {
+        const { error: handsErr } = await supabase
+          .from("hands")
+          .upsert(nextHandRows, { onConflict: "id" });
         if (handsErr) throw handsErr;
+      }
+
+      const { data: existingHands, error: existingErr } = await supabase
+        .from("hands")
+        .select("id, hand_idx")
+        .eq("match_id", nextMatch.id);
+
+      if (existingErr) throw existingErr;
+
+      const nextIds = new Set(nextHandRows.map((r) => r.id));
+      const staleIds = (existingHands || [])
+        .map((r) => r.id)
+        .filter((id) => !nextIds.has(id));
+
+      if (!nextHandRows.length) {
+        const { error: deleteAllErr } = await supabase.from("hands").delete().eq("match_id", nextMatch.id);
+        if (deleteAllErr) throw deleteAllErr;
+      } else if (staleIds.length) {
+        const { error: deleteStaleErr } = await supabase.from("hands").delete().in("id", staleIds);
+        if (deleteStaleErr) throw deleteStaleErr;
       }
 
       setSyncStatus("Live: Supabase");
@@ -932,7 +956,10 @@ export default function App() {
     const current = parseHashRoute();
     const wantedCode = (current.query.code || "").toUpperCase();
     if (!wantedCode) return;
-    if (matches.some((m) => (m.code || "").toUpperCase() === wantedCode)) setRoute(current);
+    if (matches.some((m) => (m.code || "").toUpperCase() === wantedCode)) {
+      setRoute(current);
+      routeRefreshAttemptRef.current = "";
+    }
   }, [matches]);
 
   useEffect(() => {
@@ -948,10 +975,56 @@ export default function App() {
     return () => clearTimeout(t);
   }, [route.path, route.query.code]);
 
+  // FIX: when table route opens before live data has hydrated, retry refresh a few times
+  useEffect(() => {
+    if (route.path !== "/table") return;
+    const wantedCode = (route.query.code || "").trim().toUpperCase();
+    if (!wantedCode) return;
+    if (matches.some((m) => (m.code || "").toUpperCase() === wantedCode)) return;
+
+    let cancelled = false;
+    let tries = 0;
+    const routeKey = `table:${wantedCode}`;
+    routeRefreshAttemptRef.current = routeKey;
+
+    const run = async () => {
+      while (!cancelled && tries < 8) {
+        tries += 1;
+        await refreshFromSupabase();
+
+        const latestRaw = localStorage.getItem(LS_KEY);
+        if (latestRaw) {
+          try {
+            const parsed = JSON.parse(latestRaw);
+            const found = (parsed.matches || []).some(
+              (m) => (m.code || "").toUpperCase() === wantedCode
+            );
+            if (found) {
+              if (!cancelled) setRoute(parseHashRoute());
+              return;
+            }
+          } catch {}
+        }
+
+        if (!cancelled) {
+          await new Promise((resolve) => setTimeout(resolve, tries < 3 ? 180 : 350));
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [route.path, route.query.code, matches]);
+
   function openTableRoute(code) {
+    const nextHash = `#/table?code=${code}`;
     persistNow();
     window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { code } }));
-    navigateHash(`#/table?code=${code}`);
+    setRoute({ path: "/table", query: { code } }); // FIX: optimistic route state so table UI starts immediately
+    navigateHash(nextHash);
   }
 
   const addPlayer = () => {
@@ -1187,132 +1260,142 @@ export default function App() {
   };
 
   async function addOrSaveHand(matchId) {
-    const nextMatches = matches.map((m) => {
-      if (m.id !== matchId) return m;
+    // FIX: guard against rapid double save / duplicate insert attempts
+    if (handSaveLocksRef.current.has(matchId)) return;
+    handSaveLocksRef.current.add(matchId);
 
-      const d = m.fastDraft || defaultFastDraft();
-      const canPlay = !!m.teamAId && !!m.teamBId;
-      const setupReady =
-        canPlay &&
-        Array.isArray(m.tableOrderPlayerIds) &&
-        m.tableOrderPlayerIds.length === 4 &&
-        !!m.firstShufflerPlayerId;
+    try {
+      const nextMatches = matches.map((m) => {
+        if (m.id !== matchId) return m;
 
-      if (!setupReady) return m;
+        const d = m.fastDraft || defaultFastDraft();
+        const canPlay = !!m.teamAId && !!m.teamBId;
+        const setupReady =
+          canPlay &&
+          Array.isArray(m.tableOrderPlayerIds) &&
+          m.tableOrderPlayerIds.length === 4 &&
+          !!m.firstShufflerPlayerId;
 
-      const bidVal = parseBidValue(d.bid);
-      if (bidVal === null) return m;
+        if (!setupReady) return m;
 
-      let trickVal = null;
-      const bidderTP = safeInt(d.bidderTrickPoints);
-      const nonBidderTP = safeInt(d.nonBidderTrickPoints);
+        const bidVal = parseBidValue(d.bid);
+        if (bidVal === null) return m;
 
-      if (d.trickSource === "BIDDER") {
-        if (bidderTP === null) return m;
-        trickVal = bidderTP;
-      } else if (d.trickSource === "NON") {
-        if (nonBidderTP === null) return m;
-        trickVal = 162 - nonBidderTP;
-      } else {
-        if (bidderTP !== null) trickVal = bidderTP;
-        else if (nonBidderTP !== null) trickVal = 162 - nonBidderTP;
-      }
+        let trickVal = null;
+        const bidderTP = safeInt(d.bidderTrickPoints);
+        const nonBidderTP = safeInt(d.nonBidderTrickPoints);
 
-      if (trickVal === null) return m;
-      trickVal = clamp(trickVal, 0, 162);
+        if (d.trickSource === "BIDDER") {
+          if (bidderTP === null) return m;
+          trickVal = bidderTP;
+        } else if (d.trickSource === "NON") {
+          if (nonBidderTP === null) return m;
+          trickVal = 162 - nonBidderTP;
+        } else {
+          if (bidderTP !== null) trickVal = bidderTP;
+          else if (nonBidderTP !== null) trickVal = 162 - nonBidderTP;
+        }
 
-      const announceA = sumAnnounces(d, "A");
-      const announceB = sumAnnounces(d, "B");
-      const shuffler = getCurrentShufflerInfo(m, playerById);
-      const playersA = getTeamPlayers(teamById.get(m.teamAId), playerById);
-      const playersB = getTeamPlayers(teamById.get(m.teamBId), playerById);
+        if (trickVal === null) return m;
+        trickVal = clamp(trickVal, 0, 162);
 
-      // Capot is manual only.
-      // Bid can be 250, but capot only scores as capot if the user explicitly checks Capot Made = Yes.
-      const capotFlag = Boolean(d.capot);
+        const announceA = sumAnnounces(d, "A");
+        const announceB = sumAnnounces(d, "B");
+        const shuffler = getCurrentShufflerInfo(m, playerById);
+        const playersA = getTeamPlayers(teamById.get(m.teamAId), playerById);
+        const playersB = getTeamPlayers(teamById.get(m.teamBId), playerById);
 
-      const res = computeFastCoincheScore({
-        bidder: d.bidder,
-        bid: bidVal,
-        coincheLevel: d.coincheLevel || "NONE",
-        capot: capotFlag,
-        bidderTrickPoints: trickVal,
-        announceA,
-        announceB,
-        beloteTeam: d.beloteTeam || "NONE",
-      });
+        const capotFlag = Boolean(d.capot);
 
-      const snap = {
-        bidder: d.bidder,
-        bid: bidVal,
-        suit: d.suit || "S",
-        coincheLevel: d.coincheLevel || "NONE",
-        capot: capotFlag,
-        bidderTrickPoints: trickVal,
-        nonBidderTrickPoints:
-          d.trickSource === "NON"
-            ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
-            : clamp(162 - trickVal, 0, 162),
-        trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
-        announceA1: num(d.announceA1),
-        announceA1PlayerId: d.announceA1PlayerId || "",
-        announceA1PlayerName: playersA.find((p) => p.id === d.announceA1PlayerId)?.name || "",
-        announceA2: num(d.announceA2),
-        announceA2PlayerId: d.announceA2PlayerId || "",
-        announceA2PlayerName: playersA.find((p) => p.id === d.announceA2PlayerId)?.name || "",
-        announceB1: num(d.announceB1),
-        announceB1PlayerId: d.announceB1PlayerId || "",
-        announceB1PlayerName: playersB.find((p) => p.id === d.announceB1PlayerId)?.name || "",
-        announceB2: num(d.announceB2),
-        announceB2PlayerId: d.announceB2PlayerId || "",
-        announceB2PlayerName: playersB.find((p) => p.id === d.announceB2PlayerId)?.name || "",
-        announceA,
-        announceB,
-        beloteTeam: d.beloteTeam || "NONE",
-        shufflerPlayerId: shuffler.playerId,
-        shufflerName: shuffler.name,
-      };
+        const res = computeFastCoincheScore({
+          bidder: d.bidder,
+          bid: bidVal,
+          coincheLevel: d.coincheLevel || "NONE",
+          capot: capotFlag,
+          bidderTrickPoints: trickVal,
+          announceA,
+          announceB,
+          beloteTeam: d.beloteTeam || "NONE",
+        });
 
-      if (m.editingHandIdx) {
+        const snap = {
+          bidder: d.bidder,
+          bid: bidVal,
+          suit: d.suit || "S",
+          coincheLevel: d.coincheLevel || "NONE",
+          capot: capotFlag,
+          bidderTrickPoints: trickVal,
+          nonBidderTrickPoints:
+            d.trickSource === "NON"
+              ? clamp(nonBidderTP ?? (162 - trickVal), 0, 162)
+              : clamp(162 - trickVal, 0, 162),
+          trickSource: d.trickSource || (nonBidderTP !== null ? "NON" : "BIDDER"),
+          announceA1: num(d.announceA1),
+          announceA1PlayerId: d.announceA1PlayerId || "",
+          announceA1PlayerName: playersA.find((p) => p.id === d.announceA1PlayerId)?.name || "",
+          announceA2: num(d.announceA2),
+          announceA2PlayerId: d.announceA2PlayerId || "",
+          announceA2PlayerName: playersA.find((p) => p.id === d.announceA2PlayerId)?.name || "",
+          announceB1: num(d.announceB1),
+          announceB1PlayerId: d.announceB1PlayerId || "",
+          announceB1PlayerName: playersB.find((p) => p.id === d.announceB1PlayerId)?.name || "",
+          announceB2: num(d.announceB2),
+          announceB2PlayerId: d.announceB2PlayerId || "",
+          announceB2PlayerName: playersB.find((p) => p.id === d.announceB2PlayerId)?.name || "",
+          announceA,
+          announceB,
+          beloteTeam: d.beloteTeam || "NONE",
+          shufflerPlayerId: shuffler.playerId,
+          shufflerName: shuffler.name,
+        };
+
+        if (m.editingHandIdx) {
+          return recomputeMatch({
+            ...m,
+            hands: (m.hands || []).map((h) =>
+              h.idx !== m.editingHandIdx
+                ? h
+                : {
+                    ...h,
+                    draftSnapshot: snap,
+                    scoreA: res.scoreA,
+                    scoreB: res.scoreB,
+                    bidderSucceeded: res.bidderSucceeded,
+                    editedAt: Date.now(),
+                  }
+            ),
+            fastDraft: defaultFastDraft(),
+            editingHandIdx: null,
+          });
+        }
+
+        if (recomputeMatch(m).completed) return recomputeMatch(m);
+
+        const nextIdx = (m.hands?.length || 0) + 1;
+
+        const nextHand = {
+          idx: nextIdx,
+          createdAt: Date.now(),
+          draftSnapshot: snap,
+          scoreA: res.scoreA,
+          scoreB: res.scoreB,
+          bidderSucceeded: res.bidderSucceeded,
+        };
+
         return recomputeMatch({
           ...m,
-          hands: (m.hands || []).map((h) =>
-            h.idx !== m.editingHandIdx
-              ? h
-              : {
-                  ...h,
-                  draftSnapshot: snap,
-                  scoreA: res.scoreA,
-                  scoreB: res.scoreB,
-                  bidderSucceeded: res.bidderSucceeded,
-                  editedAt: Date.now(),
-                }
-          ),
+          hands: [...(m.hands || []), nextHand],
           fastDraft: defaultFastDraft(),
-          editingHandIdx: null,
         });
-      }
-
-      if (recomputeMatch(m).completed) return recomputeMatch(m);
-
-      const nextHand = {
-        idx: (m.hands?.length || 0) + 1,
-        createdAt: Date.now(),
-        draftSnapshot: snap,
-        scoreA: res.scoreA,
-        scoreB: res.scoreB,
-        bidderSucceeded: res.bidderSucceeded,
-      };
-
-      return recomputeMatch({
-        ...m,
-        hands: [...(m.hands || []), nextHand],
-        fastDraft: defaultFastDraft(),
       });
-    });
 
-    const nextMatch = nextMatches.find((m) => m.id === matchId);
-    await syncMatchLocalAndRemote(nextMatch, nextMatches);
+      const nextMatch = nextMatches.find((m) => m.id === matchId);
+      await syncMatchLocalAndRemote(nextMatch, nextMatches);
+    } finally {
+      setTimeout(() => {
+        handSaveLocksRef.current.delete(matchId);
+      }, 250);
+    }
   }
 
   const clearMatchHands = async (matchId) => {
