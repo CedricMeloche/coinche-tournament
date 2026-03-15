@@ -949,10 +949,27 @@ export default function App() {
     const current = parseHashRoute();
     const wantedCode = (current.query.code || "").toUpperCase();
     if (!wantedCode) return;
-    if (matches.some((m) => (m.code || "").toUpperCase() === wantedCode)) {
+
+    const existsInState = matches.some((m) => (m.code || "").toUpperCase() === wantedCode);
+    if (existsInState) {
       setRoute(current);
       routeRefreshAttemptRef.current = "";
+      return;
     }
+
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const existsLocal = (parsed.matches || []).some(
+        (m) => (m.code || "").toUpperCase() === wantedCode
+      );
+      if (existsLocal) {
+        hydrateFromPayload(parsed);
+        setRoute(current);
+        routeRefreshAttemptRef.current = "";
+      }
+    } catch {}
   }, [matches]);
 
   useEffect(() => {
@@ -966,6 +983,18 @@ export default function App() {
     }
     const t = setTimeout(() => setTableMissingDelayDone(true), 350);
     return () => clearTimeout(t);
+  }, [route.path, route.query.code]);
+
+  useEffect(() => {
+    if (route.path !== "/table") return;
+    const code = (route.query.code || "").toUpperCase();
+    if (!code) return;
+    if (matches.some((m) => (m.code || "").toUpperCase() === code)) return;
+
+    const hydrated = maybeHydrateLatest();
+    if (hydrated) return;
+
+    void refreshFromSupabase();
   }, [route.path, route.query.code]);
 
   useEffect(() => {
@@ -1012,11 +1041,26 @@ export default function App() {
   }, [route.path, route.query.code, matches]);
 
   function openTableRoute(code) {
+    persistNow({ matches });
+    window.dispatchEvent(
+      new CustomEvent(APP_UPDATED_EVENT, {
+        detail: { code, savedAt: Date.now() },
+      })
+    );
+
+    const nextRoute = { path: "/table", query: { code } };
+    setRoute(nextRoute);
+
     const nextHash = `#/table?code=${code}`;
-    persistNow();
-    window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { code } }));
-    setRoute({ path: "/table", query: { code } });
-    navigateHash(nextHash);
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    } else {
+      try {
+        window.dispatchEvent(new HashChangeEvent("hashchange"));
+      } catch {
+        window.dispatchEvent(new Event("hashchange"));
+      }
+    }
   }
 
   const addPlayer = () => {
@@ -1200,7 +1244,6 @@ export default function App() {
     await syncMatchLocalAndRemote(nextMatch, nextMatches);
   };
 
-  // local-only draft updates to prevent typing glitch during realtime sync
   const updateDraft = (matchId, patch) => {
     const nextMatches = matches.map((m) =>
       m.id === matchId
@@ -1654,12 +1697,16 @@ export default function App() {
 
     try {
       const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      return (parsed.matches || []).find((m) => (m.code || "").toUpperCase() === code) || null;
-    } catch {
-      return null;
-    }
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const localMatch = (parsed.matches || []).find(
+          (m) => (m.code || "").toUpperCase() === code
+        );
+        if (localMatch) return normalizeLoadedMatch(localMatch);
+      }
+    } catch {}
+
+    return null;
   }, [query.code, matches]);
 
   const NavPills = ({ showAdmin = true }) => (
@@ -3122,30 +3169,50 @@ function TableMatchPanel({
           </Field>
         </div>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
-          <button style={{ ...styles.btnPrimary, ...(setupReady ? {} : styles.disabled) }} onClick={onAddHand} disabled={!setupReady}>
-            {match.editingHandIdx ? `Save Changes (Hand ${match.editingHandIdx})` : "Add Hand"}
-          </button>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr auto",
+            gap: 12,
+            marginTop: 12,
+            alignItems: "center",
+          }}
+        >
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <button style={{ ...styles.btnPrimary, ...(setupReady ? {} : styles.disabled) }} onClick={onAddHand} disabled={!setupReady}>
+              {match.editingHandIdx ? `Save Changes (Hand ${match.editingHandIdx})` : "Add Hand"}
+            </button>
 
-          {match.editingHandIdx && <button style={styles.btnSecondary} onClick={onCancelEdit}>Cancel Edit</button>}
+            {match.editingHandIdx && <button style={styles.btnSecondary} onClick={onCancelEdit}>Cancel Edit</button>}
 
-          <button style={{ ...styles.btnSecondary, ...(setupReady ? {} : styles.disabled) }} onClick={() => setScanOpen(true)} disabled={!setupReady}>
-            Calculate points with picture
-          </button>
+            <button style={{ ...styles.btnSecondary, ...(setupReady ? {} : styles.disabled) }} onClick={() => setScanOpen(true)} disabled={!setupReady}>
+              Calculate points with picture
+            </button>
 
-          <button
-            style={{ ...styles.btnSecondary, ...(setupReady && !match.editingHandIdx ? {} : styles.disabled) }}
-            onClick={onSkipHand}
-            disabled={!setupReady || !!match.editingHandIdx}
-          >
-            Skip Hand - No Points
-          </button>
+            <button
+              style={{ ...styles.btnSecondary, ...(setupReady && !match.editingHandIdx ? {} : styles.disabled) }}
+              onClick={onSkipHand}
+              disabled={!setupReady || !!match.editingHandIdx}
+            >
+              Skip Hand - No Points
+            </button>
 
-          <button style={styles.btnSecondary} onClick={onClearHands}>Clear Match Hands</button>
+            <span style={styles.small}>
+              Suit: <SuitIcon suit={d.suit || "S"} /> {suitLabel}
+            </span>
+          </div>
 
-          <span style={{ ...styles.small, marginLeft: "auto" }}>
-            Suit: <SuitIcon suit={d.suit || "S"} /> {suitLabel}
-          </span>
+          <div style={{ justifySelf: "end" }}>
+            <button
+              style={styles.btnSecondary}
+              onClick={() => {
+                if (!confirm("Clear Match Hands? This will remove all hands for this match.")) return;
+                onClearHands();
+              }}
+            >
+              Clear Match Hands
+            </button>
+          </div>
         </div>
       </div>
 
