@@ -138,9 +138,6 @@ function roundTrickPointsPair(rawBidderPoints) {
   const oppRaw = 162 - bidderRaw;
   const bidderOnes = bidderRaw % 10;
 
-  // Rules:
-  // - ending in 5 => round down
-  // - ending in 6 => both teams round up
   if (bidderOnes === 5) {
     return {
       bidderRounded: bidderRaw - 5,
@@ -172,15 +169,13 @@ function computeContractRequirement({ bid, bidder, announceA, announceB, beloteT
   const aAnn = Number(announceA) || 0;
   const bAnn = Number(announceB) || 0;
 
-  const bidderAnnounces = bidder === "A" ? aAnn : bAnn;
   const bidderHasBelote =
     (bidder === "A" && beloteTeam === "A") || (bidder === "B" && beloteTeam === "B");
 
   const floor = bidderHasBelote ? 71 : 81;
 
   if (bidVal === 80) return floor;
-
-  return Math.max(floor, bidVal - bidderAnnounces);
+  return Math.max(floor, bidVal - (bidder === "A" ? aAnn : bAnn));
 }
 
 function computeFastCoincheScore({
@@ -221,7 +216,6 @@ function computeFastCoincheScore({
   let scoreA = 0;
   let scoreB = 0;
 
-  // Successful capot only if user manually marks Capot Made = Yes
   if (capot) {
     const winnerTotal = 250 + bidVal + aAnn + bAnn + beloteA + beloteB;
     if (bidderIsA) {
@@ -317,6 +311,7 @@ const defaultFastDraft = () => ({
   bidderTrickPoints: "",
   nonBidderTrickPoints: "",
   trickSource: "",
+  skippedHand: false,
   beloteTeam: "NONE",
   announceA1: "",
   announceA1PlayerId: "",
@@ -389,7 +384,7 @@ const sumAnnounces = (d, side) => num(d?.[`announce${side}1`]) + num(d?.[`announ
 const getTeamPlayers = (team, playerById) =>
   (team?.playerIds || []).map((id) => playerById.get(id)).filter(Boolean);
 
-function getCurrentShufflerInfo(match, playerById) {
+function getCurrentDealerInfo(match, playerById) {
   const order = match.tableOrderPlayerIds || [];
   if (!order.length || !match.firstShufflerPlayerId) return { playerId: "", name: "" };
   const startIdx = order.findIndex((id) => id === match.firstShufflerPlayerId);
@@ -851,9 +846,7 @@ export default function App() {
       if (existingErr) throw existingErr;
 
       const nextIds = new Set(nextHandRows.map((r) => r.id));
-      const staleIds = (existingHands || [])
-        .map((r) => r.id)
-        .filter((id) => !nextIds.has(id));
+      const staleIds = (existingHands || []).map((r) => r.id).filter((id) => !nextIds.has(id));
 
       if (!nextHandRows.length) {
         const { error: deleteAllErr } = await supabase.from("hands").delete().eq("match_id", nextMatch.id);
@@ -975,7 +968,6 @@ export default function App() {
     return () => clearTimeout(t);
   }, [route.path, route.query.code]);
 
-  // FIX: when table route opens before live data has hydrated, retry refresh a few times
   useEffect(() => {
     if (route.path !== "/table") return;
     const wantedCode = (route.query.code || "").trim().toUpperCase();
@@ -1023,7 +1015,7 @@ export default function App() {
     const nextHash = `#/table?code=${code}`;
     persistNow();
     window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { code } }));
-    setRoute({ path: "/table", query: { code } }); // FIX: optimistic route state so table UI starts immediately
+    setRoute({ path: "/table", query: { code } });
     navigateHash(nextHash);
   }
 
@@ -1208,12 +1200,19 @@ export default function App() {
     await syncMatchLocalAndRemote(nextMatch, nextMatches);
   };
 
-  const updateDraft = async (matchId, patch) => {
+  // local-only draft updates to prevent typing glitch during realtime sync
+  const updateDraft = (matchId, patch) => {
     const nextMatches = matches.map((m) =>
-      m.id === matchId ? { ...m, fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch } } : m
+      m.id === matchId
+        ? {
+            ...m,
+            fastDraft: { ...(m.fastDraft || defaultFastDraft()), ...patch },
+            lastUpdatedAt: Date.now(),
+          }
+        : m
     );
-    const nextMatch = nextMatches.find((m) => m.id === matchId);
-    await syncMatchLocalAndRemote(nextMatch, nextMatches);
+    setMatches(nextMatches);
+    persistNow({ matches: nextMatches });
   };
 
   async function startEditHand(matchId, handIdx) {
@@ -1235,6 +1234,7 @@ export default function App() {
           bidderTrickPoints: String(d.bidderTrickPoints ?? ""),
           nonBidderTrickPoints: String(d.nonBidderTrickPoints ?? ""),
           trickSource: d.trickSource ?? "",
+          skippedHand: Boolean(d.skippedHand),
           announceA1: String(d.announceA1 ?? ""),
           announceA1PlayerId: d.announceA1PlayerId ?? "",
           announceA2: String(d.announceA2 ?? ""),
@@ -1260,7 +1260,6 @@ export default function App() {
   };
 
   async function addOrSaveHand(matchId) {
-    // FIX: guard against rapid double save / duplicate insert attempts
     if (handSaveLocksRef.current.has(matchId)) return;
     handSaveLocksRef.current.add(matchId);
 
@@ -1301,7 +1300,7 @@ export default function App() {
 
         const announceA = sumAnnounces(d, "A");
         const announceB = sumAnnounces(d, "B");
-        const shuffler = getCurrentShufflerInfo(m, playerById);
+        const dealer = getCurrentDealerInfo(m, playerById);
         const playersA = getTeamPlayers(teamById.get(m.teamAId), playerById);
         const playersB = getTeamPlayers(teamById.get(m.teamBId), playerById);
 
@@ -1324,6 +1323,7 @@ export default function App() {
           suit: d.suit || "S",
           coincheLevel: d.coincheLevel || "NONE",
           capot: capotFlag,
+          skippedHand: false,
           bidderTrickPoints: trickVal,
           nonBidderTrickPoints:
             d.trickSource === "NON"
@@ -1345,8 +1345,8 @@ export default function App() {
           announceA,
           announceB,
           beloteTeam: d.beloteTeam || "NONE",
-          shufflerPlayerId: shuffler.playerId,
-          shufflerName: shuffler.name,
+          shufflerPlayerId: dealer.playerId,
+          shufflerName: dealer.name,
         };
 
         if (m.editingHandIdx) {
@@ -1371,10 +1371,8 @@ export default function App() {
 
         if (recomputeMatch(m).completed) return recomputeMatch(m);
 
-        const nextIdx = (m.hands?.length || 0) + 1;
-
         const nextHand = {
-          idx: nextIdx,
+          idx: (m.hands?.length || 0) + 1,
           createdAt: Date.now(),
           draftSnapshot: snap,
           scoreA: res.scoreA,
@@ -1394,6 +1392,60 @@ export default function App() {
     } finally {
       setTimeout(() => {
         handSaveLocksRef.current.delete(matchId);
+      }, 250);
+    }
+  }
+
+  async function skipHandNoPoints(matchId) {
+    const lockKey = `${matchId}__skip`;
+    if (handSaveLocksRef.current.has(lockKey) || handSaveLocksRef.current.has(matchId)) return;
+    handSaveLocksRef.current.add(lockKey);
+
+    try {
+      const nextMatches = matches.map((m) => {
+        if (m.id !== matchId) return m;
+
+        const canPlay = !!m.teamAId && !!m.teamBId;
+        const setupReady =
+          canPlay &&
+          Array.isArray(m.tableOrderPlayerIds) &&
+          m.tableOrderPlayerIds.length === 4 &&
+          !!m.firstShufflerPlayerId;
+
+        if (!setupReady) return m;
+        if (recomputeMatch(m).completed) return recomputeMatch(m);
+
+        const dealer = getCurrentDealerInfo(m, playerById);
+
+        const nextHand = {
+          idx: (m.hands?.length || 0) + 1,
+          createdAt: Date.now(),
+          draftSnapshot: {
+            ...defaultFastDraft(),
+            bid: "SKIP",
+            trickSource: "SKIP",
+            skippedHand: true,
+            shufflerPlayerId: dealer.playerId,
+            shufflerName: dealer.name,
+          },
+          scoreA: 0,
+          scoreB: 0,
+          bidderSucceeded: false,
+        };
+
+        return recomputeMatch({
+          ...m,
+          hands: [...(m.hands || []), nextHand],
+          fastDraft: defaultFastDraft(),
+          editingHandIdx: null,
+        });
+      });
+
+      const nextMatch = nextMatches.find((m) => m.id === matchId);
+      await syncMatchLocalAndRemote(nextMatch, nextMatches);
+    } finally {
+      setTimeout(() => {
+        handSaveLocksRef.current.delete(lockKey);
       }, 250);
     }
   }
@@ -1710,6 +1762,7 @@ export default function App() {
                 onTableSetupPatch={(patch) => updateTableSetup(tableMatch.id, patch)}
                 onDraftPatch={(patch) => updateDraft(tableMatch.id, patch)}
                 onAddHand={() => addOrSaveHand(tableMatch.id)}
+                onSkipHand={() => skipHandNoPoints(tableMatch.id)}
                 onClearHands={() => clearMatchHands(tableMatch.id)}
                 onStartEditHand={(handIdx) => startEditHand(tableMatch.id, handIdx)}
                 onCancelEdit={() => cancelEditHand(tableMatch.id)}
@@ -1930,6 +1983,7 @@ export default function App() {
                   onTableSetupPatch={(patch) => updateTableSetup(m.id, patch)}
                   onDraftPatch={(patch) => updateDraft(m.id, patch)}
                   onAddHand={() => addOrSaveHand(m.id)}
+                  onSkipHand={() => skipHandNoPoints(m.id)}
                   onClearHands={() => clearMatchHands(m.id)}
                   onStartEditHand={(handIdx) => startEditHand(m.id, handIdx)}
                   onCancelEdit={() => cancelEditHand(m.id)}
@@ -2532,6 +2586,7 @@ function CollapsibleMatchCard({
   onTableSetupPatch,
   onDraftPatch,
   onAddHand,
+  onSkipHand,
   onClearHands,
   onStartEditHand,
   onCancelEdit,
@@ -2604,6 +2659,7 @@ function CollapsibleMatchCard({
               onTableSetupPatch={onTableSetupPatch}
               onDraftPatch={onDraftPatch}
               onAddHand={onAddHand}
+              onSkipHand={onSkipHand}
               onClearHands={onClearHands}
               onStartEditHand={onStartEditHand}
               onCancelEdit={onCancelEdit}
@@ -2623,6 +2679,7 @@ function TableMatchPanel({
   onTableSetupPatch,
   onDraftPatch,
   onAddHand,
+  onSkipHand,
   onClearHands,
   onStartEditHand,
   onCancelEdit,
@@ -2696,7 +2753,7 @@ function TableMatchPanel({
   const handInput = { ...styles.input("100%"), padding: "8px 10px" };
   const handSelect = { ...styles.select("100%"), padding: "8px 10px" };
 
-  const currentShuffler = getCurrentShufflerInfo(match, playerById);
+  const currentDealer = getCurrentDealerInfo(match, playerById);
   const seatOrderIds = match.tableOrderPlayerIds || [];
   const seatOrderPlayers = seatOrderIds
     .map((pid) => ({ id: pid, name: playerById.get(pid)?.name || "" }))
@@ -2818,13 +2875,13 @@ function TableMatchPanel({
             )}
             {match.firstShufflerPlayerId && (
               <div style={{ marginTop: 6, ...styles.small }}>
-                First shuffler: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{playerById.get(match.firstShufflerPlayerId)?.name || "—"}</span>
+                First dealer: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{playerById.get(match.firstShufflerPlayerId)?.name || "—"}</span>
               </div>
             )}
           </div>
         ) : (
           <>
-            <div style={{ ...styles.small, marginBottom: 10 }}>Choose the 4 players in table order, then select who shuffles first.</div>
+            <div style={{ ...styles.small, marginBottom: 10 }}>Choose the 4 players in table order, then select who deals first.</div>
 
             <div style={styles.grid4}>
               {[0, 1, 2, 3].map((idx) => (
@@ -2853,7 +2910,7 @@ function TableMatchPanel({
             </div>
 
             <div style={{ marginTop: 10, maxWidth: 320 }}>
-              <div style={fieldLabelStyle}>First player to shuffle</div>
+              <div style={fieldLabelStyle}>First player to deal</div>
               <select
                 style={handSelect}
                 value={match.firstShufflerPlayerId || ""}
@@ -2897,13 +2954,13 @@ function TableMatchPanel({
         </div>
 
         <div style={{ marginTop: 10, padding: 12, borderRadius: 16, background: "rgba(250,204,21,0.08)", border: "1px solid rgba(250,204,21,0.28)" }}>
-          <div style={{ fontSize: 20, fontWeight: 950, lineHeight: 1.1, color: "#e5e7eb" }}>Shuffle Order</div>
+          <div style={{ fontSize: 20, fontWeight: 950, lineHeight: 1.1, color: "#e5e7eb" }}>Dealing Order</div>
 
           <div style={{ marginTop: 6, fontSize: 24, fontWeight: 950, lineHeight: 1.05 }}>
             {seatOrderPlayers.length === 4 ? (
               seatOrderPlayers.map((p, idx) => (
                 <React.Fragment key={p.id}>
-                  <span style={{ color: p.id === currentShuffler.playerId ? "#facc15" : "#e5e7eb" }}>
+                  <span style={{ color: p.id === currentDealer.playerId ? "#facc15" : "#e5e7eb" }}>
                     {p.name}
                   </span>
                   {idx < seatOrderPlayers.length - 1 ? (
@@ -2917,9 +2974,9 @@ function TableMatchPanel({
           </div>
 
           <div style={{ marginTop: 8, fontSize: 24, fontWeight: 1000, lineHeight: 1.05 }}>
-            <span style={{ color: "#e5e7eb" }}>Now shuffling: </span>
+            <span style={{ color: "#e5e7eb" }}>Now dealing: </span>
             <span style={{ color: "#facc15", fontSize: 26 }}>
-              {setupReady && currentShuffler.name ? currentShuffler.name : "Complete table setup before starting"}
+              {setupReady && currentDealer.name ? currentDealer.name : "Complete table setup before starting"}
             </span>
           </div>
         </div>
@@ -3013,12 +3070,12 @@ function TableMatchPanel({
               onChange={(e) => {
                 const raw = e.target.value;
                 if (!raw.trim()) {
-                  onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "" });
+                  onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "", skippedHand: false });
                   return;
                 }
                 const n = safeInt(raw);
                 if (n === null) {
-                  onDraftPatch({ bidderTrickPoints: raw, trickSource: "BIDDER" });
+                  onDraftPatch({ bidderTrickPoints: raw, trickSource: "BIDDER", skippedHand: false });
                   return;
                 }
                 const v = clamp(n, 0, 162);
@@ -3026,6 +3083,7 @@ function TableMatchPanel({
                   bidderTrickPoints: String(v),
                   nonBidderTrickPoints: String(162 - v),
                   trickSource: "BIDDER",
+                  skippedHand: false,
                 });
               }}
               placeholder="ex: 81"
@@ -3041,12 +3099,12 @@ function TableMatchPanel({
               onChange={(e) => {
                 const raw = e.target.value;
                 if (!raw.trim()) {
-                  onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "" });
+                  onDraftPatch({ bidderTrickPoints: "", nonBidderTrickPoints: "", trickSource: "", skippedHand: false });
                   return;
                 }
                 const n = safeInt(raw);
                 if (n === null) {
-                  onDraftPatch({ nonBidderTrickPoints: raw, trickSource: "NON" });
+                  onDraftPatch({ nonBidderTrickPoints: raw, trickSource: "NON", skippedHand: false });
                   return;
                 }
                 const v = clamp(n, 0, 162);
@@ -3054,6 +3112,7 @@ function TableMatchPanel({
                   nonBidderTrickPoints: String(v),
                   bidderTrickPoints: String(162 - v),
                   trickSource: "NON",
+                  skippedHand: false,
                 });
               }}
               placeholder="ex: 81"
@@ -3072,6 +3131,14 @@ function TableMatchPanel({
 
           <button style={{ ...styles.btnSecondary, ...(setupReady ? {} : styles.disabled) }} onClick={() => setScanOpen(true)} disabled={!setupReady}>
             Calculate points with picture
+          </button>
+
+          <button
+            style={{ ...styles.btnSecondary, ...(setupReady && !match.editingHandIdx ? {} : styles.disabled) }}
+            onClick={onSkipHand}
+            disabled={!setupReady || !!match.editingHandIdx}
+          >
+            Skip Hand - No Points
           </button>
 
           <button style={styles.btnSecondary} onClick={onClearHands}>Clear Match Hands</button>
@@ -3104,11 +3171,17 @@ function TableMatchPanel({
                   <div style={{ minWidth: 260 }}>
                     <div style={{ fontWeight: 950 }}>Hand {h.idx}</div>
                     <div style={styles.small}>
-                      Bid {ds.bid} <SuitIcon suit={ds.suit || "S"} /> • Bidder {ds.bidder === "A" ? ta : tb} • {ds.coincheLevel}
-                      {ds.capot ? " • Capot Made" : ""} • Bidder tricks {ds.bidderTrickPoints} • Non-bidder tricks{" "}
-                      {ds.nonBidderTrickPoints !== "" && ds.nonBidderTrickPoints !== undefined
-                        ? ds.nonBidderTrickPoints
-                        : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162)}
+                      {ds.skippedHand ? (
+                        <>Skipped hand • No points awarded</>
+                      ) : (
+                        <>
+                          Bid {ds.bid} <SuitIcon suit={ds.suit || "S"} /> • Bidder {ds.bidder === "A" ? ta : tb} • {ds.coincheLevel}
+                          {ds.capot ? " • Capot Made" : ""} • Bidder tricks {ds.bidderTrickPoints} • Non-bidder tricks{" "}
+                          {ds.nonBidderTrickPoints !== "" && ds.nonBidderTrickPoints !== undefined
+                            ? ds.nonBidderTrickPoints
+                            : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162)}
+                        </>
+                      )}
                     </div>
 
                     {ds.beloteTeam && ds.beloteTeam !== "NONE" ? (
@@ -3125,7 +3198,7 @@ function TableMatchPanel({
 
                     {ds.shufflerName ? (
                       <div style={{ marginTop: 6, ...styles.small }}>
-                        Shuffler: <span style={{ color: "#e5e7eb" }}>{ds.shufflerName}</span>
+                        Dealer: <span style={{ color: "#e5e7eb" }}>{ds.shufflerName}</span>
                       </div>
                     ) : null}
                   </div>
@@ -3134,9 +3207,11 @@ function TableMatchPanel({
                     <span style={styles.tag}>
                       +{h.scoreA} / +{h.scoreB}
                     </span>
-                    <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>
-                      Edit
-                    </button>
+                    {!ds.skippedHand && (
+                      <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>
+                        Edit
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -3153,8 +3228,8 @@ function TableMatchPanel({
           const p = clamp(Number(points) || 0, 0, 162);
           onDraftPatch(
             pileSide === "BIDDER"
-              ? { bidderTrickPoints: String(p), nonBidderTrickPoints: String(162 - p), trickSource: "BIDDER" }
-              : { nonBidderTrickPoints: String(p), bidderTrickPoints: String(162 - p), trickSource: "NON" }
+              ? { bidderTrickPoints: String(p), nonBidderTrickPoints: String(162 - p), trickSource: "BIDDER", skippedHand: false }
+              : { nonBidderTrickPoints: String(p), bidderTrickPoints: String(162 - p), trickSource: "NON", skippedHand: false }
           );
         }}
       />
