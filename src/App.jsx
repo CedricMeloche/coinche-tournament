@@ -1720,6 +1720,9 @@ export default function App() {
         teamById.get(m.teamBId)?.name ?? "Team B"
       } (${m.label})`;
 
+    const handLabelFor = (m, h) =>
+      `${labelFor(m)} • Hand ${h.idx}`;
+
     let biggestBlowout = { diff: 0, label: "—" };
     let closest = { diff: Infinity, label: "—" };
     let bestComeback = { deficit: 0, label: "—" };
@@ -1727,6 +1730,49 @@ export default function App() {
     let momentumMonster = { swing: 0, label: "—" };
     let mostPointsGame = { points: 0, label: "—" };
     let leastPointsGame = { points: Infinity, label: "—" };
+
+    let highestScoringHand = { points: 0, label: "—" };
+    let lowestScoringHand = { points: Infinity, label: "—" };
+    let averageScorePerHand = { value: 0, label: "—" };
+    let bestSuccessfulBidRateTeam = { pct: 0, name: "—", made: 0, total: 0 };
+    let bestCoincheRateTeam = { pct: 0, name: "—", made: 0, total: 0 };
+
+    const defenseCounts = new Map();
+    const teamFun = new Map();
+    const announceCountByPlayer = new Map();
+    const announceTotalByPlayer = new Map();
+    const teamStatMap = new Map();
+    const playerCapotCounts = new Map();
+
+    const ensureTeamStats = (tid) => {
+      if (!tid) return null;
+      if (!teamStatMap.has(tid)) {
+        teamStatMap.set(tid, {
+          bidsMade: 0,
+          bidsWon: 0,
+          coinchesCalled: 0,
+          coinchesWon: 0,
+          capots: 0,
+          totalHandPoints: 0,
+          handsCount: 0,
+          longestWinStreak: 0,
+          currentWinStreak: 0,
+        });
+      }
+      return teamStatMap.get(tid);
+    };
+
+    const bumpFun = (tid, key, n = 1) => {
+      if (!tid) return;
+      const cur = teamFun.get(tid) || {
+        coinches: 0,
+        surcoinches: 0,
+        capots: 0,
+        belotes: 0,
+      };
+      cur[key] = (cur[key] || 0) + n;
+      teamFun.set(tid, cur);
+    };
 
     for (const m of completed) {
       const totalA = Number(m.totalA) || 0;
@@ -1767,6 +1813,103 @@ export default function App() {
           }
         }
       }
+
+      const teamAStats = ensureTeamStats(m.teamAId);
+      const teamBStats = ensureTeamStats(m.teamBId);
+
+      for (const h of m.hands || []) {
+        const d = h.draftSnapshot || {};
+        const handTotal = (Number(h.scoreA) || 0) + (Number(h.scoreB) || 0);
+
+        if (handTotal > highestScoringHand.points) {
+          highestScoringHand = { points: handTotal, label: handLabelFor(m, h) };
+        }
+
+        if (handTotal < lowestScoringHand.points) {
+          lowestScoringHand = { points: handTotal, label: handLabelFor(m, h) };
+        }
+
+        teamAStats.totalHandPoints += Number(h.scoreA) || 0;
+        teamAStats.handsCount += 1;
+        teamBStats.totalHandPoints += Number(h.scoreB) || 0;
+        teamBStats.handsCount += 1;
+
+        const handWinner =
+          (Number(h.scoreA) || 0) === (Number(h.scoreB) || 0)
+            ? null
+            : (Number(h.scoreA) || 0) > (Number(h.scoreB) || 0)
+            ? "A"
+            : "B";
+
+        if (handWinner === "A") {
+          teamAStats.currentWinStreak += 1;
+          teamAStats.longestWinStreak = Math.max(
+            teamAStats.longestWinStreak,
+            teamAStats.currentWinStreak
+          );
+          teamBStats.currentWinStreak = 0;
+        } else if (handWinner === "B") {
+          teamBStats.currentWinStreak += 1;
+          teamBStats.longestWinStreak = Math.max(
+            teamBStats.longestWinStreak,
+            teamBStats.currentWinStreak
+          );
+          teamAStats.currentWinStreak = 0;
+        } else {
+          teamAStats.currentWinStreak = 0;
+          teamBStats.currentWinStreak = 0;
+        }
+
+        const bidderTeamId = d.bidder === "A" ? m.teamAId : m.teamBId;
+        const bidderStats = ensureTeamStats(bidderTeamId);
+
+        if (!d.skippedHand && d.bid !== "SKIP") {
+          bidderStats.bidsMade += 1;
+          if (h.bidderSucceeded) bidderStats.bidsWon += 1;
+        }
+
+        if (d.coincheLevel === "COINCHE" || d.coincheLevel === "SURCOINCHE") {
+          bidderStats.coinchesCalled += 1;
+          if (h.bidderSucceeded) bidderStats.coinchesWon += 1;
+        }
+
+        if ((Number(h.scoreA) || 0) > 0 && (Number(h.scoreB) || 0) === 0) {
+          defenseCounts.set(m.teamAId, (defenseCounts.get(m.teamAId) || 0) + 1);
+        }
+        if ((Number(h.scoreB) || 0) > 0 && (Number(h.scoreA) || 0) === 0) {
+          defenseCounts.set(m.teamBId, (defenseCounts.get(m.teamBId) || 0) + 1);
+        }
+
+        if (d.coincheLevel === "COINCHE") bumpFun(bidderTeamId, "coinches");
+        if (d.coincheLevel === "SURCOINCHE") bumpFun(bidderTeamId, "surcoinches");
+        if (d.capot) {
+          bumpFun(bidderTeamId, "capots");
+          bidderStats.capots += 1;
+
+          const capotPlayers =
+            d.bidder === "A"
+              ? (teamById.get(m.teamAId)?.playerIds || [])
+              : (teamById.get(m.teamBId)?.playerIds || []);
+
+          capotPlayers.forEach((pid) => {
+            playerCapotCounts.set(pid, (playerCapotCounts.get(pid) || 0) + 1);
+          });
+        }
+        if (d.beloteTeam === "A") bumpFun(m.teamAId, "belotes");
+        if (d.beloteTeam === "B") bumpFun(m.teamBId, "belotes");
+
+        [
+          [d.announceA1PlayerId, d.announceA1],
+          [d.announceA2PlayerId, d.announceA2],
+          [d.announceB1PlayerId, d.announceB1],
+          [d.announceB2PlayerId, d.announceB2],
+        ].forEach(([pid, val]) => {
+          const pts = Number(val) || 0;
+          if (!pid || pts <= 0) return;
+          announceCountByPlayer.set(pid, (announceCountByPlayer.get(pid) || 0) + 1);
+          announceTotalByPlayer.set(pid, (announceTotalByPlayer.get(pid) || 0) + pts);
+        });
+      }
     }
 
     for (const m of matches.filter((x) => x.teamAId && x.teamBId)) {
@@ -1791,63 +1934,14 @@ export default function App() {
       leastPointsGame = { points: 0, label: "—" };
     }
 
-    const defenseCounts = new Map();
-    for (const m of matches.filter((x) => x.teamAId && x.teamBId)) {
-      for (const h of m.hands || []) {
-        if ((Number(h.scoreA) || 0) > 0 && (Number(h.scoreB) || 0) === 0) {
-          defenseCounts.set(m.teamAId, (defenseCounts.get(m.teamAId) || 0) + 1);
-        }
-        if ((Number(h.scoreB) || 0) > 0 && (Number(h.scoreA) || 0) === 0) {
-          defenseCounts.set(m.teamBId, (defenseCounts.get(m.teamBId) || 0) + 1);
-        }
-      }
+    if (!Number.isFinite(lowestScoringHand.points)) {
+      lowestScoringHand = { points: 0, label: "—" };
     }
 
     let perfectDefense = { name: "—", count: 0 };
     for (const [tid, count] of defenseCounts.entries()) {
       if (count > perfectDefense.count) {
         perfectDefense = { name: teamById.get(tid)?.name ?? "—", count };
-      }
-    }
-
-    const teamFun = new Map();
-    const announceCountByPlayer = new Map();
-    const announceTotalByPlayer = new Map();
-
-    const bump = (tid, key, n = 1) => {
-      if (!tid) return;
-      const cur = teamFun.get(tid) || {
-        coinches: 0,
-        surcoinches: 0,
-        capots: 0,
-        belotes: 0,
-      };
-      cur[key] = (cur[key] || 0) + n;
-      teamFun.set(tid, cur);
-    };
-
-    for (const m of completed) {
-      for (const h of m.hands || []) {
-        const d = h.draftSnapshot || {};
-        const bidderTeamId = d.bidder === "A" ? m.teamAId : m.teamBId;
-
-        if (d.coincheLevel === "COINCHE") bump(bidderTeamId, "coinches");
-        if (d.coincheLevel === "SURCOINCHE") bump(bidderTeamId, "surcoinches");
-        if (d.capot) bump(bidderTeamId, "capots");
-        if (d.beloteTeam === "A") bump(m.teamAId, "belotes");
-        if (d.beloteTeam === "B") bump(m.teamBId, "belotes");
-
-        [
-          [d.announceA1PlayerId, d.announceA1],
-          [d.announceA2PlayerId, d.announceA2],
-          [d.announceB1PlayerId, d.announceB1],
-          [d.announceB2PlayerId, d.announceB2],
-        ].forEach(([pid, val]) => {
-          const pts = Number(val) || 0;
-          if (!pid || pts <= 0) return;
-          announceCountByPlayer.set(pid, (announceCountByPlayer.get(pid) || 0) + 1);
-          announceTotalByPlayer.set(pid, (announceTotalByPlayer.get(pid) || 0) + pts);
-        });
       }
     }
 
@@ -1864,6 +1958,9 @@ export default function App() {
 
     let mostAnnounces = { name: "—", v: 0 };
     let highestAnnounces = { name: "—", v: 0 };
+    let longestHandWinStreak = { name: "—", streak: 0 };
+    let capotCountByTeam = { name: "—", v: 0 };
+    let capotCountByPlayer = { name: "—", v: 0 };
 
     for (const [pid, v] of announceCountByPlayer.entries()) {
       if (v > mostAnnounces.v) {
@@ -1877,6 +1974,74 @@ export default function App() {
       }
     }
 
+    for (const [tid, stats] of teamStatMap.entries()) {
+      const teamName = teamById.get(tid)?.name ?? "—";
+
+      const avg = stats.handsCount
+        ? Number((stats.totalHandPoints / stats.handsCount).toFixed(1))
+        : 0;
+
+      if (avg > averageScorePerHand.value) {
+        averageScorePerHand = { value: avg, label: teamName };
+      }
+
+      const bidPct = stats.bidsMade
+        ? Number(((stats.bidsWon / stats.bidsMade) * 100).toFixed(1))
+        : 0;
+
+      if (
+        stats.bidsMade > 0 &&
+        (bidPct > bestSuccessfulBidRateTeam.pct ||
+          (bidPct === bestSuccessfulBidRateTeam.pct &&
+            stats.bidsWon > bestSuccessfulBidRateTeam.made))
+      ) {
+        bestSuccessfulBidRateTeam = {
+          pct: bidPct,
+          name: teamName,
+          made: stats.bidsWon,
+          total: stats.bidsMade,
+        };
+      }
+
+      const coinchePct = stats.coinchesCalled
+        ? Number(((stats.coinchesWon / stats.coinchesCalled) * 100).toFixed(1))
+        : 0;
+
+      if (
+        stats.coinchesCalled > 0 &&
+        (coinchePct > bestCoincheRateTeam.pct ||
+          (coinchePct === bestCoincheRateTeam.pct &&
+            stats.coinchesWon > bestCoincheRateTeam.made))
+      ) {
+        bestCoincheRateTeam = {
+          pct: coinchePct,
+          name: teamName,
+          made: stats.coinchesWon,
+          total: stats.coinchesCalled,
+        };
+      }
+
+      if (stats.longestWinStreak > longestHandWinStreak.streak) {
+        longestHandWinStreak = {
+          name: teamName,
+          streak: stats.longestWinStreak,
+        };
+      }
+
+      if (stats.capots > capotCountByTeam.v) {
+        capotCountByTeam = { name: teamName, v: stats.capots };
+      }
+    }
+
+    for (const [pid, count] of playerCapotCounts.entries()) {
+      if (count > capotCountByPlayer.v) {
+        capotCountByPlayer = {
+          name: playerById.get(pid)?.name ?? "—",
+          v: count,
+        };
+      }
+    }
+
     return {
       biggestBlowout,
       bestComeback,
@@ -1885,6 +2050,14 @@ export default function App() {
       momentumMonster,
       mostPointsGame,
       leastPointsGame,
+      highestScoringHand,
+      lowestScoringHand,
+      averageScorePerHand,
+      bestSuccessfulBidRateTeam,
+      bestCoincheRateTeam,
+      longestHandWinStreak,
+      capotCountByTeam,
+      capotCountByPlayer,
       perfectDefense,
       coincheKing: leader("coinches"),
       capotHero: leader("capots"),
@@ -2414,6 +2587,28 @@ function FunStatsGrid({ funStats }) {
     ],
     ["Most Points in a Game", `${funStats.mostPointsGame.points} pts`, funStats.mostPointsGame.label],
     ["Least Points in a Game", `${funStats.leastPointsGame.points} pts`, funStats.leastPointsGame.label],
+
+    ["Highest Scoring Hand", `${funStats.highestScoringHand.points} pts`, funStats.highestScoringHand.label],
+    ["Lowest Scoring Hand", `${funStats.lowestScoringHand.points} pts`, funStats.lowestScoringHand.label],
+    ["Best Avg Score / Hand", `${funStats.averageScorePerHand.value} pts`, funStats.averageScorePerHand.label],
+    [
+      "Best Successful Bid %",
+      `${funStats.bestSuccessfulBidRateTeam.pct}%`,
+      `${funStats.bestSuccessfulBidRateTeam.name} (${funStats.bestSuccessfulBidRateTeam.made}/${funStats.bestSuccessfulBidRateTeam.total})`,
+    ],
+    [
+      "Best Coinche Success %",
+      `${funStats.bestCoincheRateTeam.pct}%`,
+      `${funStats.bestCoincheRateTeam.name} (${funStats.bestCoincheRateTeam.made}/${funStats.bestCoincheRateTeam.total})`,
+    ],
+    [
+      "Longest Hand Win Streak",
+      `${funStats.longestHandWinStreak.streak} hands`,
+      funStats.longestHandWinStreak.name,
+    ],
+    ["Capot Count by Team", funStats.capotCountByTeam.name, `${funStats.capotCountByTeam.v} capots`],
+    ["Capot Count by Player", funStats.capotCountByPlayer.name, `${funStats.capotCountByPlayer.v} capots`],
+
     ["Perfect Defense", funStats.perfectDefense.name, `${funStats.perfectDefense.count} shutout hands`],
     ["Coinche King", funStats.coincheKing.name, `${funStats.coincheKing.v} coinches`],
     ["Capot Hero", funStats.capotHero.name, `${funStats.capotHero.v} capots`],
