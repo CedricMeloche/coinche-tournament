@@ -1714,28 +1714,57 @@ export default function App() {
 
   const funStats = useMemo(() => {
     const completed = matches.filter((m) => m.completed && m.teamAId && m.teamBId);
+
     const labelFor = (m) =>
-      `${teamById.get(m.teamAId)?.name ?? "Team A"} vs ${teamById.get(m.teamBId)?.name ?? "Team B"} (${m.label})`;
+      `${teamById.get(m.teamAId)?.name ?? "Team A"} vs ${
+        teamById.get(m.teamBId)?.name ?? "Team B"
+      } (${m.label})`;
 
     let biggestBlowout = { diff: 0, label: "—" };
     let closest = { diff: Infinity, label: "—" };
     let bestComeback = { deficit: 0, label: "—" };
     let clutchFinish = { diff: Infinity, label: "—" };
     let momentumMonster = { swing: 0, label: "—" };
+    let mostPointsGame = { points: 0, label: "—" };
+    let leastPointsGame = { points: Infinity, label: "—" };
 
     for (const m of completed) {
-      const diff = Math.abs((m.totalA || 0) - (m.totalB || 0));
-      if (diff > biggestBlowout.diff) biggestBlowout = { diff, label: labelFor(m) };
-      if (diff > 0 && diff < closest.diff) closest = { diff, label: labelFor(m) };
+      const totalA = Number(m.totalA) || 0;
+      const totalB = Number(m.totalB) || 0;
+      const combinedPoints = totalA + totalB;
+      const diff = Math.abs(totalA - totalB);
+
+      if (diff > biggestBlowout.diff) {
+        biggestBlowout = { diff, label: labelFor(m) };
+      }
+
+      if (diff > 0 && diff < closest.diff) {
+        closest = { diff, label: labelFor(m) };
+      }
+
+      if (combinedPoints > mostPointsGame.points) {
+        mostPointsGame = { points: combinedPoints, label: labelFor(m) };
+      }
+
+      if (combinedPoints < leastPointsGame.points) {
+        leastPointsGame = { points: combinedPoints, label: labelFor(m) };
+      }
 
       const diffs = m.timelineDiffs || [];
       if (diffs.length) {
-        const comebackSize = Math.abs(m.winnerId === m.teamAId ? Math.min(0, ...diffs) : Math.max(0, ...diffs));
-        if (comebackSize > bestComeback.deficit) bestComeback = { deficit: comebackSize, label: labelFor(m) };
+        const comebackSize = Math.abs(
+          m.winnerId === m.teamAId ? Math.min(0, ...diffs) : Math.max(0, ...diffs)
+        );
+
+        if (comebackSize > bestComeback.deficit) {
+          bestComeback = { deficit: comebackSize, label: labelFor(m) };
+        }
 
         for (let i = Math.max(0, diffs.length - 3); i < diffs.length; i++) {
           const absDiff = Math.abs(diffs[i]);
-          if (absDiff < clutchFinish.diff) clutchFinish = { diff: absDiff, label: labelFor(m) };
+          if (absDiff < clutchFinish.diff) {
+            clutchFinish = { diff: absDiff, label: labelFor(m) };
+          }
         }
       }
     }
@@ -1744,32 +1773,55 @@ export default function App() {
       const diffs = m.timelineDiffs || [];
       for (let i = 2; i < diffs.length; i++) {
         const swing = Math.abs(diffs[i] - diffs[i - 2]);
-        if (swing > momentumMonster.swing) momentumMonster = { swing, label: labelFor(m) };
+        if (swing > momentumMonster.swing) {
+          momentumMonster = { swing, label: labelFor(m) };
+        }
       }
     }
 
-    if (!Number.isFinite(closest.diff)) closest = { diff: 0, label: "—" };
-    if (!Number.isFinite(clutchFinish.diff)) clutchFinish = { diff: 0, label: "—" };
+    if (!Number.isFinite(closest.diff)) {
+      closest = { diff: 0, label: "—" };
+    }
+
+    if (!Number.isFinite(clutchFinish.diff)) {
+      clutchFinish = { diff: 0, label: "—" };
+    }
+
+    if (!Number.isFinite(leastPointsGame.points)) {
+      leastPointsGame = { points: 0, label: "—" };
+    }
 
     const defenseCounts = new Map();
     for (const m of matches.filter((x) => x.teamAId && x.teamBId)) {
       for (const h of m.hands || []) {
-        if ((Number(h.scoreA) || 0) > 0 && (Number(h.scoreB) || 0) === 0) defenseCounts.set(m.teamAId, (defenseCounts.get(m.teamAId) || 0) + 1);
-        if ((Number(h.scoreB) || 0) > 0 && (Number(h.scoreA) || 0) === 0) defenseCounts.set(m.teamBId, (defenseCounts.get(m.teamBId) || 0) + 1);
+        if ((Number(h.scoreA) || 0) > 0 && (Number(h.scoreB) || 0) === 0) {
+          defenseCounts.set(m.teamAId, (defenseCounts.get(m.teamAId) || 0) + 1);
+        }
+        if ((Number(h.scoreB) || 0) > 0 && (Number(h.scoreA) || 0) === 0) {
+          defenseCounts.set(m.teamBId, (defenseCounts.get(m.teamBId) || 0) + 1);
+        }
       }
     }
 
     let perfectDefense = { name: "—", count: 0 };
     for (const [tid, count] of defenseCounts.entries()) {
-      if (count > perfectDefense.count) perfectDefense = { name: teamById.get(tid)?.name ?? "—", count };
+      if (count > perfectDefense.count) {
+        perfectDefense = { name: teamById.get(tid)?.name ?? "—", count };
+      }
     }
 
     const teamFun = new Map();
     const announceCountByPlayer = new Map();
     const announceTotalByPlayer = new Map();
+
     const bump = (tid, key, n = 1) => {
       if (!tid) return;
-      const cur = teamFun.get(tid) || { coinches: 0, surcoinches: 0, capots: 0, belotes: 0 };
+      const cur = teamFun.get(tid) || {
+        coinches: 0,
+        surcoinches: 0,
+        capots: 0,
+        belotes: 0,
+      };
       cur[key] = (cur[key] || 0) + n;
       teamFun.set(tid, cur);
     };
@@ -1778,6 +1830,7 @@ export default function App() {
       for (const h of m.hands || []) {
         const d = h.draftSnapshot || {};
         const bidderTeamId = d.bidder === "A" ? m.teamAId : m.teamBId;
+
         if (d.coincheLevel === "COINCHE") bump(bidderTeamId, "coinches");
         if (d.coincheLevel === "SURCOINCHE") bump(bidderTeamId, "surcoinches");
         if (d.capot) bump(bidderTeamId, "capots");
@@ -1804,13 +1857,25 @@ export default function App() {
         const v = obj[key] || 0;
         if (!best || v > best.v) best = { tid, v };
       }
-      return !best || best.v === 0 ? { name: "—", v: 0 } : { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
+      return !best || best.v === 0
+        ? { name: "—", v: 0 }
+        : { name: teamById.get(best.tid)?.name ?? "—", v: best.v };
     };
 
     let mostAnnounces = { name: "—", v: 0 };
     let highestAnnounces = { name: "—", v: 0 };
-    for (const [pid, v] of announceCountByPlayer.entries()) if (v > mostAnnounces.v) mostAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
-    for (const [pid, v] of announceTotalByPlayer.entries()) if (v > highestAnnounces.v) highestAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
+
+    for (const [pid, v] of announceCountByPlayer.entries()) {
+      if (v > mostAnnounces.v) {
+        mostAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
+      }
+    }
+
+    for (const [pid, v] of announceTotalByPlayer.entries()) {
+      if (v > highestAnnounces.v) {
+        highestAnnounces = { name: playerById.get(pid)?.name ?? "—", v };
+      }
+    }
 
     return {
       biggestBlowout,
@@ -1818,6 +1883,8 @@ export default function App() {
       closest,
       clutchFinish,
       momentumMonster,
+      mostPointsGame,
+      leastPointsGame,
       perfectDefense,
       coincheKing: leader("coinches"),
       capotHero: leader("capots"),
@@ -2340,7 +2407,13 @@ function FunStatsGrid({ funStats }) {
     ["Best Comeback", `${funStats.bestComeback.deficit} pts`, funStats.bestComeback.label],
     ["Closest Match", `${funStats.closest.diff} pts`, funStats.closest.label],
     ["Clutch Finish (last 3 hands)", `${funStats.clutchFinish.diff} pts`, funStats.clutchFinish.label],
-    ["Momentum Monster", `${funStats.momentumMonster.swing} pts`, funStats.momentumMonster.label],
+    [
+      "Momentum Monster",
+      `${funStats.momentumMonster.swing} pts`,
+      `${funStats.momentumMonster.label} (biggest score swing across 3 hands)`,
+    ],
+    ["Most Points in a Game", `${funStats.mostPointsGame.points} pts`, funStats.mostPointsGame.label],
+    ["Least Points in a Game", `${funStats.leastPointsGame.points} pts`, funStats.leastPointsGame.label],
     ["Perfect Defense", funStats.perfectDefense.name, `${funStats.perfectDefense.count} shutout hands`],
     ["Coinche King", funStats.coincheKing.name, `${funStats.coincheKing.v} coinches`],
     ["Capot Hero", funStats.capotHero.name, `${funStats.capotHero.v} capots`],
@@ -2348,6 +2421,7 @@ function FunStatsGrid({ funStats }) {
     ["Most Announces", funStats.mostAnnounces.name, `${funStats.mostAnnounces.v} announces`],
     ["Highest Announces", funStats.highestAnnounces.name, `${funStats.highestAnnounces.v} pts announced`],
   ];
+
   return (
     <div style={styles.grid3}>
       {items.map(([label, value, sub]) => (
