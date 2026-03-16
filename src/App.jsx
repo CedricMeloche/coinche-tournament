@@ -2119,17 +2119,15 @@ export default function App() {
     return (
       <div style={styles.page}>
         <div style={styles.container}>
-          <Header title={appName} subtitle={`Public scoreboard • Live updates • Tables: ${matches.length}`} right={<NavPills showAdmin />} />
+          <Header
+            title={appName}
+            subtitle={`Public scoreboard • Live updates • Tables: ${matches.length}`}
+            right={<NavPills showAdmin />}
+          />
 
-          <div style={styles.grid2}>
-            <Section title="Live Scoreboard">
-              <ScoreboardTable rows={scoreboardRows} />
-            </Section>
-
-            <Section title="Fun Facts">
-              <FunStatsGrid funStats={funStats} />
-            </Section>
-          </div>
+          <Section title="Live Scoreboard">
+            <ScoreboardTable rows={scoreboardRows} />
+          </Section>
 
           <Section title="Live Matches (Now Playing)">
             {!liveMatches.length ? (
@@ -2137,28 +2135,19 @@ export default function App() {
             ) : (
               <div style={styles.grid3}>
                 {liveMatches.map((m) => (
-                  <LiveMatchCard key={m.id} match={m} teamById={teamById} onOpen={() => openTableRoute(m.code)} />
+                  <LiveMatchCard
+                    key={m.id}
+                    match={m}
+                    teamById={teamById}
+                    onOpen={() => openTableRoute(m.code)}
+                  />
                 ))}
               </div>
             )}
           </Section>
 
-          <Section title="Table Entry Links">
-            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
-              Each table uses their own link to enter hands/scores.
-            </div>
-            <div style={styles.grid3}>
-              {tableLinks.map((t) => (
-                <div key={t.code} style={styles.card}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>{t.label}</div>
-                  <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>Code: {t.code}</div>
-                  <button type="button" style={styles.btnSecondary} onClick={() => openTableRoute(t.code)}>
-                    Open Table View
-                  </button>
-                </div>
-              ))}
-              {!tableLinks.length ? <div style={styles.small}>No matches yet. Add matches in Admin.</div> : null}
-            </div>
+          <Section title="Fun Facts">
+            <FunStatsGrid funStats={funStats} />
           </Section>
         </div>
       </div>
