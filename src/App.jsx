@@ -328,35 +328,22 @@ function ensureGlobalCSS() {
    Scoring
 ========================= */
 
+function roundBelotePoints(raw) {
+  const n = clamp(Number(raw) || 0, 0, 162);
+  const ones = n % 10;
+
+  if (ones <= 5) return n - ones;
+  return n + (10 - ones);
+}
+
 function roundTrickPointsPair(rawBidderPoints) {
   const bidderRaw = clamp(Number(rawBidderPoints) || 0, 0, 162);
   const oppRaw = 162 - bidderRaw;
-  const bidderOnes = bidderRaw % 10;
 
-  if (bidderOnes === 5) {
-    return {
-      bidderRounded: bidderRaw - 5,
-      oppRounded: oppRaw + 5,
-    };
-  }
-
-  if (bidderOnes === 6) {
-    return {
-      bidderRounded: bidderRaw + 4,
-      oppRounded: oppRaw + 4,
-    };
-  }
-
-  const bidderRounded = Math.round(bidderRaw / 10) * 10;
-  const oppOnes = oppRaw % 10;
-  const oppRounded =
-    oppOnes === 5
-      ? oppRaw - 5
-      : oppOnes === 6
-      ? oppRaw + 4
-      : Math.round(oppRaw / 10) * 10;
-
-  return { bidderRounded, oppRounded };
+  return {
+    bidderRounded: roundBelotePoints(bidderRaw),
+    oppRounded: roundBelotePoints(oppRaw),
+  };
 }
 
 function computeContractRequirement({ bid, bidder, announceA, announceB, beloteTeam }) {
@@ -3865,11 +3852,19 @@ function TableMatchPanel({
             Skip Hand - No Points
           </button>
 
-          <button style={styles.btnSecondary} onClick={onClearHands}>Clear Match Hands</button>
+<span style={{ ...styles.small, marginLeft: "auto" }}>
+  Suit: <SuitIcon suit={d.suit || "S"} /> {suitLabel}
+</span>
 
-          <span style={{ ...styles.small, marginLeft: "auto" }}>
-            Suit: <SuitIcon suit={d.suit || "S"} /> {suitLabel}
-          </span>
+<button
+  style={styles.btnDanger}
+  onClick={() => {
+    if (!confirm("Are you sure you want to clear all hands for this match?")) return;
+    onClearHands();
+  }}
+>
+  Clear Match Hands
+</button>
         </div>
       </div>
 
