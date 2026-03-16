@@ -60,6 +60,201 @@ const jsonSafe = (v, fallback) => {
   }
 };
 
+function excelEscape(v) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function buildWorksheetXml(name, rows) {
+  const safeRows = rows?.length ? rows : [[]];
+
+  const rowXml = safeRows
+    .map(
+      (row) =>
+        `<Row>${(row || [])
+          .map((cell) => {
+            const value = cell ?? "";
+            const isNumber =
+              typeof value === "number" && Number.isFinite(value);
+
+            return isNumber
+              ? `<Cell><Data ss:Type="Number">${value}</Data></Cell>`
+              : `<Cell><Data ss:Type="String">${excelEscape(value)}</Data></Cell>`;
+          })
+          .join("")}</Row>`
+    )
+    .join("");
+
+  return `
+    <Worksheet ss:Name="${excelEscape(name)}">
+      <Table>
+        ${rowXml}
+      </Table>
+    </Worksheet>
+  `;
+}
+
+function exportCoincheExcel({ appName, matches, teamById, playerById }) {
+  const matchesRows = [
+    [
+      "Match ID",
+      "Code",
+      "Table Name",
+      "Match Label",
+      "Team A",
+      "Team B",
+      "Total A",
+      "Total B",
+      "Winner",
+      "Completed",
+      "Forced Complete",
+      "Hands Played",
+      "First Shuffler",
+      "Table Order",
+      "Last Updated",
+    ],
+    ...matches.map((m) => {
+      const teamAName = teamById.get(m.teamAId)?.name || "";
+      const teamBName = teamById.get(m.teamBId)?.name || "";
+      const winnerName = teamById.get(m.winnerId)?.name || "";
+      const firstShufflerName = playerById.get(m.firstShufflerPlayerId)?.name || "";
+      const tableOrderNames = (m.tableOrderPlayerIds || [])
+        .map((pid) => playerById.get(pid)?.name || pid)
+        .join(" -> ");
+
+      return [
+        m.id,
+        m.code,
+        m.tableName,
+        m.label,
+        teamAName,
+        teamBName,
+        Number(m.totalA) || 0,
+        Number(m.totalB) || 0,
+        winnerName,
+        m.completed ? "Yes" : "No",
+        m.forcedComplete ? "Yes" : "No",
+        (m.hands || []).length,
+        firstShufflerName,
+        tableOrderNames,
+        m.lastUpdatedAt ? new Date(m.lastUpdatedAt).toISOString() : "",
+      ];
+    }),
+  ];
+
+  const handsRows = [
+    [
+      "Match ID",
+      "Match Code",
+      "Table Name",
+      "Match Label",
+      "Hand #",
+      "Created At",
+      "Edited At",
+      "Score A",
+      "Score B",
+      "Bidder Succeeded",
+      "Skipped Hand",
+      "Bidder Side",
+      "Bid",
+      "Suit",
+      "Coinche Level",
+      "Capot",
+      "Bidder Trick Points",
+      "Non-bidder Trick Points",
+      "Trick Source",
+      "Belote Team",
+      "Announce A1",
+      "Announce A1 Player",
+      "Announce A2",
+      "Announce A2 Player",
+      "Announce B1",
+      "Announce B1 Player",
+      "Announce B2",
+      "Announce B2 Player",
+      "Announce A Total",
+      "Announce B Total",
+      "Dealer",
+    ],
+    ...matches.flatMap((m) =>
+      (m.hands || []).map((h) => {
+        const ds = h.draftSnapshot || {};
+        return [
+          m.id,
+          m.code,
+          m.tableName,
+          m.label,
+          h.idx,
+          h.createdAt ? new Date(h.createdAt).toISOString() : "",
+          h.editedAt ? new Date(h.editedAt).toISOString() : "",
+          Number(h.scoreA) || 0,
+          Number(h.scoreB) || 0,
+          h.bidderSucceeded ? "Yes" : "No",
+          ds.skippedHand ? "Yes" : "No",
+          ds.bidder || "",
+          ds.bid ?? "",
+          ds.suit || "",
+          ds.coincheLevel || "",
+          ds.capot ? "Yes" : "No",
+          ds.bidderTrickPoints ?? "",
+          ds.nonBidderTrickPoints ?? "",
+          ds.trickSource || "",
+          ds.beloteTeam || "",
+          ds.announceA1 ?? "",
+          ds.announceA1PlayerName || playerById.get(ds.announceA1PlayerId)?.name || "",
+          ds.announceA2 ?? "",
+          ds.announceA2PlayerName || playerById.get(ds.announceA2PlayerId)?.name || "",
+          ds.announceB1 ?? "",
+          ds.announceB1PlayerName || playerById.get(ds.announceB1PlayerId)?.name || "",
+          ds.announceB2 ?? "",
+          ds.announceB2PlayerName || playerById.get(ds.announceB2PlayerId)?.name || "",
+          ds.announceA ?? "",
+          ds.announceB ?? "",
+          ds.shufflerName || "",
+        ];
+      })
+    ),
+  ];
+
+  const workbookXml = `<?xml version="1.0"?>
+<Workbook
+  xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:x="urn:schemas-microsoft-com:office:excel"
+  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:html="http://www.w3.org/TR/REC-html40">
+  <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
+    <Author>ChatGPT</Author>
+    <Title>${excelEscape(appName || "Coinche Scorekeeper Export")}</Title>
+    <Created>${new Date().toISOString()}</Created>
+  </DocumentProperties>
+  <ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel">
+    <ProtectStructure>False</ProtectStructure>
+    <ProtectWindows>False</ProtectWindows>
+  </ExcelWorkbook>
+  ${buildWorksheetXml("Matches", matchesRows)}
+  ${buildWorksheetXml("Hands", handsRows)}
+</Workbook>`;
+
+  const blob = new Blob([workbookXml], {
+    type: "application/vnd.ms-excel;charset=utf-8;",
+  });
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  a.href = url;
+  a.download = `coinche-export-${stamp}.xls`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function SuitIcon({ suit }) {
   const map = {
     H: { ch: "♥", color: "#fb7185", label: "Hearts" },
@@ -1815,34 +2010,50 @@ export default function App() {
           right={<NavPills showAdmin={false} />}
         />
 
-        <Section
-          title="Quick Links"
-          collapsible
-          defaultCollapsed
-          right={
-            <div style={styles.row}>
-              <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
-                Public View
-              </a>
-              <button
-                style={styles.btnSecondary}
-                onClick={() => {
-                  navigator.clipboard?.writeText(publicLink);
-                  alert("Public link copied!");
-                }}
-              >
-                Copy Public Link
-              </button>
-            </div>
-          }
-        >
-          <div style={styles.small}>
-            Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span>
-          </div>
-          <div style={{ marginTop: 8, ...styles.small }}>
-            Sync: <span style={{ color: "#e5e7eb" }}>{syncStatus}</span>
-          </div>
-        </Section>
+<Section
+  title="Quick Links"
+  collapsible
+  defaultCollapsed
+  right={
+    <div style={styles.row}>
+      <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+        Public View
+      </a>
+
+      <button
+        style={styles.btnSecondary}
+        onClick={() => {
+          navigator.clipboard?.writeText(publicLink);
+          alert("Public link copied!");
+        }}
+      >
+        Copy Public Link
+      </button>
+
+      <button
+        style={styles.btnPrimary}
+        onClick={() =>
+          exportCoincheExcel({
+            appName,
+            matches,
+            teamById,
+            playerById,
+          })
+        }
+        disabled={!matches.length}
+      >
+        Export Excel
+      </button>
+    </div>
+  }
+>
+  <div style={styles.small}>
+    Public: <span style={{ color: "#e5e7eb" }}>{publicLink}</span>
+  </div>
+  <div style={{ marginTop: 8, ...styles.small }}>
+    Sync: <span style={{ color: "#e5e7eb" }}>{syncStatus}</span>
+  </div>
+</Section>
 
         <Section
           title="Settings"
