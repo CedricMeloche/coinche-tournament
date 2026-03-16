@@ -2200,25 +2200,25 @@ export default function App() {
             <ScoreboardTable rows={scoreboardRows} />
           </Section>
 
-          <Section title="Live Matches (All Tables)">
-  {matches.filter((m) => m.teamAId && m.teamBId && !m.completed).length ? (
-    <div style={styles.grid3}>
-      {matches
-        .filter((m) => m.teamAId && m.teamBId && !m.completed)
-        .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0))
-        .map((m) => (
-          <LiveMatchCard
-            key={m.id}
-            match={m}
-            teamById={teamById}
-            onOpen={() => openTableRoute(m.code)}
-          />
-        ))}
-    </div>
-  ) : (
-    <div style={styles.small}>No live matches right now.</div>
-  )}
-</Section>
+          <Section title="Other Tables Live Scores">
+            {matches.filter((m) => m.teamAId && m.teamBId && !m.completed).length ? (
+              <div style={styles.grid3}>
+                {matches
+                  .filter((m) => m.teamAId && m.teamBId && !m.completed)
+                  .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0))
+                  .map((m) => (
+                    <LiveMatchCard
+                      key={m.id}
+                      match={m}
+                      teamById={teamById}
+                      hideOpenButton
+                    />
+                  ))}
+              </div>
+            ) : (
+              <div style={styles.small}>No live matches right now.</div>
+            )}
+          </Section>
 
           <Section title="Public View Link">
             <a href={publicLink} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
@@ -2750,7 +2750,7 @@ function ScoreCard({ name, score, pct, winner, leader, variant = "A", bigTotals 
   );
 }
 
-function LiveMatchCard({ match, teamById, onOpen }) {
+function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false }) {
   const ta = teamById.get(match.teamAId)?.name ?? "Team A";
   const tb = teamById.get(match.teamBId)?.name ?? "Team B";
   const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
@@ -2782,11 +2782,13 @@ function LiveMatchCard({ match, teamById, onOpen }) {
         </div>
       </div>
 
-      <div style={{ marginTop: 10 }}>
-        <button type="button" style={styles.btnSecondary} onClick={onOpen}>
-          Open Table
-        </button>
-      </div>
+      {!hideOpenButton && onOpen ? (
+        <div style={{ marginTop: 10 }}>
+          <button type="button" style={styles.btnSecondary} onClick={onOpen}>
+            Open Table
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
