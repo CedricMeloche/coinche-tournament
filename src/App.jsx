@@ -1661,7 +1661,6 @@ export default function App() {
     await syncMatchLocalAndRemote(nextMatch, nextMatches);
   };
 
-  const scoreboardRows = useMemo(() => {
   const teamStatsRows = useMemo(() => {
   const rows = new Map();
 
