@@ -1661,6 +1661,78 @@ export default function App() {
     await syncMatchLocalAndRemote(nextMatch, nextMatches);
   };
 
+  const scoreboardRows = useMemo(() => {
+  const rows = teams.map((t) => ({
+    teamId: t.id,
+    name: t.name,
+    matchesPlayed: 0,
+    wins: 0,
+    losses: 0,
+    pointsFor: 0,
+    pointsAgainst: 0,
+  }));
+
+  const byId = new Map(rows.map((r) => [r.teamId, r]));
+
+  for (const m of matches) {
+    if (!m.teamAId || !m.teamBId) continue;
+
+    if (!byId.has(m.teamAId)) {
+      byId.set(m.teamAId, {
+        teamId: m.teamAId,
+        name: teamById.get(m.teamAId)?.name || "Team A",
+        matchesPlayed: 0,
+        wins: 0,
+        losses: 0,
+        pointsFor: 0,
+        pointsAgainst: 0,
+      });
+    }
+
+    if (!byId.has(m.teamBId)) {
+      byId.set(m.teamBId, {
+        teamId: m.teamBId,
+        name: teamById.get(m.teamBId)?.name || "Team B",
+        matchesPlayed: 0,
+        wins: 0,
+        losses: 0,
+        pointsFor: 0,
+        pointsAgainst: 0,
+      });
+    }
+
+    const a = byId.get(m.teamAId);
+    const b = byId.get(m.teamBId);
+
+    a.pointsFor += Number(m.totalA) || 0;
+    a.pointsAgainst += Number(m.totalB) || 0;
+    b.pointsFor += Number(m.totalB) || 0;
+    b.pointsAgainst += Number(m.totalA) || 0;
+
+    if ((m.hands || []).length) {
+      a.matchesPlayed += 1;
+      b.matchesPlayed += 1;
+    }
+
+    if (m.winnerId === m.teamAId) {
+      a.wins += 1;
+      b.losses += 1;
+    } else if (m.winnerId === m.teamBId) {
+      b.wins += 1;
+      a.losses += 1;
+    }
+  }
+
+  return Array.from(byId.values()).sort((x, y) => {
+    if (y.wins !== x.wins) return y.wins - x.wins;
+    const dx = x.pointsFor - x.pointsAgainst;
+    const dy = y.pointsFor - y.pointsAgainst;
+    if (dy !== dx) return dy - dx;
+    if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
+    return x.name.localeCompare(y.name);
+  });
+}, [teams, matches, teamById]);
+
   const teamStatsRows = useMemo(() => {
   const rows = new Map();
 
@@ -2534,18 +2606,22 @@ if (path === "/public") {
           )}
         </Section>
 
-        <Section title="Scoreboard + Fun Facts (Live)" collapsible defaultCollapsed>
-          <div style={styles.grid2}>
-            <div style={styles.card}>
-              <div style={{ fontWeight: 950, marginBottom: 8 }}>Live Scoreboard</div>
-              <ScoreboardTable rows={scoreboardRows} />
-            </div>
-            <div style={styles.card}>
-              <div style={{ fontWeight: 950, marginBottom: 8 }}>Fun Facts</div>
-              <FunStatsGrid funStats={funStats} />
-            </div>
-          </div>
-        </Section>
+<Section title="Scoreboard + Fun Facts (Live)" collapsible defaultCollapsed>
+  <div style={styles.grid2}>
+    <div style={styles.card}>
+      <div style={{ fontWeight: 950, marginBottom: 8 }}>Live Scoreboard</div>
+      <ScoreboardTable rows={scoreboardRows} />
+    </div>
+    <div style={styles.card}>
+      <div style={{ fontWeight: 950, marginBottom: 8 }}>Fun Facts</div>
+      <FunStatsGrid funStats={funStats} />
+    </div>
+  </div>
+</Section>
+
+<Section title="Team Stats (Live)" collapsible defaultCollapsed>
+  <TeamStatsTable rows={teamStatsRows} />
+</Section>
 
         <Section title="Table Links (share to each table)">
           <div style={styles.small}>Each match has a unique code + link. Teams should open their match link to enter hands.</div>
@@ -2691,6 +2767,67 @@ function FunStatsGrid({ funStats }) {
       {items.map(([label, value, sub]) => (
         <StatCard key={label} label={label} value={value} sub={sub} />
       ))}
+    </div>
+  );
+}
+
+function ScoreboardTable({ rows }) {
+  const headers = ["Team", "MP", "W", "L", "PF", "PA", "Diff"];
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "separate",
+          borderSpacing: 0,
+          minWidth: 760,
+        }}
+      >
+        <thead>
+          <tr>
+            {headers.map((h) => (
+              <th
+                key={h}
+                style={{
+                  textAlign: "left",
+                  padding: "10px 10px",
+                  fontSize: 12,
+                  color: "#94a3b8",
+                  borderBottom: "1px solid rgba(148,163,184,0.18)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const diff = (Number(r.pointsFor) || 0) - (Number(r.pointsAgainst) || 0);
+
+            return (
+              <tr key={r.teamId}>
+                <td style={tdBold}>{r.name}</td>
+                <td style={td}>{r.matchesPlayed}</td>
+                <td style={td}>{r.wins}</td>
+                <td style={td}>{r.losses}</td>
+                <td style={td}>{r.pointsFor}</td>
+                <td style={td}>{r.pointsAgainst}</td>
+                <td style={tdStrong}>{diff}</td>
+              </tr>
+            );
+          })}
+          {!rows.length && (
+            <tr>
+              <td colSpan={7} style={{ padding: 12, color: "#94a3b8" }}>
+                No scoreboard data yet.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }
