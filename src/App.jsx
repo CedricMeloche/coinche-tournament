@@ -1662,55 +1662,132 @@ export default function App() {
   };
 
   const scoreboardRows = useMemo(() => {
-    const rows = teams.map((t) => ({
-      teamId: t.id,
-      name: t.name,
-      matchesPlayed: 0,
-      wins: 0,
-      losses: 0,
-      pointsFor: 0,
-      pointsAgainst: 0,
-    }));
-    const byId = new Map(rows.map((r) => [r.teamId, r]));
+  const teamStatsRows = useMemo(() => {
+  const rows = new Map();
 
-    for (const m of matches) {
-      if (!m.teamAId || !m.teamBId) continue;
-      if (!byId.has(m.teamAId)) {
-        byId.set(m.teamAId, { teamId: m.teamAId, name: teamById.get(m.teamAId)?.name || "Team A", matchesPlayed: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0 });
-      }
-      if (!byId.has(m.teamBId)) {
-        byId.set(m.teamBId, { teamId: m.teamBId, name: teamById.get(m.teamBId)?.name || "Team B", matchesPlayed: 0, wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0 });
-      }
-      const a = byId.get(m.teamAId);
-      const b = byId.get(m.teamBId);
+  const ensureRow = (teamId) => {
+    if (!teamId) return null;
+    if (!rows.has(teamId)) {
+      rows.set(teamId, {
+        teamId,
+        name: teamById.get(teamId)?.name || "Team",
+        totalPoints: 0,
+        totalPointsAllowed: 0,
+        handsPlayed: 0,
+        matchesPlayed: 0,
+        bidsMade: 0,
+        bidsWon: 0,
+        coinchesCalled: 0,
+        coinchesWon: 0,
+        totalAnnouncePoints: 0,
+        capotsMade: 0,
+        comebackWins: 0,
+        shutoutHandsForced: 0,
+        bestSingleHand: 0,
+        worstSingleHand: null,
+      });
+    }
+    return rows.get(teamId);
+  };
 
-      a.pointsFor += Number(m.totalA) || 0;
-      a.pointsAgainst += Number(m.totalB) || 0;
-      b.pointsFor += Number(m.totalB) || 0;
-      b.pointsAgainst += Number(m.totalA) || 0;
+  const completedMatches = matches.filter((m) => m.completed && m.teamAId && m.teamBId);
 
-      if ((m.hands || []).length) {
-        a.matchesPlayed += 1;
-        b.matchesPlayed += 1;
-      }
-      if (m.winnerId === m.teamAId) {
-        a.wins += 1;
-        b.losses += 1;
-      } else if (m.winnerId === m.teamBId) {
-        b.wins += 1;
-        a.losses += 1;
-      }
+  for (const m of matches) {
+    if (!m.teamAId || !m.teamBId) continue;
+
+    const a = ensureRow(m.teamAId);
+    const b = ensureRow(m.teamBId);
+
+    a.totalPoints += Number(m.totalA) || 0;
+    a.totalPointsAllowed += Number(m.totalB) || 0;
+    b.totalPoints += Number(m.totalB) || 0;
+    b.totalPointsAllowed += Number(m.totalA) || 0;
+
+    if ((m.hands || []).length) {
+      a.matchesPlayed += 1;
+      b.matchesPlayed += 1;
     }
 
-    return Array.from(byId.values()).sort((x, y) => {
-      if (y.wins !== x.wins) return y.wins - x.wins;
-      const dx = x.pointsFor - x.pointsAgainst;
-      const dy = y.pointsFor - y.pointsAgainst;
-      if (dy !== dx) return dy - dx;
-      if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
-      return x.name.localeCompare(y.name);
+    for (const h of m.hands || []) {
+      const d = h.draftSnapshot || {};
+
+      const scoreA = Number(h.scoreA) || 0;
+      const scoreB = Number(h.scoreB) || 0;
+
+      a.handsPlayed += 1;
+      b.handsPlayed += 1;
+
+      if (scoreA > a.bestSingleHand) a.bestSingleHand = scoreA;
+      if (scoreB > b.bestSingleHand) b.bestSingleHand = scoreB;
+
+      if (a.worstSingleHand === null || scoreA < a.worstSingleHand) a.worstSingleHand = scoreA;
+      if (b.worstSingleHand === null || scoreB < b.worstSingleHand) b.worstSingleHand = scoreB;
+
+      if (scoreA > 0 && scoreB === 0) a.shutoutHandsForced += 1;
+      if (scoreB > 0 && scoreA === 0) b.shutoutHandsForced += 1;
+
+      const announceA = Number(d.announceA) || 0;
+      const announceB = Number(d.announceB) || 0;
+      a.totalAnnouncePoints += announceA;
+      b.totalAnnouncePoints += announceB;
+
+      const bidderTeamId = d.bidder === "A" ? m.teamAId : m.teamBId;
+      const bidderRow = ensureRow(bidderTeamId);
+
+      if (!d.skippedHand && d.bid !== "SKIP" && d.bid !== "" && d.bid != null) {
+        bidderRow.bidsMade += 1;
+        if (h.bidderSucceeded) bidderRow.bidsWon += 1;
+      }
+
+      if (d.coincheLevel === "COINCHE" || d.coincheLevel === "SURCOINCHE") {
+        bidderRow.coinchesCalled += 1;
+        if (h.bidderSucceeded) bidderRow.coinchesWon += 1;
+      }
+
+      if (d.capot) {
+        bidderRow.capotsMade += 1;
+      }
+    }
+  }
+
+  for (const m of completedMatches) {
+    const diffs = m.timelineDiffs || [];
+    if (!diffs.length || !m.winnerId) continue;
+
+    if (m.winnerId === m.teamAId) {
+      const trailedBy = Math.abs(Math.min(0, ...diffs));
+      if (trailedBy > 0) {
+        ensureRow(m.teamAId).comebackWins += 1;
+      }
+    } else if (m.winnerId === m.teamBId) {
+      const trailedBy = Math.max(0, ...diffs);
+      if (trailedBy > 0) {
+        ensureRow(m.teamBId).comebackWins += 1;
+      }
+    }
+  }
+
+  return Array.from(rows.values())
+    .map((r) => ({
+      ...r,
+      avgPointsPerHand: r.handsPlayed ? Number((r.totalPoints / r.handsPlayed).toFixed(1)) : 0,
+      avgPointsPerMatch: r.matchesPlayed ? Number((r.totalPoints / r.matchesPlayed).toFixed(1)) : 0,
+      avgPointsAllowedPerHand: r.handsPlayed
+        ? Number((r.totalPointsAllowed / r.handsPlayed).toFixed(1))
+        : 0,
+      bidSuccessPct: r.bidsMade ? Number(((r.bidsWon / r.bidsMade) * 100).toFixed(1)) : 0,
+      coincheSuccessPct: r.coinchesCalled
+        ? Number(((r.coinchesWon / r.coinchesCalled) * 100).toFixed(1))
+        : 0,
+      worstSingleHand: r.worstSingleHand ?? 0,
+    }))
+    .sort((a, b) => {
+      if (b.avgPointsPerMatch !== a.avgPointsPerMatch) {
+        return b.avgPointsPerMatch - a.avgPointsPerMatch;
+      }
+      return a.name.localeCompare(b.name);
     });
-  }, [teams, matches, teamById]);
+}, [matches, teamById]);
 
   const funStats = useMemo(() => {
     const completed = matches.filter((m) => m.completed && m.teamAId && m.teamBId);
@@ -2111,48 +2188,52 @@ export default function App() {
     </div>
   );
 
-  if (path === "/public") {
-    const liveMatches = matches
-      .filter((m) => m.teamAId && m.teamBId && !m.completed)
-      .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
+if (path === "/public") {
+  const liveMatches = matches
+    .filter((m) => m.teamAId && m.teamBId && !m.completed)
+    .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
 
-    return (
-      <div style={styles.page}>
-        <div style={styles.container}>
-          <Header
-            title={appName}
-            subtitle={`Public scoreboard • Live updates • Tables: ${matches.length}`}
-            right={<NavPills showAdmin />}
-          />
+  return (
+    <div style={styles.page}>
+      <div style={styles.container}>
+        <Header
+          title={appName}
+          subtitle={`Public scoreboard • Live updates • Tables: ${matches.length}`}
+          right={<NavPills showAdmin />}
+        />
 
-          <Section title="Live Scoreboard">
-            <ScoreboardTable rows={scoreboardRows} />
-          </Section>
+        <Section title="Live Scoreboard">
+          <ScoreboardTable rows={scoreboardRows} />
+        </Section>
 
-          <Section title="Live Matches (Now Playing)">
-            {!liveMatches.length ? (
-              <div style={styles.small}>No matches currently in progress.</div>
-            ) : (
-              <div style={styles.grid3}>
-                {liveMatches.map((m) => (
-                  <LiveMatchCard
-                    key={m.id}
-                    match={m}
-                    teamById={teamById}
-                    onOpen={() => openTableRoute(m.code)}
-                  />
-                ))}
-              </div>
-            )}
-          </Section>
+        <Section title="Live Matches (Now Playing)">
+          {!liveMatches.length ? (
+            <div style={styles.small}>No matches currently in progress.</div>
+          ) : (
+            <div style={styles.grid3}>
+              {liveMatches.map((m) => (
+                <LiveMatchCard
+                  key={m.id}
+                  match={m}
+                  teamById={teamById}
+                  onOpen={() => openTableRoute(m.code)}
+                />
+              ))}
+            </div>
+          )}
+        </Section>
 
-          <Section title="Fun Facts">
-            <FunStatsGrid funStats={funStats} />
-          </Section>
-        </div>
+        <Section title="Team Stats">
+          <TeamStatsTable rows={teamStatsRows} />
+        </Section>
+
+        <Section title="Fun Facts">
+          <FunStatsGrid funStats={funStats} />
+        </Section>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
   if (path === "/table") {
     const hasRequestedCode = Boolean((query.code || "").trim());
@@ -2615,11 +2696,25 @@ function FunStatsGrid({ funStats }) {
   );
 }
 
-function ScoreboardTable({ rows }) {
-  const headers = ["Rank", "Team", "MP", "W", "L", "PF", "PA", "+/-"];
+function TeamStatsTable({ rows }) {
+  const headers = [
+    "Team",
+    "Avg/Hand",
+    "Avg/Match",
+    "Allowed/Hand",
+    "Bid %",
+    "Coinche %",
+    "Announce Pts",
+    "Capots",
+    "Comebacks",
+    "Shutouts",
+    "Best Hand",
+    "Worst Hand",
+  ];
+
   return (
     <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+      <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 1200 }}>
         <thead>
           <tr>
             {headers.map((h) => (
@@ -2631,6 +2726,7 @@ function ScoreboardTable({ rows }) {
                   fontSize: 12,
                   color: "#94a3b8",
                   borderBottom: "1px solid rgba(148,163,184,0.18)",
+                  whiteSpace: "nowrap",
                 }}
               >
                 {h}
@@ -2639,25 +2735,26 @@ function ScoreboardTable({ rows }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => {
-            const diff = (r.pointsFor || 0) - (r.pointsAgainst || 0);
-            return (
-              <tr key={r.teamId}>
-                <td style={tdStrong}>#{i + 1}</td>
-                <td style={tdBold}>{r.name}</td>
-                <td style={td}>{r.matchesPlayed}</td>
-                <td style={td}>{r.wins}</td>
-                <td style={td}>{r.losses}</td>
-                <td style={td}>{r.pointsFor}</td>
-                <td style={td}>{r.pointsAgainst}</td>
-                <td style={tdBold}>{diff}</td>
-              </tr>
-            );
-          })}
+          {rows.map((r) => (
+            <tr key={r.teamId}>
+              <td style={tdBold}>{r.name}</td>
+              <td style={td}>{r.avgPointsPerHand}</td>
+              <td style={td}>{r.avgPointsPerMatch}</td>
+              <td style={td}>{r.avgPointsAllowedPerHand}</td>
+              <td style={td}>{r.bidSuccessPct}%</td>
+              <td style={td}>{r.coincheSuccessPct}%</td>
+              <td style={td}>{r.totalAnnouncePoints}</td>
+              <td style={td}>{r.capotsMade}</td>
+              <td style={td}>{r.comebackWins}</td>
+              <td style={td}>{r.shutoutHandsForced}</td>
+              <td style={td}>{r.bestSingleHand}</td>
+              <td style={td}>{r.worstSingleHand}</td>
+            </tr>
+          ))}
           {!rows.length && (
             <tr>
-              <td colSpan={8} style={{ padding: 12, color: "#94a3b8" }}>
-                No data yet.
+              <td colSpan={12} style={{ padding: 12, color: "#94a3b8" }}>
+                No team stats yet.
               </td>
             </tr>
           )}
