@@ -2423,9 +2423,13 @@ export default function App() {
   );
 
 if (path === "/public") {
-  const liveMatches = matches
-    .filter((m) => m.teamAId && m.teamBId && !m.completed)
-    .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
+const liveMatches = matches
+  .filter((m) => m.teamAId && m.teamBId && !m.completed)
+  .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
+
+const completedMatchRecaps = matches
+  .filter((m) => m.teamAId && m.teamBId && m.completed)
+  .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
 
   return (
     <div style={styles.page}>
@@ -2456,6 +2460,24 @@ if (path === "/public") {
             </div>
           )}
         </Section>
+
+        <Section title="Match Recaps">
+  {!completedMatchRecaps.length ? (
+    <div style={styles.small}>No completed matches yet.</div>
+  ) : (
+    <div style={styles.grid3}>
+      {completedMatchRecaps.map((m) => (
+        <LiveMatchCard
+          key={m.id}
+          match={m}
+          teamById={teamById}
+          hideOpenButton
+          recapMode
+        />
+      ))}
+    </div>
+  )}
+</Section>
 
         <Section title="Team Stats">
           <TeamStatsTable rows={teamStatsRows} />
@@ -3080,158 +3102,219 @@ function AnimatedNumber({ value }) {
   return <span style={{ display: "inline-block", transform: bump ? "scale(1.06)" : "scale(1)", transition: "transform 220ms ease" }}>{value}</span>;
 }
 
-function HandDiffSparkline({ diffs = [] }) {
-  if (!diffs.length) {
+function MatchScoreLinesChart({
+  hands = [],
+  teamAName = "Team A",
+  teamBName = "Team B",
+  colorA = "#1664d9",
+  colorB = "#d90429",
+  height = 170,
+}) {
+  if (!hands.length) {
     return <div style={styles.small}>No hand chart yet.</div>;
   }
 
-  const width = 260;
-  const height = 90;
-  const padX = 14;
-  const padY = 12;
+  const width = 320;
+  const padLeft = 34;
+  const padRight = 12;
+  const padTop = 18;
+  const padBottom = 28;
 
-  const values = [0, ...diffs];
-  const minVal = Math.min(...values);
-  const maxVal = Math.max(...values);
+  let runningA = 0;
+  let runningB = 0;
 
-  const absMax = Math.max(Math.abs(minVal), Math.abs(maxVal), 1);
-  const rangeTop = absMax;
-  const rangeBottom = -absMax;
-  const range = rangeTop - rangeBottom || 1;
+  const seriesA = [{ hand: 0, score: 0 }];
+  const seriesB = [{ hand: 0, score: 0 }];
 
-  const xFor = (idx) =>
-    padX + (idx * (width - padX * 2)) / Math.max(values.length - 1, 1);
-
-  const yFor = (val) =>
-    padY + ((rangeTop - val) * (height - padY * 2)) / range;
-
-  const points = values.map((v, i) => `${xFor(i)},${yFor(v)}`).join(" ");
-
-  let leadChanges = 0;
-  for (let i = 1; i < diffs.length; i++) {
-    const prev = diffs[i - 1];
-    const cur = diffs[i];
-    if ((prev > 0 && cur < 0) || (prev < 0 && cur > 0)) leadChanges += 1;
+  for (let i = 0; i < hands.length; i++) {
+    runningA += Number(hands[i]?.scoreA) || 0;
+    runningB += Number(hands[i]?.scoreB) || 0;
+    seriesA.push({ hand: i + 1, score: runningA });
+    seriesB.push({ hand: i + 1, score: runningB });
   }
+
+  const allScores = [...seriesA.map((p) => p.score), ...seriesB.map((p) => p.score)];
+  const maxScore = Math.max(...allScores, 1);
+  const stepCount = 5;
+  const graphHeight = height - padTop - padBottom;
+  const graphWidth = width - padLeft - padRight;
+
+  const yMaxRaw = maxScore;
+  const yMax = Math.max(10, Math.ceil(yMaxRaw / stepCount / 10) * stepCount * 10 / stepCount * stepCount);
+  const finalYMax = Math.max(yMax, Math.ceil(maxScore / 10) * 10);
+
+  const xFor = (hand) =>
+    padLeft + (hand * graphWidth) / Math.max(seriesA.length - 1, 1);
+
+  const yFor = (score) =>
+    padTop + graphHeight - (score / Math.max(finalYMax, 1)) * graphHeight;
+
+  const toPoints = (series) =>
+    series.map((p) => `${xFor(p.hand)},${yFor(p.score)}`).join(" ");
+
+  const gridValues = Array.from({ length: stepCount + 1 }, (_, i) =>
+    Math.round((finalYMax / stepCount) * i)
+  );
+
+  const leadChanges = (() => {
+    let count = 0;
+    for (let i = 1; i < seriesA.length; i++) {
+      const prevDiff = seriesA[i - 1].score - seriesB[i - 1].score;
+      const curDiff = seriesA[i].score - seriesB[i].score;
+      if ((prevDiff > 0 && curDiff < 0) || (prevDiff < 0 && curDiff > 0)) count += 1;
+    }
+    return count;
+  })();
 
   let biggestSwing = 0;
   let biggestSwingHand = 1;
-  for (let i = 1; i < values.length; i++) {
-    const swing = Math.abs(values[i] - values[i - 1]);
-    if (swing > biggestSwing) {
-      biggestSwing = swing;
+  for (let i = 1; i < seriesA.length; i++) {
+    const handTotal =
+      (seriesA[i].score - seriesA[i - 1].score) +
+      (seriesB[i].score - seriesB[i - 1].score);
+    if (handTotal > biggestSwing) {
+      biggestSwing = handTotal;
       biggestSwingHand = i;
     }
   }
 
-  const finalPushStartIdx = Math.max(0, values.length - 4);
-  const finalPush = Math.abs(values[values.length - 1] - values[finalPushStartIdx]);
-
-  const zeroY = yFor(0);
-
-  const circles = values.map((v, i) => {
-    const cx = xFor(i);
-    const cy = yFor(v);
-    const isBiggestSwing = i === biggestSwingHand;
-
-    return (
-      <g key={i}>
-        <circle
-          cx={cx}
-          cy={cy}
-          r={isBiggestSwing ? 4 : 3}
-          fill={isBiggestSwing ? "#facc15" : "#e5e7eb"}
-          stroke="rgba(2,6,23,0.9)"
-          strokeWidth="1"
-        />
-      </g>
-    );
-  });
+  const finalPushStart = Math.max(0, seriesA.length - 3);
+  const finalPushA = seriesA[seriesA.length - 1].score - seriesA[finalPushStart].score;
+  const finalPushB = seriesB[seriesB.length - 1].score - seriesB[finalPushStart].score;
+  const finalPushWinner = finalPushA === finalPushB ? "Tie" : finalPushA > finalPushB ? teamAName : teamBName;
+  const finalPushValue = Math.max(finalPushA, finalPushB, 0);
 
   return (
     <div style={{ marginTop: 10 }}>
-      <div style={{ ...styles.small, marginBottom: 6 }}>
-        Momentum • Lead changes: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{leadChanges}</span>
+      <div style={{ ...styles.small, marginBottom: 8 }}>
+        Lead changes: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{leadChanges}</span>
         {" • "}
-        Biggest swing: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{biggestSwing} pts</span>
+        Biggest hand: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>Hand {biggestSwingHand}</span>
         {" • "}
-        Final push: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{finalPush} pts</span>
+        Final push: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{finalPushWinner} +{finalPushValue}</span>
       </div>
 
       <svg
         viewBox={`0 0 ${width} ${height}`}
         style={{
           width: "100%",
-          height: 90,
+          height,
           display: "block",
           borderRadius: 12,
           background: "rgba(255,255,255,0.04)",
           border: "1px solid rgba(148,163,184,0.12)",
         }}
       >
-        <line
-          x1={padX}
-          x2={width - padX}
-          y1={zeroY}
-          y2={zeroY}
-          stroke="rgba(148,163,184,0.35)"
-          strokeDasharray="4 4"
-          strokeWidth="1"
-        />
-
-        {values.length > 1 &&
-          values.slice(1).map((v, i) => {
-            const x = xFor(i + 1);
-            const y = yFor(v);
-            const prev = values[i];
-            const cur = v;
-            const crossed =
-              (prev > 0 && cur < 0) || (prev < 0 && cur > 0);
-
-            if (!crossed) return null;
-
-            return (
-              <circle
-                key={`lead-${i}`}
-                cx={x}
-                cy={y}
-                r="5"
-                fill="none"
-                stroke="#fb7185"
-                strokeWidth="2"
+        {gridValues.map((v, idx) => {
+          const y = yFor(v);
+          return (
+            <g key={idx}>
+              <line
+                x1={padLeft}
+                x2={width - padRight}
+                y1={y}
+                y2={y}
+                stroke="rgba(148,163,184,0.25)"
+                strokeWidth="1"
               />
-            );
-          })}
+              <text
+                x={padLeft - 6}
+                y={y + 4}
+                fontSize="10"
+                textAnchor="end"
+                fill="#94a3b8"
+              >
+                {v}
+              </text>
+            </g>
+          );
+        })}
+
+        {seriesA.map((p, idx) => {
+          if (idx === 0) return null;
+          return (
+            <text
+              key={`x-${idx}`}
+              x={xFor(p.hand)}
+              y={height - 8}
+              fontSize="10"
+              textAnchor="middle"
+              fill="#94a3b8"
+            >
+              H{p.hand}
+            </text>
+          );
+        })}
 
         <polyline
           fill="none"
-          stroke="#60a5fa"
+          stroke={colorA}
           strokeWidth="3"
           strokeLinejoin="round"
           strokeLinecap="round"
-          points={points}
+          points={toPoints(seriesA)}
+        />
+        <polyline
+          fill="none"
+          stroke={colorB}
+          strokeWidth="3"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          points={toPoints(seriesB)}
         />
 
-        {circles}
+        {seriesA.map((p, idx) => (
+          <circle
+            key={`a-${idx}`}
+            cx={xFor(p.hand)}
+            cy={yFor(p.score)}
+            r={idx === biggestSwingHand ? 4.5 : 3.5}
+            fill={colorA}
+            stroke="#ffffff"
+            strokeWidth="1.5"
+          />
+        ))}
 
-        <text
-          x={padX}
-          y={14}
-          fontSize="10"
-          fill="#94a3b8"
-        >
-          Team A lead
-        </text>
-
-        <text
-          x={padX}
-          y={height - 6}
-          fontSize="10"
-          fill="#94a3b8"
-        >
-          Team B lead
-        </text>
+        {seriesB.map((p, idx) => (
+          <circle
+            key={`b-${idx}`}
+            cx={xFor(p.hand)}
+            cy={yFor(p.score)}
+            r={idx === biggestSwingHand ? 4.5 : 3.5}
+            fill={colorB}
+            stroke="#ffffff"
+            strokeWidth="1.5"
+          />
+        ))}
       </svg>
+
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              width: 12,
+              height: 12,
+              borderRadius: 999,
+              background: colorA,
+              display: "inline-block",
+            }}
+          />
+          <span style={{ fontWeight: 900 }}>{teamAName}</span>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              width: 12,
+              height: 12,
+              borderRadius: 999,
+              background: colorB,
+              display: "inline-block",
+            }}
+          />
+          <span style={{ fontWeight: 900 }}>{teamBName}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3305,7 +3388,7 @@ function ScoreCard({ name, score, pct, winner, leader, variant = "A", bigTotals 
   );
 }
 
-function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false }) {
+function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapMode = false }) {
   const ta = teamById.get(match.teamAId)?.name ?? "Team A";
   const tb = teamById.get(match.teamBId)?.name ?? "Team B";
   const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
@@ -3322,9 +3405,11 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false }) {
           <span>{ta}</span>
           <span>{match.totalA}</span>
         </div>
-        <div style={{ marginTop: 6, ...styles.progressWrap }}>
-          <div style={styles.progressFillA(pctA)} />
-        </div>
+        {!recapMode && (
+          <div style={{ marginTop: 6, ...styles.progressWrap }}>
+            <div style={styles.progressFillA(pctA)} />
+          </div>
+        )}
       </div>
 
       <div style={{ marginTop: 10 }}>
@@ -3332,12 +3417,18 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false }) {
           <span>{tb}</span>
           <span>{match.totalB}</span>
         </div>
-        <div style={{ marginTop: 6, ...styles.progressWrap }}>
-          <div style={styles.progressFillB(pctB)} />
-        </div>
+        {!recapMode && (
+          <div style={{ marginTop: 6, ...styles.progressWrap }}>
+            <div style={styles.progressFillB(pctB)} />
+          </div>
+        )}
       </div>
 
-      <HandDiffSparkline diffs={match.timelineDiffs || []} />
+      <MatchScoreLinesChart
+        hands={match.hands || []}
+        teamAName={ta}
+        teamBName={tb}
+      />
 
       {!hideOpenButton && onOpen ? (
         <div style={{ marginTop: 10 }}>
