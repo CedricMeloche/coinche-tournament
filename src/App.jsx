@@ -3080,6 +3080,162 @@ function AnimatedNumber({ value }) {
   return <span style={{ display: "inline-block", transform: bump ? "scale(1.06)" : "scale(1)", transition: "transform 220ms ease" }}>{value}</span>;
 }
 
+function HandDiffSparkline({ diffs = [] }) {
+  if (!diffs.length) {
+    return <div style={styles.small}>No hand chart yet.</div>;
+  }
+
+  const width = 260;
+  const height = 90;
+  const padX = 14;
+  const padY = 12;
+
+  const values = [0, ...diffs];
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+
+  const absMax = Math.max(Math.abs(minVal), Math.abs(maxVal), 1);
+  const rangeTop = absMax;
+  const rangeBottom = -absMax;
+  const range = rangeTop - rangeBottom || 1;
+
+  const xFor = (idx) =>
+    padX + (idx * (width - padX * 2)) / Math.max(values.length - 1, 1);
+
+  const yFor = (val) =>
+    padY + ((rangeTop - val) * (height - padY * 2)) / range;
+
+  const points = values.map((v, i) => `${xFor(i)},${yFor(v)}`).join(" ");
+
+  let leadChanges = 0;
+  for (let i = 1; i < diffs.length; i++) {
+    const prev = diffs[i - 1];
+    const cur = diffs[i];
+    if ((prev > 0 && cur < 0) || (prev < 0 && cur > 0)) leadChanges += 1;
+  }
+
+  let biggestSwing = 0;
+  let biggestSwingHand = 1;
+  for (let i = 1; i < values.length; i++) {
+    const swing = Math.abs(values[i] - values[i - 1]);
+    if (swing > biggestSwing) {
+      biggestSwing = swing;
+      biggestSwingHand = i;
+    }
+  }
+
+  const finalPushStartIdx = Math.max(0, values.length - 4);
+  const finalPush = Math.abs(values[values.length - 1] - values[finalPushStartIdx]);
+
+  const zeroY = yFor(0);
+
+  const circles = values.map((v, i) => {
+    const cx = xFor(i);
+    const cy = yFor(v);
+    const isBiggestSwing = i === biggestSwingHand;
+
+    return (
+      <g key={i}>
+        <circle
+          cx={cx}
+          cy={cy}
+          r={isBiggestSwing ? 4 : 3}
+          fill={isBiggestSwing ? "#facc15" : "#e5e7eb"}
+          stroke="rgba(2,6,23,0.9)"
+          strokeWidth="1"
+        />
+      </g>
+    );
+  });
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ ...styles.small, marginBottom: 6 }}>
+        Momentum • Lead changes: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{leadChanges}</span>
+        {" • "}
+        Biggest swing: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{biggestSwing} pts</span>
+        {" • "}
+        Final push: <span style={{ color: "#e5e7eb", fontWeight: 900 }}>{finalPush} pts</span>
+      </div>
+
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        style={{
+          width: "100%",
+          height: 90,
+          display: "block",
+          borderRadius: 12,
+          background: "rgba(255,255,255,0.04)",
+          border: "1px solid rgba(148,163,184,0.12)",
+        }}
+      >
+        <line
+          x1={padX}
+          x2={width - padX}
+          y1={zeroY}
+          y2={zeroY}
+          stroke="rgba(148,163,184,0.35)"
+          strokeDasharray="4 4"
+          strokeWidth="1"
+        />
+
+        {values.length > 1 &&
+          values.slice(1).map((v, i) => {
+            const x = xFor(i + 1);
+            const y = yFor(v);
+            const prev = values[i];
+            const cur = v;
+            const crossed =
+              (prev > 0 && cur < 0) || (prev < 0 && cur > 0);
+
+            if (!crossed) return null;
+
+            return (
+              <circle
+                key={`lead-${i}`}
+                cx={x}
+                cy={y}
+                r="5"
+                fill="none"
+                stroke="#fb7185"
+                strokeWidth="2"
+              />
+            );
+          })}
+
+        <polyline
+          fill="none"
+          stroke="#60a5fa"
+          strokeWidth="3"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          points={points}
+        />
+
+        {circles}
+
+        <text
+          x={padX}
+          y={14}
+          fontSize="10"
+          fill="#94a3b8"
+        >
+          Team A lead
+        </text>
+
+        <text
+          x={padX}
+          y={height - 6}
+          fontSize="10"
+          fill="#94a3b8"
+        >
+          Team B lead
+        </text>
+      </svg>
+    </div>
+  );
+}
+
 function Fireworks({ seed = 0 }) {
   const bursts = [
     { x: 25 + (seed % 7) * 2, delay: 0 },
@@ -3180,6 +3336,8 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false }) {
           <div style={styles.progressFillB(pctB)} />
         </div>
       </div>
+
+      <HandDiffSparkline diffs={match.timelineDiffs || []} />
 
       {!hideOpenButton && onOpen ? (
         <div style={{ marginTop: 10 }}>
