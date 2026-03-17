@@ -1027,6 +1027,25 @@ const tdStrong = { ...td, fontWeight: 1000 };
    App
 ========================= */
 
+function parseSortableNumber(text, fallback = 999999) {
+  const m = String(text || "").match(/(\d+)/);
+  return m ? Number(m[1]) : fallback;
+}
+
+function compareMatchesByTournamentOrder(a, b) {
+  const tableA = parseSortableNumber(a.tableName, 999999);
+  const tableB = parseSortableNumber(b.tableName, 999999);
+  if (tableA !== tableB) return tableA - tableB;
+
+  const labelA = parseSortableNumber(a.label, 999999);
+  const labelB = parseSortableNumber(b.label, 999999);
+  if (labelA !== labelB) return labelA - labelB;
+
+  const updatedA = Number(a.lastUpdatedAt) || 0;
+  const updatedB = Number(b.lastUpdatedAt) || 0;
+  return updatedA - updatedB;
+}
+
 export default function App() {
   const [route, setRoute] = useState(() => parseHashRoute());
   const [tableMissingDelayDone, setTableMissingDelayDone] = useState(false);
@@ -2429,7 +2448,7 @@ const liveMatches = matches
 
 const completedMatchRecaps = matches
   .filter((m) => m.teamAId && m.teamBId && m.completed)
-  .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
+  .sort(compareMatchesByTournamentOrder);
 
   return (
     <div style={styles.page}>
@@ -3391,8 +3410,44 @@ function ScoreCard({ name, score, pct, winner, leader, variant = "A", bigTotals 
 function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapMode = false }) {
   const ta = teamById.get(match.teamAId)?.name ?? "Team A";
   const tb = teamById.get(match.teamBId)?.name ?? "Team B";
-  const pctA = Math.min(100, Math.round(((match.totalA || 0) / TARGET_SCORE) * 100));
-  const pctB = Math.min(100, Math.round(((match.totalB || 0) / TARGET_SCORE) * 100));
+  const totalA = Number(match.totalA) || 0;
+  const totalB = Number(match.totalB) || 0;
+  const pctA = Math.min(100, Math.round((totalA / TARGET_SCORE) * 100));
+  const pctB = Math.min(100, Math.round((totalB / TARGET_SCORE) * 100));
+
+  const winnerSide =
+    !match.completed || !match.winnerId
+      ? null
+      : match.winnerId === match.teamAId
+      ? "A"
+      : match.winnerId === match.teamBId
+      ? "B"
+      : null;
+
+  const recapRowBase = {
+    marginTop: 10,
+    borderRadius: 14,
+    padding: recapMode ? "10px 12px" : "0px",
+    transition: "all 180ms ease",
+  };
+
+  const recapWinnerGlow = {
+    boxShadow: "0 0 18px rgba(34,197,94,0.35), 0 0 36px rgba(34,197,94,0.16)",
+    border: "1px solid rgba(34,197,94,0.45)",
+    background: "rgba(34,197,94,0.10)",
+  };
+
+  const recapScoreText = {
+    fontWeight: 1000,
+    fontSize: recapMode ? 24 : 16,
+    lineHeight: 1.1,
+  };
+
+  const recapNameText = {
+    fontWeight: 950,
+    fontSize: recapMode ? 18 : 14,
+    lineHeight: 1.15,
+  };
 
   return (
     <div style={styles.card}>
@@ -3400,10 +3455,22 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
         {match.tableName} • {match.label}
       </div>
 
-      <div style={{ marginTop: 8 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontWeight: 900 }}>
-          <span>{ta}</span>
-          <span>{match.totalA}</span>
+      <div
+        style={{
+          ...recapRowBase,
+          ...(recapMode && winnerSide === "A" ? recapWinnerGlow : {}),
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 10,
+            alignItems: "center",
+          }}
+        >
+          <span style={recapNameText}>{ta}</span>
+          <span style={recapScoreText}>{totalA}</span>
         </div>
         {!recapMode && (
           <div style={{ marginTop: 6, ...styles.progressWrap }}>
@@ -3412,10 +3479,22 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
         )}
       </div>
 
-      <div style={{ marginTop: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontWeight: 900 }}>
-          <span>{tb}</span>
-          <span>{match.totalB}</span>
+      <div
+        style={{
+          ...recapRowBase,
+          ...(recapMode && winnerSide === "B" ? recapWinnerGlow : {}),
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 10,
+            alignItems: "center",
+          }}
+        >
+          <span style={recapNameText}>{tb}</span>
+          <span style={recapScoreText}>{totalB}</span>
         </div>
         {!recapMode && (
           <div style={{ marginTop: 6, ...styles.progressWrap }}>
@@ -3425,12 +3504,12 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
       </div>
 
       <MatchScoreLinesChart
-  hands={match.hands || []}
-  teamAName={ta}
-  teamBName={tb}
-  colorA="rgba(34,197,94,0.98)"
-  colorB="rgba(99,102,241,0.98)"
-/>
+        hands={match.hands || []}
+        teamAName={ta}
+        teamBName={tb}
+        colorA="rgba(34,197,94,0.98)"
+        colorB="rgba(99,102,241,0.98)"
+      />
 
       {!hideOpenButton && onOpen ? (
         <div style={{ marginTop: 10 }}>
