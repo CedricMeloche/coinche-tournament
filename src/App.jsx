@@ -3425,10 +3425,12 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
       </div>
 
       <MatchScoreLinesChart
-        hands={match.hands || []}
-        teamAName={ta}
-        teamBName={tb}
-      />
+  hands={match.hands || []}
+  teamAName={ta}
+  teamBName={tb}
+  colorA="rgba(34,197,94,0.98)"
+  colorB="rgba(99,102,241,0.98)"
+/>
 
       {!hideOpenButton && onOpen ? (
         <div style={{ marginTop: 10 }}>
