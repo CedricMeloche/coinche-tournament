@@ -3437,17 +3437,17 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
     background: "rgba(34,197,94,0.10)",
   };
 
-  const recapScoreText = {
-    fontWeight: 1000,
-    fontSize: recapMode ? 24 : 16,
-    lineHeight: 1.1,
-  };
+const recapScoreText = {
+  fontWeight: 1000,
+  fontSize: 24,
+  lineHeight: 1.1,
+};
 
-  const recapNameText = {
-    fontWeight: 950,
-    fontSize: recapMode ? 18 : 14,
-    lineHeight: 1.15,
-  };
+const recapNameText = {
+  fontWeight: 950,
+  fontSize: 18,
+  lineHeight: 1.15,
+};
 
   return (
     <div style={styles.card}>
