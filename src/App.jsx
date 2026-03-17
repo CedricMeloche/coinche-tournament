@@ -98,7 +98,15 @@ function buildWorksheetXml(name, rows) {
   `;
 }
 
-function exportCoincheExcel({ appName, matches, teamById, playerById }) {
+function exportCoincheExcel({
+  appName,
+  matches,
+  teamById,
+  playerById,
+  scoreboardRows = [],
+  teamStatsRows = [],
+  funStats = {},
+}) {
   const matchesRows = [
     [
       "Match ID",
@@ -220,6 +228,145 @@ function exportCoincheExcel({ appName, matches, teamById, playerById }) {
     ),
   ];
 
+  const standingsRows = [
+    ["Rank", "Team", "MP", "W", "L", "P", "PF", "PA", "Diff"],
+    ...scoreboardRows.map((r, idx) => [
+      idx + 1,
+      r.name,
+      Number(r.matchesPlayed) || 0,
+      Number(r.wins) || 0,
+      Number(r.losses) || 0,
+      Number(r.standingPoints) || 0,
+      Number(r.pointsFor) || 0,
+      Number(r.pointsAgainst) || 0,
+      (Number(r.pointsFor) || 0) - (Number(r.pointsAgainst) || 0),
+    ]),
+  ];
+
+  const teamStatsSheetRows = [
+    [
+      "Team",
+      "Avg Pts/Hand",
+      "Avg Pts/Match",
+      "Allowed/Hand",
+      "Bid %",
+      "Coinche %",
+      "Announce Pts",
+      "Capots",
+      "Comebacks",
+      "Shutouts",
+      "Best Hand",
+      "Worst Hand",
+    ],
+    ...teamStatsRows.map((r) => [
+      r.name,
+      Number(r.avgPointsPerHand) || 0,
+      Number(r.avgPointsPerMatch) || 0,
+      Number(r.avgPointsAllowedPerHand) || 0,
+      Number(r.bidSuccessPct) || 0,
+      Number(r.coincheSuccessPct) || 0,
+      Number(r.totalAnnouncePoints) || 0,
+      Number(r.capotsMade) || 0,
+      Number(r.comebackWins) || 0,
+      Number(r.shutoutHandsForced) || 0,
+      Number(r.bestSingleHand) || 0,
+      Number(r.worstSingleHand) || 0,
+    ]),
+  ];
+
+  const funStatsRows = [
+    ["Metric", "Value", "Details"],
+    ["Biggest Blowout", funStats?.biggestBlowout?.diff ?? 0, funStats?.biggestBlowout?.label ?? ""],
+    ["Best Comeback", funStats?.bestComeback?.deficit ?? 0, funStats?.bestComeback?.label ?? ""],
+    ["Closest Match", funStats?.closest?.diff ?? 0, funStats?.closest?.label ?? ""],
+    ["Clutch Finish", funStats?.clutchFinish?.diff ?? 0, funStats?.clutchFinish?.label ?? ""],
+    ["Momentum Monster", funStats?.momentumMonster?.swing ?? 0, funStats?.momentumMonster?.label ?? ""],
+    ["Most Points in a Game", funStats?.mostPointsGame?.points ?? 0, funStats?.mostPointsGame?.label ?? ""],
+    ["Least Points in a Game", funStats?.leastPointsGame?.points ?? 0, funStats?.leastPointsGame?.label ?? ""],
+    ["Highest Scoring Hand", funStats?.highestScoringHand?.points ?? 0, funStats?.highestScoringHand?.label ?? ""],
+    ["Best Avg Score / Hand", funStats?.averageScorePerHand?.value ?? 0, funStats?.averageScorePerHand?.label ?? ""],
+    [
+      "Best Successful Bid %",
+      funStats?.bestSuccessfulBidRateTeam?.pct ?? 0,
+      `${funStats?.bestSuccessfulBidRateTeam?.name ?? ""} (${funStats?.bestSuccessfulBidRateTeam?.made ?? 0}/${funStats?.bestSuccessfulBidRateTeam?.total ?? 0})`,
+    ],
+    [
+      "Best Coinche Success %",
+      funStats?.bestCoincheRateTeam?.pct ?? 0,
+      `${funStats?.bestCoincheRateTeam?.name ?? ""} (${funStats?.bestCoincheRateTeam?.made ?? 0}/${funStats?.bestCoincheRateTeam?.total ?? 0})`,
+    ],
+    [
+      "Longest Hand Win Streak",
+      funStats?.longestHandWinStreak?.streak ?? 0,
+      funStats?.longestHandWinStreak?.name ?? "",
+    ],
+    ["Capot Count by Team", funStats?.capotCountByTeam?.v ?? 0, funStats?.capotCountByTeam?.name ?? ""],
+    ["Capot Count by Player", funStats?.capotCountByPlayer?.v ?? 0, funStats?.capotCountByPlayer?.name ?? ""],
+    ["Perfect Defense", funStats?.perfectDefense?.count ?? 0, funStats?.perfectDefense?.name ?? ""],
+    ["Coinche King", funStats?.coincheKing?.v ?? 0, funStats?.coincheKing?.name ?? ""],
+    ["Capot Hero", funStats?.capotHero?.v ?? 0, funStats?.capotHero?.name ?? ""],
+    ["Belote Magnet", funStats?.beloteMagnet?.v ?? 0, funStats?.beloteMagnet?.name ?? ""],
+    ["Most Announces", funStats?.mostAnnounces?.v ?? 0, funStats?.mostAnnounces?.name ?? ""],
+    ["Highest Announces", funStats?.highestAnnounces?.v ?? 0, funStats?.highestAnnounces?.name ?? ""],
+  ];
+
+  const handAuditRows = [
+    [
+      "Match Code",
+      "Table Name",
+      "Match Label",
+      "Hand #",
+      "Created At",
+      "Edited At",
+      "Dealer",
+      "Bidder",
+      "Bid",
+      "Suit",
+      "Coinche",
+      "Capot",
+      "Belote Team",
+      "Announce A Total",
+      "Announce B Total",
+      "Bidder Trick Points",
+      "Non-bidder Trick Points",
+      "Score A",
+      "Score B",
+      "Bidder Succeeded",
+      "Skipped",
+    ],
+    ...matches.flatMap((m) =>
+      (m.hands || []).map((h) => {
+        const ds = h.draftSnapshot || {};
+        const teamAName = teamById.get(m.teamAId)?.name || "Team A";
+        const teamBName = teamById.get(m.teamBId)?.name || "Team B";
+
+        return [
+          m.code || "",
+          m.tableName || "",
+          m.label || "",
+          Number(h.idx) || 0,
+          h.createdAt ? new Date(h.createdAt).toISOString() : "",
+          h.editedAt ? new Date(h.editedAt).toISOString() : "",
+          ds.shufflerName || "",
+          ds.bidder === "A" ? teamAName : ds.bidder === "B" ? teamBName : "",
+          ds.bid ?? "",
+          ds.suit || "",
+          ds.coincheLevel || "",
+          ds.capot ? "Yes" : "No",
+          ds.beloteTeam === "A" ? teamAName : ds.beloteTeam === "B" ? teamBName : "",
+          Number(ds.announceA) || 0,
+          Number(ds.announceB) || 0,
+          ds.bidderTrickPoints ?? "",
+          ds.nonBidderTrickPoints ?? "",
+          Number(h.scoreA) || 0,
+          Number(h.scoreB) || 0,
+          h.bidderSucceeded ? "Yes" : "No",
+          ds.skippedHand ? "Yes" : "No",
+        ];
+      })
+    ),
+  ];
+
   const workbookXml = `<?xml version="1.0"?>
 <Workbook
   xmlns="urn:schemas-microsoft-com:office:spreadsheet"
@@ -236,6 +383,10 @@ function exportCoincheExcel({ appName, matches, teamById, playerById }) {
     <ProtectStructure>False</ProtectStructure>
     <ProtectWindows>False</ProtectWindows>
   </ExcelWorkbook>
+  ${buildWorksheetXml("Standings", standingsRows)}
+  ${buildWorksheetXml("Team Stats", teamStatsSheetRows)}
+  ${buildWorksheetXml("Fun Stats", funStatsRows)}
+  ${buildWorksheetXml("Hand Audit Log", handAuditRows)}
   ${buildWorksheetXml("Matches", matchesRows)}
   ${buildWorksheetXml("Hands", handsRows)}
 </Workbook>`;
@@ -2424,19 +2575,22 @@ if (path === "/public") {
       </button>
 
       <button
-        style={styles.btnPrimary}
-        onClick={() =>
-          exportCoincheExcel({
-            appName,
-            matches,
-            teamById,
-            playerById,
-          })
-        }
-        disabled={!matches.length}
-      >
-        Export Excel
-      </button>
+  style={styles.btnPrimary}
+  onClick={() =>
+    exportCoincheExcel({
+      appName,
+      matches,
+      teamById,
+      playerById,
+      scoreboardRows,
+      teamStatsRows,
+      funStats,
+    })
+  }
+  disabled={!matches.length}
+>
+  Export Excel
+</button>
     </div>
   }
 >
@@ -2746,7 +2900,6 @@ function FunStatsGrid({ funStats }) {
     ["Least Points in a Game", `${funStats.leastPointsGame.points} pts`, funStats.leastPointsGame.label],
 
     ["Highest Scoring Hand", `${funStats.highestScoringHand.points} pts`, funStats.highestScoringHand.label],
-    ["Lowest Scoring Hand", `${funStats.lowestScoringHand.points} pts`, funStats.lowestScoringHand.label],
     ["Best Avg Score / Hand", `${funStats.averageScorePerHand.value} pts`, funStats.averageScorePerHand.label],
     [
       "Best Successful Bid %",
