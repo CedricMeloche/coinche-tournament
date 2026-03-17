@@ -1033,13 +1033,13 @@ function parseSortableNumber(text, fallback = 999999) {
 }
 
 function compareMatchesByTournamentOrder(a, b) {
+  const matchA = parseSortableNumber(a.label, 999999);
+  const matchB = parseSortableNumber(b.label, 999999);
+  if (matchA !== matchB) return matchA - matchB;
+
   const tableA = parseSortableNumber(a.tableName, 999999);
   const tableB = parseSortableNumber(b.tableName, 999999);
   if (tableA !== tableB) return tableA - tableB;
-
-  const labelA = parseSortableNumber(a.label, 999999);
-  const labelB = parseSortableNumber(b.label, 999999);
-  if (labelA !== labelB) return labelA - labelB;
 
   const updatedA = Number(a.lastUpdatedAt) || 0;
   const updatedB = Number(b.lastUpdatedAt) || 0;
