@@ -2848,9 +2848,9 @@ function ScoreboardTable({ rows }) {
 function TeamStatsTable({ rows }) {
   const headers = [
     "Team",
-    "Avg/Hand",
-    "Avg/Match",
-    "Allowed/Hand",
+    "Avg Pts/Hand",
+    "Avg Pts/Match",
+    "Allowed Pts/Hand",
     "Bid %",
     "Coinche %",
     "Announce Pts",
