@@ -1649,76 +1649,101 @@ export default function App() {
   };
 
   const scoreboardRows = useMemo(() => {
-  const rows = teams.map((t) => ({
-    teamId: t.id,
-    name: t.name,
-    matchesPlayed: 0,
-    wins: 0,
-    losses: 0,
-    pointsFor: 0,
-    pointsAgainst: 0,
-  }));
+    const rows = teams.map((t) => ({
+      teamId: t.id,
+      name: t.name,
+      matchesPlayed: 0,
+      wins: 0,
+      losses: 0,
+      standingPoints: 0,
+      pointsFor: 0,
+      pointsAgainst: 0,
+    }));
 
-  const byId = new Map(rows.map((r) => [r.teamId, r]));
+    const byId = new Map(rows.map((r) => [r.teamId, r]));
 
-  for (const m of matches) {
-    if (!m.teamAId || !m.teamBId) continue;
+    for (const m of matches) {
+      if (!m.teamAId || !m.teamBId) continue;
 
-    if (!byId.has(m.teamAId)) {
-      byId.set(m.teamAId, {
-        teamId: m.teamAId,
-        name: teamById.get(m.teamAId)?.name || "Team A",
-        matchesPlayed: 0,
-        wins: 0,
-        losses: 0,
-        pointsFor: 0,
-        pointsAgainst: 0,
-      });
+      if (!byId.has(m.teamAId)) {
+        byId.set(m.teamAId, {
+          teamId: m.teamAId,
+          name: teamById.get(m.teamAId)?.name || "Team A",
+          matchesPlayed: 0,
+          wins: 0,
+          losses: 0,
+          standingPoints: 0,
+          pointsFor: 0,
+          pointsAgainst: 0,
+        });
+      }
+
+      if (!byId.has(m.teamBId)) {
+        byId.set(m.teamBId, {
+          teamId: m.teamBId,
+          name: teamById.get(m.teamBId)?.name || "Team B",
+          matchesPlayed: 0,
+          wins: 0,
+          losses: 0,
+          standingPoints: 0,
+          pointsFor: 0,
+          pointsAgainst: 0,
+        });
+      }
+
+      const a = byId.get(m.teamAId);
+      const b = byId.get(m.teamBId);
+
+      const totalA = Number(m.totalA) || 0;
+      const totalB = Number(m.totalB) || 0;
+      const hasHands = (m.hands || []).length > 0;
+
+      a.pointsFor += totalA;
+      a.pointsAgainst += totalB;
+      b.pointsFor += totalB;
+      b.pointsAgainst += totalA;
+
+      if (hasHands) {
+        a.matchesPlayed += 1;
+        b.matchesPlayed += 1;
+      }
+
+      if (m.winnerId === m.teamAId) {
+        a.wins += 1;
+        b.losses += 1;
+      } else if (m.winnerId === m.teamBId) {
+        b.wins += 1;
+        a.losses += 1;
+      }
+
+      if (m.completed && m.winnerId) {
+        const winnerReachedTarget =
+          totalA >= TARGET_SCORE || totalB >= TARGET_SCORE;
+
+        const awardedPoints = winnerReachedTarget ? 2 : 1;
+
+        if (m.winnerId === m.teamAId) {
+          a.standingPoints += awardedPoints;
+        } else if (m.winnerId === m.teamBId) {
+          b.standingPoints += awardedPoints;
+        }
+      }
     }
 
-    if (!byId.has(m.teamBId)) {
-      byId.set(m.teamBId, {
-        teamId: m.teamBId,
-        name: teamById.get(m.teamBId)?.name || "Team B",
-        matchesPlayed: 0,
-        wins: 0,
-        losses: 0,
-        pointsFor: 0,
-        pointsAgainst: 0,
-      });
-    }
+    return Array.from(byId.values()).sort((x, y) => {
+      if (y.standingPoints !== x.standingPoints) {
+        return y.standingPoints - x.standingPoints;
+      }
+      if (y.wins !== x.wins) return y.wins - x.wins;
 
-    const a = byId.get(m.teamAId);
-    const b = byId.get(m.teamBId);
+      const dx = x.pointsFor - x.pointsAgainst;
+      const dy = y.pointsFor - y.pointsAgainst;
+      if (dy !== dx) return dy - dx;
 
-    a.pointsFor += Number(m.totalA) || 0;
-    a.pointsAgainst += Number(m.totalB) || 0;
-    b.pointsFor += Number(m.totalB) || 0;
-    b.pointsAgainst += Number(m.totalA) || 0;
-
-    if ((m.hands || []).length) {
-      a.matchesPlayed += 1;
-      b.matchesPlayed += 1;
-    }
-
-    if (m.winnerId === m.teamAId) {
-      a.wins += 1;
-      b.losses += 1;
-    } else if (m.winnerId === m.teamBId) {
-      b.wins += 1;
-      a.losses += 1;
-    }
-  }
-
-  return Array.from(byId.values()).sort((x, y) => {
-    if (y.wins !== x.wins) return y.wins - x.wins;
-    const dx = x.pointsFor - x.pointsAgainst;
-    const dy = y.pointsFor - y.pointsAgainst;
-    if (dy !== dx) return dy - dx;
-    if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
-    return x.name.localeCompare(y.name);
-  });
-}, [teams, matches, teamById]);
+      if (y.pointsFor !== x.pointsFor) return y.pointsFor - x.pointsFor;
+      return x.name.localeCompare(y.name);
+    });
+  }, [teams, matches, teamById]);
 
   const teamStatsRows = useMemo(() => {
   const rows = new Map();
@@ -2759,7 +2784,7 @@ function FunStatsGrid({ funStats }) {
 }
 
 function ScoreboardTable({ rows }) {
-  const headers = ["Team", "MP", "W", "L", "PF", "PA", "Diff"];
+  const headers = ["Team", "MP", "W", "L", "P", "PF", "PA", "Diff"];
 
   return (
     <div style={{ overflowX: "auto" }}>
@@ -2768,7 +2793,7 @@ function ScoreboardTable({ rows }) {
           width: "100%",
           borderCollapse: "separate",
           borderSpacing: 0,
-          minWidth: 760,
+          minWidth: 860,
         }}
       >
         <thead>
@@ -2800,6 +2825,7 @@ function ScoreboardTable({ rows }) {
                 <td style={td}>{r.matchesPlayed}</td>
                 <td style={td}>{r.wins}</td>
                 <td style={td}>{r.losses}</td>
+                <td style={tdStrong}>{r.standingPoints}</td>
                 <td style={td}>{r.pointsFor}</td>
                 <td style={td}>{r.pointsAgainst}</td>
                 <td style={tdStrong}>{diff}</td>
@@ -2808,7 +2834,7 @@ function ScoreboardTable({ rows }) {
           })}
           {!rows.length && (
             <tr>
-              <td colSpan={7} style={{ padding: 12, color: "#94a3b8" }}>
+              <td colSpan={8} style={{ padding: 12, color: "#94a3b8" }}>
                 No scoreboard data yet.
               </td>
             </tr>
