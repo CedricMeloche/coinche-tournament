@@ -1027,23 +1027,37 @@ const tdStrong = { ...td, fontWeight: 1000 };
    App
 ========================= */
 
-function parseSortableNumber(text, fallback = 999999) {
-  const m = String(text || "").match(/(\d+)/);
-  return m ? Number(m[1]) : fallback;
+function extractTableAndMatchOrder(match) {
+  const tableText = String(match?.tableName || "");
+  const labelText = String(match?.label || "");
+
+  const tableMatch = tableText.match(/(\d+)/);
+  const labelMatch = labelText.match(/(\d+)/);
+
+  const tableNumber = tableMatch ? Number(tableMatch[1]) : 999999;
+  const matchNumber = labelMatch ? Number(labelMatch[1]) : 999999;
+
+  return { tableNumber, matchNumber };
 }
 
 function compareMatchesByTournamentOrder(a, b) {
-  const matchA = parseSortableNumber(a.label, 999999);
-  const matchB = parseSortableNumber(b.label, 999999);
-  if (matchA !== matchB) return matchA - matchB;
+  const aOrder = extractTableAndMatchOrder(a);
+  const bOrder = extractTableAndMatchOrder(b);
 
-  const tableA = parseSortableNumber(a.tableName, 999999);
-  const tableB = parseSortableNumber(b.tableName, 999999);
-  if (tableA !== tableB) return tableA - tableB;
+  // First sort by match number: Match 1, Match 2, Match 3...
+  if (aOrder.matchNumber !== bOrder.matchNumber) {
+    return aOrder.matchNumber - bOrder.matchNumber;
+  }
 
-  const updatedA = Number(a.lastUpdatedAt) || 0;
-  const updatedB = Number(b.lastUpdatedAt) || 0;
-  return updatedA - updatedB;
+  // Then sort by table number: Table 1, Table 2, Table 3...
+  if (aOrder.tableNumber !== bOrder.tableNumber) {
+    return aOrder.tableNumber - bOrder.tableNumber;
+  }
+
+  // Stable fallback by code
+  const codeA = String(a?.code || "");
+  const codeB = String(b?.code || "");
+  return codeA.localeCompare(codeB, undefined, { numeric: true, sensitivity: "base" });
 }
 
 export default function App() {
