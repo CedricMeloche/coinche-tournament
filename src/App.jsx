@@ -1077,6 +1077,9 @@ export default function App() {
   const [newTableName, setNewTableName] = useState("Table 1");
   const [newMatchLabel, setNewMatchLabel] = useState("Match 1");
 
+  const [editingPlayerId, setEditingPlayerId] = useState(null);
+  const [editingPlayerName, setEditingPlayerName] = useState("");
+
   const inputRef = useRef(null);
   const lastSavedAtRef = useRef(0);
   const isPushingRef = useRef(false);
@@ -1393,13 +1396,52 @@ export default function App() {
     setTimeout(() => inputRef.current?.focus?.(), 0);
   };
 
+    const startEditPlayer = (player) => {
+    setEditingPlayerId(player.id);
+    setEditingPlayerName(player.name || "");
+  };
+
+  const cancelEditPlayer = () => {
+    setEditingPlayerId(null);
+    setEditingPlayerName("");
+  };
+
+  const saveEditPlayer = () => {
+    const name = editingPlayerName.trim();
+    if (!name || !editingPlayerId) return;
+
+    const nextPlayers = players.map((p) =>
+      p.id === editingPlayerId ? { ...p, name } : p
+    );
+
+    setPlayers(nextPlayers);
+    persistNow({ players: nextPlayers });
+
+    setEditingPlayerId(null);
+    setEditingPlayerName("");
+  };
+
   const removePlayer = (id) => {
+    const playerName = players.find((p) => p.id === id)?.name || "this player";
+    if (
+      !window.confirm(
+        `Are you sure you want to remove ${playerName}? This will also reset teams, pair history, and matches.`
+      )
+    ) {
+      return;
+    }
+
     const nextPlayers = players.filter((p) => p.id !== id);
     setPlayers(nextPlayers);
     setTeams([]);
     setPairHistory([]);
     setMatches([]);
     persistNow({ players: nextPlayers, teams: [], pairHistory: [], matches: [] });
+
+    if (editingPlayerId === id) {
+      setEditingPlayerId(null);
+      setEditingPlayerName("");
+    }
   };
 
   const addTeam = () =>
@@ -1424,7 +1466,16 @@ export default function App() {
       firstShufflerPlayerId: "",
     });
 
-  const removeTeam = (teamId) => {
+    const removeTeam = (teamId) => {
+    const teamName = teams.find((t) => t.id === teamId)?.name || "this team";
+    if (
+      !window.confirm(
+        `Are you sure you want to remove ${teamName}? Any matches using this team will be reset.`
+      )
+    ) {
+      return;
+    }
+
     const nextTeams = teams.filter((t) => t.id !== teamId);
     const nextMatches = matches.map((m) => {
       let next = { ...m };
@@ -2724,17 +2775,86 @@ const completedMatchRecaps = matches
           </div>
 
           <div style={{ marginTop: 12, ...styles.grid4 }}>
-            {players.map((p) => (
-              <div key={p.id} style={styles.card}>
-                <div style={{ fontWeight: 950, display: "flex", justifyContent: "space-between", gap: 10 }}>
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
-                  <button style={{ ...styles.btnGhost, padding: 0 }} onClick={() => removePlayer(p.id)}>
-                    Remove
-                  </button>
-                </div>
-                <div style={styles.small}>ID: {p.id.slice(-6)}</div>
-              </div>
-            ))}
+            {players.map((p) => {
+  const isEditing = editingPlayerId === p.id;
+
+  return (
+    <div key={p.id} style={styles.card}>
+      <div
+        style={{
+          fontWeight: 950,
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 10,
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}
+      >
+        {!isEditing ? (
+          <span
+            style={{
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              flex: 1,
+              minWidth: 0,
+            }}
+          >
+            {p.name}
+          </span>
+        ) : (
+          <input
+            style={styles.input("100%")}
+            value={editingPlayerName}
+            onChange={(e) => setEditingPlayerName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") saveEditPlayer();
+              if (e.key === "Escape") cancelEditPlayer();
+            }}
+            autoFocus
+          />
+        )}
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          {!isEditing ? (
+            <>
+              <button
+                style={{ ...styles.btnGhost, padding: 0 }}
+                onClick={() => startEditPlayer(p)}
+              >
+                Edit
+              </button>
+              <button
+                style={{ ...styles.btnGhost, padding: 0 }}
+                onClick={() => removePlayer(p.id)}
+              >
+                Remove
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                style={{ ...styles.btnGhost, padding: 0 }}
+                onClick={saveEditPlayer}
+                disabled={!editingPlayerName.trim()}
+              >
+                Save
+              </button>
+              <button
+                style={{ ...styles.btnGhost, padding: 0 }}
+                onClick={cancelEditPlayer}
+              >
+                Cancel
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div style={styles.small}>ID: {p.id.slice(-6)}</div>
+    </div>
+  );
+})}
             {!players.length ? <div style={styles.small}>Add players to get started.</div> : null}
           </div>
         </Section>
