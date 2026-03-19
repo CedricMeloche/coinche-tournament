@@ -1231,6 +1231,27 @@ export default function App() {
     }
   };
 
+  const deleteMatchFromSupabase = async (matchId) => {
+  isPushingRef.current = true;
+  try {
+    const { error: handsErr } = await supabase
+      .from("hands")
+      .delete()
+      .eq("match_id", matchId);
+    if (handsErr) throw handsErr;
+
+    const { error: matchErr } = await supabase
+      .from("matches")
+      .delete()
+      .eq("id", matchId);
+    if (matchErr) throw matchErr;
+
+    setSyncStatus("Live: Supabase");
+  } finally {
+    isPushingRef.current = false;
+  }
+};
+
 const deleteAllSupabaseData = async () => {
   isPushingRef.current = true;
   try {
@@ -1244,6 +1265,21 @@ const deleteAllSupabaseData = async () => {
   } finally {
     isPushingRef.current = false;
   }
+};
+
+const clearAllLocalTournamentData = () => {
+  setPlayers([]);
+  setTeams([]);
+  setPairHistory([]);
+  setMatches([]);
+  setEditingPlayerId(null);
+  setEditingPlayerName("");
+  persistNow({
+    players: [],
+    teams: [],
+    pairHistory: [],
+    matches: [],
+  });
 };
 
   const syncMatchLocalAndRemote = async (nextMatch, nextMatches, nextAppName = appName) => {
@@ -1401,48 +1437,60 @@ const deleteAllSupabaseData = async () => {
     setEditingPlayerName(player.name || "");
   };
 
-  const cancelEditPlayer = () => {
-    setEditingPlayerId(null);
-    setEditingPlayerName("");
-  };
+const cancelEditPlayer = () => {
+  setEditingPlayerId(null);
+  setEditingPlayerName("");
+};
 
-  const saveEditPlayer = () => {
-    const name = editingPlayerName.trim();
-    if (!name || !editingPlayerId) return;
+const saveEditPlayer = () => {
+  const name = editingPlayerName.trim();
+  if (!name || !editingPlayerId) return;
 
-    const nextPlayers = players.map((p) =>
-      p.id === editingPlayerId ? { ...p, name } : p
-    );
+  const nextPlayers = players.map((p) =>
+    p.id === editingPlayerId ? { ...p, name } : p
+  );
 
-    setPlayers(nextPlayers);
-    persistNow({ players: nextPlayers });
+  setPlayers(nextPlayers);
+  persistNow({ players: nextPlayers });
 
-    setEditingPlayerId(null);
-    setEditingPlayerName("");
-  };
+  setEditingPlayerId(null);
+  setEditingPlayerName("");
+};
 
-  const removePlayer = (id) => {
-    const playerName = players.find((p) => p.id === id)?.name || "this player";
-    if (
-      !window.confirm(
-        `Are you sure you want to remove ${playerName}? This will also reset teams, pair history, and matches.`
-      )
-    ) {
-      return;
-    }
+const removePlayer = async (id) => {
+  const playerName = players.find((p) => p.id === id)?.name || "this player";
+  if (
+    !window.confirm(
+      `Are you sure you want to remove ${playerName}? This will also reset teams, pair history, matches, and remote live data.`
+    )
+  ) {
+    return;
+  }
+
+  try {
+    await deleteAllSupabaseData();
 
     const nextPlayers = players.filter((p) => p.id !== id);
     setPlayers(nextPlayers);
     setTeams([]);
     setPairHistory([]);
     setMatches([]);
-    persistNow({ players: nextPlayers, teams: [], pairHistory: [], matches: [] });
+    persistNow({
+      players: nextPlayers,
+      teams: [],
+      pairHistory: [],
+      matches: [],
+    });
 
     if (editingPlayerId === id) {
       setEditingPlayerId(null);
       setEditingPlayerName("");
     }
-  };
+  } catch (err) {
+    console.error("Remove player failed:", err);
+    alert(`Remove player failed: ${err.message || "Unknown error"}`);
+  }
+};
 
   const addTeam = () =>
     saveField(setTeams, "teams", [
@@ -1466,27 +1514,33 @@ const deleteAllSupabaseData = async () => {
       firstShufflerPlayerId: "",
     });
 
-    const removeTeam = (teamId) => {
-    const teamName = teams.find((t) => t.id === teamId)?.name || "this team";
-    if (
-      !window.confirm(
-        `Are you sure you want to remove ${teamName}? Any matches using this team will be reset.`
-      )
-    ) {
-      return;
-    }
+    const removeTeam = async (teamId) => {
+  const teamName = teams.find((t) => t.id === teamId)?.name || "this team";
+  if (
+    !window.confirm(
+      `Are you sure you want to remove ${teamName}? This will also reset matches and remote live data.`
+    )
+  ) {
+    return;
+  }
+
+  try {
+    await deleteAllSupabaseData();
 
     const nextTeams = teams.filter((t) => t.id !== teamId);
-    const nextMatches = matches.map((m) => {
-      let next = { ...m };
-      if (next.teamAId === teamId) next.teamAId = null;
-      if (next.teamBId === teamId) next.teamBId = null;
-      return resetMatchState(next);
-    });
     setTeams(nextTeams);
-    setMatches(nextMatches);
-    persistNow({ teams: nextTeams, matches: nextMatches });
-  };
+    setPairHistory([]);
+    setMatches([]);
+    persistNow({
+      teams: nextTeams,
+      pairHistory: [],
+      matches: [],
+    });
+  } catch (err) {
+    console.error("Remove team failed:", err);
+    alert(`Remove team failed: ${err.message || "Unknown error"}`);
+  }
+};
 
   const toggleTeamLock = (teamId, locked) =>
     saveField(
@@ -1517,46 +1571,64 @@ const deleteAllSupabaseData = async () => {
       teams.map((t) => (t.id === teamId ? { ...t, name } : t))
     );
 
-  function buildRandomTeams() {
-    if (players.length < 2) return;
-    const lockedPlayers = new Set(teams.flatMap((t) => (t.locked ? t.playerIds || [] : [])));
-    const available = players.map((p) => p.id).filter((id) => !lockedPlayers.has(id));
-    const historySet = new Set(pairHistory);
-    let best = null;
+async function buildRandomTeams() {
+  if (players.length < 2) return;
 
-    for (let k = 0; k < (avoidSameTeams ? 40 : 1); k++) {
-      const shuffled = shuffleArray(available);
-      const pairs = [];
-      for (let i = 0; i < shuffled.length; i += 2) pairs.push([shuffled[i], shuffled[i + 1] || null]);
-      const repeats = pairs.reduce((acc, [a, b]) => {
-        if (!a || !b) return acc;
-        return acc + (historySet.has([a, b].sort().join("|")) ? 1 : 0);
-      }, 0);
-      if (!best || repeats < best.repeats) best = { pairs, repeats };
-      if (best?.repeats === 0) break;
+  const lockedPlayers = new Set(
+    teams.flatMap((t) => (t.locked ? t.playerIds || [] : []))
+  );
+  const available = players.map((p) => p.id).filter((id) => !lockedPlayers.has(id));
+  const historySet = new Set(pairHistory);
+  let best = null;
+
+  for (let k = 0; k < (avoidSameTeams ? 40 : 1); k++) {
+    const shuffled = shuffleArray(available);
+    const pairs = [];
+    for (let i = 0; i < shuffled.length; i += 2) {
+      pairs.push([shuffled[i], shuffled[i + 1] || null]);
     }
 
-    let pairIdx = 0;
-    const nextTeams = teams.map((t) =>
-      t.locked ? t : { ...t, playerIds: (best?.pairs?.[pairIdx++] || []).filter(Boolean) }
-    );
+    const repeats = pairs.reduce((acc, [a, b]) => {
+      if (!a || !b) return acc;
+      return acc + (historySet.has([a, b].sort().join("|")) ? 1 : 0);
+    }, 0);
 
-    const nextPairHistory = Array.from(
-      new Set([
-        ...pairHistory,
-        ...nextTeams
-          .filter((t) => (t.playerIds || []).length === 2)
-          .map((t) => [...t.playerIds].sort().join("|")),
-      ])
-    );
+    if (!best || repeats < best.repeats) best = { pairs, repeats };
+    if (best?.repeats === 0) break;
+  }
 
-    const nextMatches = matches.map(resetMatchState);
+let pairIdx = 0;
+const nextTeams = teams.map((t) =>
+  t.locked
+    ? t
+    : { ...t, playerIds: (best?.pairs?.[pairIdx++] || []).filter(Boolean) }
+);
+
+  const nextPairHistory = Array.from(
+    new Set([
+      ...pairHistory,
+      ...nextTeams
+        .filter((t) => (t.playerIds || []).length === 2)
+        .map((t) => [...t.playerIds].sort().join("|")),
+    ])
+  );
+
+  try {
+    await deleteAllSupabaseData();
 
     setTeams(nextTeams);
     setPairHistory(nextPairHistory);
-    setMatches(nextMatches);
-    persistNow({ teams: nextTeams, pairHistory: nextPairHistory, matches: nextMatches });
+    setMatches([]);
+    persistNow({
+      teams: nextTeams,
+      pairHistory: nextPairHistory,
+      matches: [],
+    });
+  } catch (err) {
+    console.error("Randomize teams failed:", err);
+    alert(`Randomize teams failed: ${err.message || "Unknown error"}`);
   }
+}
 
   const addMatch = async () => {
     if (!teams.length) return;
@@ -2728,7 +2800,7 @@ const completedMatchRecaps = matches
                 Refresh Live Data
               </button>
 
-              <button
+<button
   style={styles.btnDanger}
   onClick={async () => {
     if (
@@ -2747,6 +2819,8 @@ const completedMatchRecaps = matches
       setTeams([]);
       setPairHistory([]);
       setMatches([]);
+      setEditingPlayerId(null);
+      setEditingPlayerName("");
 
       persistNow({
         appName: "Coinche Scorekeeper",
