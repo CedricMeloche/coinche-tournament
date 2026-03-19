@@ -2784,60 +2784,65 @@ const completedMatchRecaps = matches
           title="Settings"
           collapsible
           defaultCollapsed
-          right={
-            <div style={styles.row}>
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
-                <input type="checkbox" checked={avoidSameTeams} onChange={(e) => saveField(setAvoidSameTeams, "avoidSameTeams", e.target.checked)} />
-                Avoid repeating pairs
-              </label>
+right={
+  <div style={styles.row}>
+    <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 900 }}>
+      <input
+        type="checkbox"
+        checked={avoidSameTeams}
+        onChange={(e) => saveField(setAvoidSameTeams, "avoidSameTeams", e.target.checked)}
+      />
+      Avoid repeating pairs
+    </label>
 
-              <button
-                style={styles.btnSecondary}
-                onClick={() => {
-                  void refreshFromSupabase();
-                }}
-              >
-                Refresh Live Data
-              </button>
+    <button
+      style={styles.btnSecondary}
+      onClick={() => {
+        void refreshFromSupabase();
+      }}
+    >
+      Refresh Live Data
+    </button>
 
-<button
-  style={styles.btnDanger}
-  onClick={async () => {
-    if (
-      !confirm(
-        "Full reset? This will permanently delete all players, teams, matches, and hands from this device and Supabase."
-      )
-    ) {
-      return;
-    }
+    <button
+      style={styles.btnDanger}
+      onClick={async () => {
+        if (
+          !confirm(
+            "Full reset? This will permanently delete all players, teams, matches, and hands from this device and Supabase."
+          )
+        ) {
+          return;
+        }
 
-    try {
-      await deleteAllSupabaseData();
+        try {
+          await deleteAllSupabaseData();
 
-      setAppName("Coinche Scorekeeper");
-      setPlayers([]);
-      setTeams([]);
-      setPairHistory([]);
-      setMatches([]);
-      setEditingPlayerId(null);
-      setEditingPlayerName("");
+          setAppName("Coinche Scorekeeper");
+          setPlayers([]);
+          setTeams([]);
+          setPairHistory([]);
+          setMatches([]);
+          setEditingPlayerId(null);
+          setEditingPlayerName("");
 
-      persistNow({
-        appName: "Coinche Scorekeeper",
-        players: [],
-        teams: [],
-        pairHistory: [],
-        matches: [],
-      });
-    } catch (err) {
-      console.error("Full reset failed:", err);
-      alert(`Full reset failed: ${err.message || "Unknown error"}`);
-    }
-  }}
->
-  Full Reset
-</button>
-          }
+          persistNow({
+            appName: "Coinche Scorekeeper",
+            players: [],
+            teams: [],
+            pairHistory: [],
+            matches: [],
+          });
+        } catch (err) {
+          console.error("Full reset failed:", err);
+          alert(`Full reset failed: ${err.message || "Unknown error"}`);
+        }
+      }}
+    >
+      Full Reset
+    </button>
+  </div>
+}
         >
           <div style={styles.grid3}>
             <InfoCard title="App name">
