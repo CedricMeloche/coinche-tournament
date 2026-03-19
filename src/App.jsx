@@ -3169,9 +3169,9 @@ function FunStatsGrid({ funStats }) {
         ["Closest Match", `${funStats.closest.diff} pts`, funStats.closest.label],
         ["Clutch Finish (last 3 hands)", `${funStats.clutchFinish.diff} pts`, funStats.clutchFinish.label],
         [
-          "Momentum Monster",
+          "Momentum Monster (biggest 3-hand swing)",
           `${funStats.momentumMonster.swing} pts`,
-          `${funStats.momentumMonster.label} (biggest score swing across 3 hands)`,
+          `funStats.momentumMonster.label,
         ],
         ["Most Points in a Game", `${funStats.mostPointsGame.points} pts`, funStats.mostPointsGame.label],
         ["Least Points in a Game", `${funStats.leastPointsGame.points} pts`, funStats.leastPointsGame.label],
