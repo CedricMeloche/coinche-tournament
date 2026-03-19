@@ -3790,16 +3790,11 @@ function MatchBadges({ match, teamById }) {
     });
   }
 
-  // Finished status badge
-  if (match.completed) {
+  // Finished early badge only
+  if (match.completed && match.forcedComplete) {
     badges.push({
-      label: match.forcedComplete ? "Finished Early" : "Final",
+      label: "Finished Early",
       tone: "danger",
-    });
-  } else {
-    badges.push({
-      label: "Live",
-      tone: "info",
     });
   }
 
@@ -3823,12 +3818,6 @@ function MatchBadges({ match, teamById }) {
   badges.push({
     label: `Race ${racePct}%`,
     tone: racePct >= 85 ? "danger" : racePct >= 65 ? "warning" : "neutral",
-  });
-
-  // Hand count badge
-  badges.push({
-    label: `${hands.length} Hand${hands.length === 1 ? "" : "s"}`,
-    tone: "neutral",
   });
 
   // High scoring badge
@@ -3961,51 +3950,10 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
     lineHeight: 1.15,
   };
 
-  const statusBadgeStyle = match.completed
-    ? {
-        background: "rgba(34,197,94,0.16)",
-        border: "1px solid rgba(34,197,94,0.35)",
-        color: "#bbf7d0",
-      }
-    : {
-        background: "rgba(59,130,246,0.16)",
-        border: "1px solid rgba(59,130,246,0.35)",
-        color: "#bfdbfe",
-      };
-
   return (
     <div style={styles.card}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          gap: 10,
-          alignItems: "center",
-          flexWrap: "wrap",
-          marginBottom: 6,
-        }}
-      >
-        <div style={{ fontWeight: 950 }}>
-          {match.tableName} • {match.label}
-        </div>
-
-        <MatchBadges match={match} teamById={teamById} />
-
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "6px 10px",
-            borderRadius: 999,
-            fontSize: 12,
-            fontWeight: 900,
-            ...statusBadgeStyle,
-          }}
-        >
-          <span>{match.completed ? "●" : "●"}</span>
-          <span>{match.completed ? "Completed" : "Live"}</span>
-        </span>
+      <div style={{ fontWeight: 950, marginBottom: 6 }}>
+        {match.label}
       </div>
 
       <div
@@ -4054,23 +4002,6 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
             <div style={styles.progressFillB(pctB)} />
           </div>
         )}
-      </div>
-
-      <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <span style={styles.tag}>Code {match.code}</span>
-        <span style={styles.tag}>{(match.hands || []).length} hands</span>
-        {match.completed && winnerSide ? (
-          <span
-            style={{
-              ...styles.tag,
-              background: "rgba(34,197,94,0.14)",
-              border: "1px solid rgba(34,197,94,0.30)",
-              color: "#dcfce7",
-            }}
-          >
-            Winner: {winnerSide === "A" ? ta : tb}
-          </span>
-        ) : null}
       </div>
 
       <MatchScoreLinesChart
