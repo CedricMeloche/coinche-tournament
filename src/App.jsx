@@ -3750,10 +3750,6 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
       ? "B"
       : null;
 
-  const winnerName = winnerSide === "A" ? ta : winnerSide === "B" ? tb : "—";
-  const margin = Math.abs(totalA - totalB);
-  const handCount = (match.hands || []).length;
-
   const recapRowBase = {
     marginTop: 10,
     borderRadius: 14,
@@ -3779,6 +3775,18 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
     lineHeight: 1.15,
   };
 
+  const statusBadgeStyle = match.completed
+    ? {
+        background: "rgba(34,197,94,0.16)",
+        border: "1px solid rgba(34,197,94,0.35)",
+        color: "#bbf7d0",
+      }
+    : {
+        background: "rgba(59,130,246,0.16)",
+        border: "1px solid rgba(59,130,246,0.35)",
+        color: "#bfdbfe",
+      };
+
   return (
     <div style={styles.card}>
       <div
@@ -3797,17 +3805,18 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
 
         <span
           style={{
-            ...styles.tag,
-            background: recapMode
-              ? "rgba(34,197,94,0.14)"
-              : "rgba(59,130,246,0.14)",
-            border: recapMode
-              ? "1px solid rgba(34,197,94,0.28)"
-              : "1px solid rgba(59,130,246,0.28)",
-            color: recapMode ? "#bbf7d0" : "#bfdbfe",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "6px 10px",
+            borderRadius: 999,
+            fontSize: 12,
+            fontWeight: 900,
+            ...statusBadgeStyle,
           }}
         >
-          {recapMode ? "FINAL" : "LIVE"}
+          <span>{match.completed ? "●" : "●"}</span>
+          <span>{match.completed ? "Completed" : "Live"}</span>
         </span>
       </div>
 
@@ -3825,12 +3834,9 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
             alignItems: "center",
           }}
         >
-          <span style={recapNameText}>
-            {ta} {recapMode && winnerSide === "A" ? "🏆" : ""}
-          </span>
+          <span style={recapNameText}>{ta}</span>
           <span style={recapScoreText}>{totalA}</span>
         </div>
-
         {!recapMode && (
           <div style={{ marginTop: 6, ...styles.progressWrap }}>
             <div style={styles.progressFillA(pctA)} />
@@ -3852,12 +3858,9 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
             alignItems: "center",
           }}
         >
-          <span style={recapNameText}>
-            {tb} {recapMode && winnerSide === "B" ? "🏆" : ""}
-          </span>
+          <span style={recapNameText}>{tb}</span>
           <span style={recapScoreText}>{totalB}</span>
         </div>
-
         {!recapMode && (
           <div style={{ marginTop: 6, ...styles.progressWrap }}>
             <div style={styles.progressFillB(pctB)} />
@@ -3865,20 +3868,22 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
         )}
       </div>
 
-      {recapMode ? (
-        <div
-          style={{
-            marginTop: 10,
-            display: "flex",
-            gap: 8,
-            flexWrap: "wrap",
-          }}
-        >
-          <span style={styles.tag}>Winner: {winnerName}</span>
-          <span style={styles.tag}>Margin: {margin} pts</span>
-          <span style={styles.tag}>Hands: {handCount}</span>
-        </div>
-      ) : null}
+      <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <span style={styles.tag}>Code {match.code}</span>
+        <span style={styles.tag}>{(match.hands || []).length} hands</span>
+        {match.completed && winnerSide ? (
+          <span
+            style={{
+              ...styles.tag,
+              background: "rgba(34,197,94,0.14)",
+              border: "1px solid rgba(34,197,94,0.30)",
+              color: "#dcfce7",
+            }}
+          >
+            Winner: {winnerSide === "A" ? ta : tb}
+          </span>
+        ) : null}
+      </div>
 
       <MatchScoreLinesChart
         hands={match.hands || []}
