@@ -3733,6 +3733,192 @@ function ScoreCard({ name, score, pct, winner, leader, variant = "A", bigTotals 
   );
 }
 
+function MatchBadges({ match, teamById }) {
+  const ta = teamById.get(match.teamAId)?.name ?? "Team A";
+  const tb = teamById.get(match.teamBId)?.name ?? "Team B";
+  const totalA = Number(match.totalA) || 0;
+  const totalB = Number(match.totalB) || 0;
+  const hands = match.hands || [];
+  const diff = Math.abs(totalA - totalB);
+  const leadingTeam = totalA === totalB ? null : totalA > totalB ? ta : tb;
+  const maxScore = Math.max(totalA, totalB);
+  const racePct = Math.min(100, Math.round((maxScore / TARGET_SCORE) * 100));
+
+  const biggestHand = hands.reduce(
+    (best, h) => {
+      const total = (Number(h?.scoreA) || 0) + (Number(h?.scoreB) || 0);
+      return total > best ? total : best;
+    },
+    0
+  );
+
+  const totalMatchPoints = totalA + totalB;
+
+  let hasCoinche = false;
+  let hasSurcoinche = false;
+  let hasCapot = false;
+
+  for (const h of hands) {
+    const d = h?.draftSnapshot || {};
+    if (d.coincheLevel === "COINCHE") hasCoinche = true;
+    if (d.coincheLevel === "SURCOINCHE") hasSurcoinche = true;
+    if (d.capot) hasCapot = true;
+  }
+
+  let comebackWatch = false;
+  if (!match.completed && Array.isArray(match.timelineDiffs) && match.timelineDiffs.length >= 2) {
+    const lastDiff = match.timelineDiffs[match.timelineDiffs.length - 1] || 0;
+    const biggestTrailA = Math.abs(Math.min(0, ...match.timelineDiffs));
+    const biggestTrailB = Math.max(0, ...match.timelineDiffs);
+
+    if (lastDiff > 0 && biggestTrailA >= 150) comebackWatch = true;
+    if (lastDiff < 0 && biggestTrailB >= 150) comebackWatch = true;
+  }
+
+  const badges = [];
+
+  // Lead badge
+  if (leadingTeam) {
+    badges.push({
+      label: `Lead: ${leadingTeam} +${diff}`,
+      tone: diff >= 300 ? "success" : "neutral",
+    });
+  } else {
+    badges.push({
+      label: "Tied",
+      tone: "neutral",
+    });
+  }
+
+  // Finished status badge
+  if (match.completed) {
+    badges.push({
+      label: match.forcedComplete ? "Finished Early" : "Final",
+      tone: "danger",
+    });
+  } else {
+    badges.push({
+      label: "Live",
+      tone: "info",
+    });
+  }
+
+  // Big hand badge
+  if (biggestHand > 0) {
+    badges.push({
+      label: `Big Hand ${biggestHand}`,
+      tone: biggestHand >= 250 ? "warning" : "neutral",
+    });
+  }
+
+  // Comeback badge
+  if (comebackWatch) {
+    badges.push({
+      label: "Comeback Watch",
+      tone: "warning",
+    });
+  }
+
+  // Race-to-2000 badge
+  badges.push({
+    label: `Race ${racePct}%`,
+    tone: racePct >= 85 ? "danger" : racePct >= 65 ? "warning" : "neutral",
+  });
+
+  // Hand count badge
+  badges.push({
+    label: `${hands.length} Hand${hands.length === 1 ? "" : "s"}`,
+    tone: "neutral",
+  });
+
+  // High scoring badge
+  if (totalMatchPoints >= 2500) {
+    badges.push({
+      label: `High Scoring ${totalMatchPoints}`,
+      tone: "success",
+    });
+  }
+
+  // Coinche / Surcoinche badge
+  if (hasSurcoinche) {
+    badges.push({
+      label: "Surcoinche",
+      tone: "danger",
+    });
+  } else if (hasCoinche) {
+    badges.push({
+      label: "Coinche",
+      tone: "info",
+    });
+  }
+
+  // Capot badge
+  if (hasCapot) {
+    badges.push({
+      label: "Capot",
+      tone: "warning",
+    });
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+      {badges.map((badge, idx) => (
+        <StatusBadge key={`${badge.label}_${idx}`} tone={badge.tone}>
+          {badge.label}
+        </StatusBadge>
+      ))}
+    </div>
+  );
+}
+
+function StatusBadge({ children, tone = "neutral" }) {
+  const toneStyles = {
+    neutral: {
+      background: "rgba(148,163,184,0.14)",
+      border: "1px solid rgba(148,163,184,0.24)",
+      color: "#e2e8f0",
+    },
+    info: {
+      background: "rgba(59,130,246,0.16)",
+      border: "1px solid rgba(59,130,246,0.30)",
+      color: "#dbeafe",
+    },
+    success: {
+      background: "rgba(34,197,94,0.16)",
+      border: "1px solid rgba(34,197,94,0.30)",
+      color: "#dcfce7",
+    },
+    warning: {
+      background: "rgba(250,204,21,0.16)",
+      border: "1px solid rgba(250,204,21,0.30)",
+      color: "#fef3c7",
+    },
+    danger: {
+      background: "rgba(244,63,94,0.16)",
+      border: "1px solid rgba(244,63,94,0.30)",
+      color: "#ffe4e6",
+    },
+  };
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "6px 10px",
+        borderRadius: 999,
+        fontSize: 11,
+        fontWeight: 900,
+        letterSpacing: "0.02em",
+        lineHeight: 1,
+        ...toneStyles[tone],
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
 function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapMode = false }) {
   const ta = teamById.get(match.teamAId)?.name ?? "Team A";
   const tb = teamById.get(match.teamBId)?.name ?? "Team B";
@@ -3802,6 +3988,8 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
         <div style={{ fontWeight: 950 }}>
           {match.tableName} • {match.label}
         </div>
+
+        <MatchBadges match={match} teamById={teamById} />
 
         <span
           style={{
@@ -3931,21 +4119,20 @@ function TeamCard({ team, idx, players, usedPlayerIds, playerById, onToggleLock,
         </div>
       </div>
 
-      <div style={{ marginTop: 10 }}>
-        <div style={styles.small}>Team name</div>
-        <input style={styles.input("100%")} value={team.name} onChange={(e) => onRename(e.target.value)} placeholder={`Team ${idx + 1}`} />
-      </div>
-
-      <div style={{ marginTop: 10, ...styles.grid2 }}>
-        {[0, 1].map((slotIdx) => (
-          <div key={slotIdx}>
-            <div style={styles.small}>Player {slotIdx + 1}</div>
-            <select style={styles.select("100%")} value={team.playerIds?.[slotIdx] || ""} onChange={(e) => onSetPlayer(slotIdx, e.target.value)}>
-              <option value="">— Select —</option>
-              {selectOptions()}
-            </select>
-          </div>
-        ))}
+      <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <span style={styles.tag}>{(match.hands || []).length} hands</span>
+        {match.completed && winnerSide ? (
+          <span
+            style={{
+              ...styles.tag,
+              background: "rgba(34,197,94,0.14)",
+              border: "1px solid rgba(34,197,94,0.30)",
+              color: "#dcfce7",
+            }}
+          >
+            Winner: {winnerSide === "A" ? ta : tb}
+          </span>
+        ) : null}
       </div>
 
       <div style={{ marginTop: 10, ...styles.small }}>
