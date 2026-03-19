@@ -2639,9 +2639,9 @@ const completedMatchRecaps = matches
           <TeamStatsTable rows={teamStatsRows} />
         </Section>
 
-        <Section title="Fun Facts">
-          <FunStatsGrid funStats={funStats} />
-        </Section>
+<Section title="Tournament Highlights & Awards">
+  <FunStatsGrid funStats={funStats} />
+</Section>
       </div>
     </div>
   );
@@ -3160,58 +3160,117 @@ function StatCard({ label, value, sub }) {
 }
 
 function FunStatsGrid({ funStats }) {
-  const items = [
-    ["Biggest Blowout", `${funStats.biggestBlowout.diff} pts`, funStats.biggestBlowout.label],
-    ["Best Comeback", `${funStats.bestComeback.deficit} pts`, funStats.bestComeback.label],
-    ["Closest Match", `${funStats.closest.diff} pts`, funStats.closest.label],
-    ["Clutch Finish (last 3 hands)", `${funStats.clutchFinish.diff} pts`, funStats.clutchFinish.label],
-    [
-      "Momentum Monster",
-      `${funStats.momentumMonster.swing} pts`,
-      `${funStats.momentumMonster.label} (biggest score swing across 3 hands)`,
-    ],
-    ["Most Points in a Game", `${funStats.mostPointsGame.points} pts`, funStats.mostPointsGame.label],
-    ["Least Points in a Game", `${funStats.leastPointsGame.points} pts`, funStats.leastPointsGame.label],
-
-    ["Highest Scoring Hand", `${funStats.highestScoringHand.points} pts`, funStats.highestScoringHand.label],
-    ["Best Avg Score / Hand", `${funStats.averageScorePerHand.value} pts`, funStats.averageScorePerHand.label],
-    [
-      "Best Successful Bid %",
-      `${funStats.bestSuccessfulBidRateTeam.pct}%`,
-      `${funStats.bestSuccessfulBidRateTeam.name} (${funStats.bestSuccessfulBidRateTeam.made}/${funStats.bestSuccessfulBidRateTeam.total})`,
-    ],
-    [
-      "Best Coinche Success %",
-      `${funStats.bestCoincheRateTeam.pct}%`,
-      `${funStats.bestCoincheRateTeam.name} (${funStats.bestCoincheRateTeam.made}/${funStats.bestCoincheRateTeam.total})`,
-    ],
-    [
-      "Longest Hand Win Streak",
-      `${funStats.longestHandWinStreak.streak} hands`,
-      funStats.longestHandWinStreak.name,
-    ],
-    ["Capot Count by Team", funStats.capotCountByTeam.name, `${funStats.capotCountByTeam.v} capots`],
-    ["Capot Count by Player", funStats.capotCountByPlayer.name, `${funStats.capotCountByPlayer.v} capots`],
-
-    ["Perfect Defense", funStats.perfectDefense.name, `${funStats.perfectDefense.count} shutout hands`],
-    ["Coinche King", funStats.coincheKing.name, `${funStats.coincheKing.v} coinches`],
-    ["Capot Hero", funStats.capotHero.name, `${funStats.capotHero.v} capots`],
-    ["Belote Magnet", funStats.beloteMagnet.name, `${funStats.beloteMagnet.v} belotes`],
-    ["Most Announces", funStats.mostAnnounces.name, `${funStats.mostAnnounces.v} announces`],
-    ["Highest Announces", funStats.highestAnnounces.name, `${funStats.highestAnnounces.v} pts announced`],
+  const sections = [
+    {
+      title: "Tournament Highlights",
+      items: [
+        ["Biggest Blowout", `${funStats.biggestBlowout.diff} pts`, funStats.biggestBlowout.label],
+        ["Best Comeback", `${funStats.bestComeback.deficit} pts`, funStats.bestComeback.label],
+        ["Closest Match", `${funStats.closest.diff} pts`, funStats.closest.label],
+        ["Clutch Finish (last 3 hands)", `${funStats.clutchFinish.diff} pts`, funStats.clutchFinish.label],
+        [
+          "Momentum Monster",
+          `${funStats.momentumMonster.swing} pts`,
+          `${funStats.momentumMonster.label} (biggest score swing across 3 hands)`,
+        ],
+        ["Most Points in a Game", `${funStats.mostPointsGame.points} pts`, funStats.mostPointsGame.label],
+        ["Least Points in a Game", `${funStats.leastPointsGame.points} pts`, funStats.leastPointsGame.label],
+        ["Highest Scoring Hand", `${funStats.highestScoringHand.points} pts`, funStats.highestScoringHand.label],
+      ],
+    },
+    {
+      title: "Team Awards",
+      items: [
+        ["Best Avg Score / Hand", `${funStats.averageScorePerHand.value} pts`, funStats.averageScorePerHand.label],
+        [
+          "Best Successful Bid %",
+          `${funStats.bestSuccessfulBidRateTeam.pct}%`,
+          `${funStats.bestSuccessfulBidRateTeam.name} (${funStats.bestSuccessfulBidRateTeam.made}/${funStats.bestSuccessfulBidRateTeam.total})`,
+        ],
+        [
+          "Best Coinche Success %",
+          `${funStats.bestCoincheRateTeam.pct}%`,
+          `${funStats.bestCoincheRateTeam.name} (${funStats.bestCoincheRateTeam.made}/${funStats.bestCoincheRateTeam.total})`,
+        ],
+        [
+          "Longest Hand Win Streak",
+          `${funStats.longestHandWinStreak.streak} hands`,
+          funStats.longestHandWinStreak.name,
+        ],
+        ["Capot Count by Team", funStats.capotCountByTeam.name, `${funStats.capotCountByTeam.v} capots`],
+        ["Perfect Defense", funStats.perfectDefense.name, `${funStats.perfectDefense.count} shutout hands`],
+        ["Coinche King", funStats.coincheKing.name, `${funStats.coincheKing.v} coinches`],
+        ["Capot Hero", funStats.capotHero.name, `${funStats.capotHero.v} capots`],
+        ["Belote Magnet", funStats.beloteMagnet.name, `${funStats.beloteMagnet.v} belotes`],
+      ],
+    },
+    {
+      title: "Player Awards",
+      items: [
+        ["Capot Count by Player", funStats.capotCountByPlayer.name, `${funStats.capotCountByPlayer.v} capots`],
+        ["Most Announces", funStats.mostAnnounces.name, `${funStats.mostAnnounces.v} announces`],
+        ["Highest Announces", funStats.highestAnnounces.name, `${funStats.highestAnnounces.v} pts announced`],
+      ],
+    },
   ];
 
   return (
-    <div style={styles.grid3}>
-      {items.map(([label, value, sub]) => (
-        <StatCard key={label} label={label} value={value} sub={sub} />
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {sections.map((section) => (
+        <div key={section.title} style={styles.card}>
+          <div
+            style={{
+              fontWeight: 950,
+              fontSize: 15,
+              marginBottom: 10,
+              color: "#e5e7eb",
+            }}
+          >
+            {section.title}
+          </div>
+
+          <div style={styles.grid3}>
+            {section.items.map(([label, value, sub]) => (
+              <StatCard key={label} label={label} value={value} sub={sub} />
+            ))}
+          </div>
+        </div>
       ))}
     </div>
   );
 }
 
 function ScoreboardTable({ rows }) {
-  const headers = ["Team", "MP", "W", "L", "P", "PF", "PA", "Diff"];
+  const headers = ["Rank", "Team", "MP", "W", "L", "P", "PF", "PA", "Diff"];
+
+  const getRankStyle = (idx) => {
+    if (idx === 0) {
+      return {
+        background: "rgba(250,204,21,0.14)",
+        boxShadow: "inset 0 0 0 1px rgba(250,204,21,0.30)",
+      };
+    }
+    if (idx === 1) {
+      return {
+        background: "rgba(226,232,240,0.10)",
+        boxShadow: "inset 0 0 0 1px rgba(226,232,240,0.20)",
+      };
+    }
+    if (idx === 2) {
+      return {
+        background: "rgba(251,146,60,0.10)",
+        boxShadow: "inset 0 0 0 1px rgba(251,146,60,0.20)",
+      };
+    }
+    return {};
+  };
+
+  const getRankBadge = (idx) => {
+    if (idx === 0) return "🥇";
+    if (idx === 1) return "🥈";
+    if (idx === 2) return "🥉";
+    return `#${idx + 1}`;
+  };
 
   return (
     <div style={{ overflowX: "auto" }}>
@@ -3220,7 +3279,7 @@ function ScoreboardTable({ rows }) {
           width: "100%",
           borderCollapse: "separate",
           borderSpacing: 0,
-          minWidth: 860,
+          minWidth: 940,
         }}
       >
         <thead>
@@ -3242,26 +3301,60 @@ function ScoreboardTable({ rows }) {
             ))}
           </tr>
         </thead>
+
         <tbody>
-          {rows.map((r) => {
+          {rows.map((r, idx) => {
             const diff = (Number(r.pointsFor) || 0) - (Number(r.pointsAgainst) || 0);
+            const undefeated = r.matchesPlayed > 0 && r.losses === 0;
 
             return (
-              <tr key={r.teamId}>
-                <td style={tdBold}>{r.name}</td>
+              <tr key={r.teamId} style={getRankStyle(idx)}>
+                <td style={tdStrong}>{getRankBadge(idx)}</td>
+
+                <td style={tdBold}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span>{r.name}</span>
+                    {idx === 0 ? (
+                      <span
+                        style={{
+                          ...styles.tag,
+                          background: "rgba(250,204,21,0.16)",
+                          border: "1px solid rgba(250,204,21,0.28)",
+                          color: "#fde68a",
+                        }}
+                      >
+                        Leader
+                      </span>
+                    ) : null}
+                    {undefeated ? (
+                      <span
+                        style={{
+                          ...styles.tag,
+                          background: "rgba(34,197,94,0.14)",
+                          border: "1px solid rgba(34,197,94,0.28)",
+                          color: "#bbf7d0",
+                        }}
+                      >
+                        Undefeated
+                      </span>
+                    ) : null}
+                  </div>
+                </td>
+
                 <td style={td}>{r.matchesPlayed}</td>
                 <td style={td}>{r.wins}</td>
                 <td style={td}>{r.losses}</td>
                 <td style={tdStrong}>{r.standingPoints}</td>
                 <td style={td}>{r.pointsFor}</td>
                 <td style={td}>{r.pointsAgainst}</td>
-                <td style={tdStrong}>{diff}</td>
+                <td style={tdStrong}>{diff > 0 ? `+${diff}` : diff}</td>
               </tr>
             );
           })}
+
           {!rows.length && (
             <tr>
-              <td colSpan={8} style={{ padding: 12, color: "#94a3b8" }}>
+              <td colSpan={9} style={{ padding: 12, color: "#94a3b8" }}>
                 No scoreboard data yet.
               </td>
             </tr>
@@ -3657,6 +3750,10 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
       ? "B"
       : null;
 
+  const winnerName = winnerSide === "A" ? ta : winnerSide === "B" ? tb : "—";
+  const margin = Math.abs(totalA - totalB);
+  const handCount = (match.hands || []).length;
+
   const recapRowBase = {
     marginTop: 10,
     borderRadius: 14,
@@ -3670,22 +3767,48 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
     background: "rgba(34,197,94,0.10)",
   };
 
-const recapScoreText = {
-  fontWeight: 1000,
-  fontSize: 24,
-  lineHeight: 1.1,
-};
+  const recapScoreText = {
+    fontWeight: 1000,
+    fontSize: 24,
+    lineHeight: 1.1,
+  };
 
-const recapNameText = {
-  fontWeight: 950,
-  fontSize: 18,
-  lineHeight: 1.15,
-};
+  const recapNameText = {
+    fontWeight: 950,
+    fontSize: 18,
+    lineHeight: 1.15,
+  };
 
   return (
     <div style={styles.card}>
-      <div style={{ fontWeight: 950, marginBottom: 6 }}>
-        {match.tableName} • {match.label}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 10,
+          alignItems: "center",
+          flexWrap: "wrap",
+          marginBottom: 6,
+        }}
+      >
+        <div style={{ fontWeight: 950 }}>
+          {match.tableName} • {match.label}
+        </div>
+
+        <span
+          style={{
+            ...styles.tag,
+            background: recapMode
+              ? "rgba(34,197,94,0.14)"
+              : "rgba(59,130,246,0.14)",
+            border: recapMode
+              ? "1px solid rgba(34,197,94,0.28)"
+              : "1px solid rgba(59,130,246,0.28)",
+            color: recapMode ? "#bbf7d0" : "#bfdbfe",
+          }}
+        >
+          {recapMode ? "FINAL" : "LIVE"}
+        </span>
       </div>
 
       <div
@@ -3702,9 +3825,12 @@ const recapNameText = {
             alignItems: "center",
           }}
         >
-          <span style={recapNameText}>{ta}</span>
+          <span style={recapNameText}>
+            {ta} {recapMode && winnerSide === "A" ? "🏆" : ""}
+          </span>
           <span style={recapScoreText}>{totalA}</span>
         </div>
+
         {!recapMode && (
           <div style={{ marginTop: 6, ...styles.progressWrap }}>
             <div style={styles.progressFillA(pctA)} />
@@ -3726,15 +3852,33 @@ const recapNameText = {
             alignItems: "center",
           }}
         >
-          <span style={recapNameText}>{tb}</span>
+          <span style={recapNameText}>
+            {tb} {recapMode && winnerSide === "B" ? "🏆" : ""}
+          </span>
           <span style={recapScoreText}>{totalB}</span>
         </div>
+
         {!recapMode && (
           <div style={{ marginTop: 6, ...styles.progressWrap }}>
             <div style={styles.progressFillB(pctB)} />
           </div>
         )}
       </div>
+
+      {recapMode ? (
+        <div
+          style={{
+            marginTop: 10,
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={styles.tag}>Winner: {winnerName}</span>
+          <span style={styles.tag}>Margin: {margin} pts</span>
+          <span style={styles.tag}>Hands: {handCount}</span>
+        </div>
+      ) : null}
 
       <MatchScoreLinesChart
         hands={match.hands || []}
