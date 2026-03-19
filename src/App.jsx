@@ -3956,6 +3956,8 @@ function LiveMatchCard({ match, teamById, onOpen, hideOpenButton = false, recapM
         {match.label}
       </div>
 
+      <MatchBadges match={match} teamById={teamById} />
+
       <div
         style={{
           ...recapRowBase,
@@ -4050,20 +4052,30 @@ function TeamCard({ team, idx, players, usedPlayerIds, playerById, onToggleLock,
         </div>
       </div>
 
-      <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <span style={styles.tag}>{(match.hands || []).length} hands</span>
-        {match.completed && winnerSide ? (
-          <span
-            style={{
-              ...styles.tag,
-              background: "rgba(34,197,94,0.14)",
-              border: "1px solid rgba(34,197,94,0.30)",
-              color: "#dcfce7",
-            }}
-          >
-            Winner: {winnerSide === "A" ? ta : tb}
-          </span>
-        ) : null}
+      <div style={{ marginTop: 10 }}>
+        <div style={styles.small}>Team name</div>
+        <input
+          style={styles.input("100%")}
+          value={team.name}
+          onChange={(e) => onRename(e.target.value)}
+          placeholder={`Team ${idx + 1}`}
+        />
+      </div>
+
+      <div style={{ marginTop: 10, ...styles.grid2 }}>
+        {[0, 1].map((slotIdx) => (
+          <div key={slotIdx}>
+            <div style={styles.small}>Player {slotIdx + 1}</div>
+            <select
+              style={styles.select("100%")}
+              value={team.playerIds?.[slotIdx] || ""}
+              onChange={(e) => onSetPlayer(slotIdx, e.target.value)}
+            >
+              <option value="">— Select —</option>
+              {selectOptions()}
+            </select>
+          </div>
+        ))}
       </div>
 
       <div style={{ marginTop: 10, ...styles.small }}>
