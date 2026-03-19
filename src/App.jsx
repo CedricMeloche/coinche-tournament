@@ -1231,20 +1231,20 @@ export default function App() {
     }
   };
 
-  const deleteMatchFromSupabase = async (matchId) => {
-    isPushingRef.current = true;
-    try {
-      const { error: handsErr } = await supabase.from("hands").delete().eq("match_id", matchId);
-      if (handsErr) throw handsErr;
+const deleteAllSupabaseData = async () => {
+  isPushingRef.current = true;
+  try {
+    const { error: handsErr } = await supabase.from("hands").delete().not("id", "is", null);
+    if (handsErr) throw handsErr;
 
-      const { error: matchErr } = await supabase.from("matches").delete().eq("id", matchId);
-      if (matchErr) throw matchErr;
+    const { error: matchesErr } = await supabase.from("matches").delete().not("id", "is", null);
+    if (matchesErr) throw matchesErr;
 
-      setSyncStatus("Live: Supabase");
-    } finally {
-      isPushingRef.current = false;
-    }
-  };
+    setSyncStatus("Live: Supabase");
+  } finally {
+    isPushingRef.current = false;
+  }
+};
 
   const syncMatchLocalAndRemote = async (nextMatch, nextMatches, nextAppName = appName) => {
     setMatches(nextMatches);
@@ -2729,20 +2729,40 @@ const completedMatchRecaps = matches
               </button>
 
               <button
-                style={styles.btnDanger}
-                onClick={() => {
-                  if (!confirm("Full reset? This clears local setup. Supabase matches remain until removed individually.")) return;
-                  setAppName("Coinche Scorekeeper");
-                  setPlayers([]);
-                  setTeams([]);
-                  setPairHistory([]);
-                  setMatches([]);
-                  persistNow({ appName: "Coinche Scorekeeper", players: [], teams: [], pairHistory: [], matches: [] });
-                }}
-              >
-                Full Reset
-              </button>
-            </div>
+  style={styles.btnDanger}
+  onClick={async () => {
+    if (
+      !confirm(
+        "Full reset? This will permanently delete all players, teams, matches, and hands from this device and Supabase."
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await deleteAllSupabaseData();
+
+      setAppName("Coinche Scorekeeper");
+      setPlayers([]);
+      setTeams([]);
+      setPairHistory([]);
+      setMatches([]);
+
+      persistNow({
+        appName: "Coinche Scorekeeper",
+        players: [],
+        teams: [],
+        pairHistory: [],
+        matches: [],
+      });
+    } catch (err) {
+      console.error("Full reset failed:", err);
+      alert(`Full reset failed: ${err.message || "Unknown error"}`);
+    }
+  }}
+>
+  Full Reset
+</button>
           }
         >
           <div style={styles.grid3}>
