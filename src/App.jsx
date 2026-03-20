@@ -3178,8 +3178,6 @@ function FunStatsGrid({ funStats }) {
         ["Highest Scoring Hand", `${funStats.highestScoringHand.points} pts`, funStats.highestScoringHand.label],
       ],
     },
-  ];
-}
     {
       title: "Team Awards",
       items: [
