@@ -3171,13 +3171,15 @@ function FunStatsGrid({ funStats }) {
         [
           "Momentum Monster (biggest 3-hand swing)",
           `${funStats.momentumMonster.swing} pts`,
-          `funStats.momentumMonster.label,
+          funStats.momentumMonster.label,
         ],
         ["Most Points in a Game", `${funStats.mostPointsGame.points} pts`, funStats.mostPointsGame.label],
         ["Least Points in a Game", `${funStats.leastPointsGame.points} pts`, funStats.leastPointsGame.label],
         ["Highest Scoring Hand", `${funStats.highestScoringHand.points} pts`, funStats.highestScoringHand.label],
       ],
     },
+  ];
+}
     {
       title: "Team Awards",
       items: [
