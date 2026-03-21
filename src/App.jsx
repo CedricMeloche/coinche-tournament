@@ -1152,37 +1152,51 @@ export default function App() {
   const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
   const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
 
-  const hydrateFromRemote = (matchRows, handRows) => {
-    const baseMatches = (matchRows || []).map(rowToMatch);
-    const handsByMatchId = new Map();
+const hydrateFromRemote = (matchRows, handRows) => {
+  const baseMatches = (matchRows || []).map(rowToMatch);
+  const handsByMatchId = new Map();
 
-    (handRows || []).forEach((row) => {
-      const arr = handsByMatchId.get(row.match_id) || [];
-      arr.push(rowToHand(row));
-      handsByMatchId.set(row.match_id, arr);
-    });
+  (handRows || []).forEach((row) => {
+    const arr = handsByMatchId.get(row.match_id) || [];
+    arr.push(rowToHand(row));
+    handsByMatchId.set(row.match_id, arr);
+  });
 
-    const fullMatches = baseMatches.map((m) =>
-      recomputeMatch({
-        ...m,
-        hands: (handsByMatchId.get(m.id) || []).sort((a, b) => a.idx - b.idx),
-      })
-    );
+  const fullMatches = baseMatches.map((m) =>
+    recomputeMatch({
+      ...m,
+      hands: (handsByMatchId.get(m.id) || []).sort((a, b) => a.idx - b.idx),
+    })
+  );
 
-    const derived = derivePeopleAndTeams(matchRows || []);
-    const payload = {
-      appName: matchRows?.[0]?.app_name || appName || "Coinche Scorekeeper",
-      players: derived.players.length ? derived.players : players,
-      teams: derived.teams.length ? derived.teams : teams,
-      avoidSameTeams,
-      pairHistory,
-      matches: fullMatches,
-      savedAt: Date.now(),
-    };
+  const derived = derivePeopleAndTeams(matchRows || []);
 
-    hydrateFromPayload(payload);
-    persistNow(payload);
+  const hasRemotePeople = derived.players.length > 0;
+  const hasRemoteTeams = derived.teams.length > 0;
+  const hasRemoteMatches = fullMatches.length > 0;
+
+  const payload = {
+    appName:
+      matchRows?.[0]?.app_name ||
+      appName ||
+      "Coinche Scorekeeper",
+
+    // Preserve local players/teams if remote has no data yet
+    players: hasRemotePeople ? derived.players : players,
+    teams: hasRemoteTeams ? derived.teams : teams,
+
+    avoidSameTeams,
+    pairHistory,
+
+    // Only replace matches with remote matches
+    matches: hasRemoteMatches ? fullMatches : matches,
+
+    savedAt: Date.now(),
   };
+
+  hydrateFromPayload(payload);
+  persistNow(payload);
+};
 
   const refreshFromSupabase = async () => {
     try {
