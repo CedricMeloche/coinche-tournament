@@ -1298,47 +1298,43 @@ const clearAllLocalTournamentData = () => {
     }
   };
 
-  const saveEditedHandScore = async (matchId, handIdx, newScoreA, newScoreB) => {
-    const nextMatches = matches.map((m) => {
-      if (m.id !== matchId) return m;
+const saveEditedHandScore = async (matchId, handIdx, newScoreA, newScoreB) => {
+  const nextMatches = matches.map((m) => {
+    if (m.id !== matchId) return m;
 
-      return recomputeMatch({
-        ...m,
-        hands: (m.hands || []).map((h) => {
-          if (h.idx !== handIdx) return h;
+    return recomputeMatch({
+      ...m,
+      hands: (m.hands || []).map((h) => {
+        if (h.idx !== handIdx) return h;
 
-          const nextScoreA = Math.max(0, Number(newScoreA) || 0);
-          const nextScoreB = Math.max(0, Number(newScoreB) || 0);
+        const nextScoreA = Math.max(0, Number(newScoreA) || 0);
+        const nextScoreB = Math.max(0, Number(newScoreB) || 0);
 
-          return {
-            ...h,
-            scoreA: nextScoreA,
-            scoreB: nextScoreB,
+        return {
+          ...h,
+          scoreA: nextScoreA,
+          scoreB: nextScoreB,
+          editedAt: Date.now(),
+          manualScoreEdit: {
+            wasEdited: true,
+            originalScoreA:
+              h.manualScoreEdit?.originalScoreA ?? (Number(h.scoreA) || 0),
+            originalScoreB:
+              h.manualScoreEdit?.originalScoreB ?? (Number(h.scoreB) || 0),
+            previousScoreA: Number(h.scoreA) || 0,
+            previousScoreB: Number(h.scoreB) || 0,
+            updatedScoreA: nextScoreA,
+            updatedScoreB: nextScoreB,
             editedAt: Date.now(),
-            manualScoreEdit: {
-              wasEdited: true,
-              originalScoreA:
-                h.manualScoreEdit?.originalScoreA ?? (Number(h.scoreA) || 0),
-              originalScoreB:
-                h.manualScoreEdit?.originalScoreB ?? (Number(h.scoreB) || 0),
-              previousScoreA: Number(h.scoreA) || 0,
-              previousScoreB: Number(h.scoreB) || 0,
-              updatedScoreA: nextScoreA,
-              updatedScoreB: nextScoreB,
-              editedAt: Date.now(),
-            },
-          };
-        }),
-      });
+          },
+        };
+      }),
     });
+  });
 
-    const nextMatch = nextMatches.find((m) => m.id === matchId);
-    await syncMatchLocalAndRemote(nextMatch, nextMatches);
-  };
-
-    const nextMatch = nextMatches.find((m) => m.id === matchId);
-    await syncMatchLocalAndRemote(nextMatch, nextMatches);
-  };
+  const nextMatch = nextMatches.find((m) => m.id === matchId);
+  await syncMatchLocalAndRemote(nextMatch, nextMatches);
+};
 
   useEffect(() => {
     const syncRoute = () => setRoute(parseHashRoute());
@@ -5015,7 +5011,7 @@ function TableMatchPanel({
                       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                         <div style={{ fontWeight: 950 }}>Hand {h.idx}</div>
 
-                        {h.manualScoreEdit?.wasEdited ? (
+                        {h.draftSnapshot?.manualScoreEdit?.wasEdited ? (
                           <span
                             style={{
                               display: "inline-flex",
@@ -5067,7 +5063,7 @@ function TableMatchPanel({
                         </div>
                       ) : null}
 
-                      {h.manualScoreEdit?.wasEdited ? (
+                      {h.draftSnapshot?.manualScoreEdit?.wasEdited
                         <div
                           style={{
                             marginTop: 8,
@@ -5076,7 +5072,7 @@ function TableMatchPanel({
                             fontWeight: 800,
                           }}
                         >
-                          Score changed from {ta}: {h.manualScoreEdit.originalScoreA} pts / {tb}: {h.manualScoreEdit.originalScoreB} pts
+                          Score changed from {ta}: {h.draftSnapshot?.manualScoreEdit?.originalScoreA ?? 0} pts / {tb}: {h.draftSnapshot?.manualScoreEdit?.originalScoreB ?? 0} pts
                           {" → "}
                           {ta}: {h.scoreA} pts / {tb}: {h.scoreB} pts
                         </div>
