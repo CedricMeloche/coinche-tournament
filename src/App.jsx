@@ -3874,14 +3874,6 @@ function MatchBadges({ match, teamById }) {
     tone: racePct >= 85 ? "danger" : racePct >= 65 ? "warning" : "neutral",
   });
 
-  // High scoring badge
-  if (totalMatchPoints >= 2500) {
-    badges.push({
-      label: `High Scoring ${totalMatchPoints}`,
-      tone: "success",
-    });
-  }
-
   // Coinche / Surcoinche badge
   if (hasSurcoinche) {
     badges.push({
@@ -5082,32 +5074,38 @@ function TableMatchPanel({
 ) : null}
                     </div>
 
-                    <div
-                      style={{
-                        minWidth: 180,
-                        textAlign: "right",
-                        alignSelf: "flex-start",
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: "#94a3b8",
-                          fontWeight: 900,
-                          marginBottom: 6,
-                          textTransform: "uppercase",
-                          letterSpacing: "0.04em",
-                        }}
-                      >
-                        Hand Score
-                      </div>
+<div
+  style={{
+    minWidth: 220,
+    textAlign: "right",
+    alignSelf: "flex-start",
+  }}
+>
+  <div
+    style={{
+      fontSize: 15,
+      color: "#cbd5e1",
+      fontWeight: 950,
+      marginBottom: 8,
+      textTransform: "uppercase",
+      letterSpacing: "0.05em",
+    }}
+  >
+    Hand Score
+  </div>
 
-                      <div style={{ fontWeight: 950, color: "#e5e7eb", lineHeight: 1.35 }}>
-                        <div>{ta}: {h.scoreA} pts</div>
-                        <div>{tb}: {h.scoreB} pts</div>
-                      </div>
-                    </div>
-                  </div>
+  <div
+    style={{
+      fontWeight: 1000,
+      color: "#e5e7eb",
+      lineHeight: 1.3,
+      fontSize: 22,
+    }}
+  >
+    <div>{ta}: {h.scoreA} pts</div>
+    <div>{tb}: {h.scoreB} pts</div>
+  </div>
+</div>
 
                   <div
                     style={{
