@@ -1171,26 +1171,38 @@ const hydrateFromRemote = (matchRows, handRows) => {
 
   const derived = derivePeopleAndTeams(matchRows || []);
 
-  const hasRemotePeople = derived.players.length > 0;
-  const hasRemoteTeams = derived.teams.length > 0;
-  const hasRemoteMatches = fullMatches.length > 0;
+  let localFallback = {
+    appName: "Coinche Scorekeeper",
+    players: [],
+    teams: [],
+    avoidSameTeams: true,
+    pairHistory: [],
+  };
+
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      localFallback = {
+        appName: parsed.appName ?? "Coinche Scorekeeper",
+        players: parsed.players ?? [],
+        teams: parsed.teams ?? [],
+        avoidSameTeams: Boolean(parsed.avoidSameTeams ?? true),
+        pairHistory: parsed.pairHistory ?? [],
+      };
+    }
+  } catch {}
 
   const payload = {
     appName:
       matchRows?.[0]?.app_name ||
-      appName ||
+      localFallback.appName ||
       "Coinche Scorekeeper",
-
-    // Preserve local players/teams if remote has no data yet
-    players: hasRemotePeople ? derived.players : players,
-    teams: hasRemoteTeams ? derived.teams : teams,
-
-    avoidSameTeams,
-    pairHistory,
-
-    // Only replace matches with remote matches
-    matches: hasRemoteMatches ? fullMatches : matches,
-
+    players: derived.players.length ? derived.players : localFallback.players,
+    teams: derived.teams.length ? derived.teams : localFallback.teams,
+    avoidSameTeams: localFallback.avoidSameTeams,
+    pairHistory: localFallback.pairHistory,
+    matches: fullMatches,
     savedAt: Date.now(),
   };
 
@@ -1373,13 +1385,25 @@ const saveEditedHandScore = async (matchId, handIdx, newScoreA, newScoreB) => {
     };
   }, []);
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) hydrateFromPayload(JSON.parse(raw));
-    } catch {}
+useEffect(() => {
+  let hadLocal = false;
+
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      hydrateFromPayload(JSON.parse(raw));
+      hadLocal = true;
+    }
+  } catch {}
+
+  if (hadLocal) {
+    setTimeout(() => {
+      void refreshFromSupabase();
+    }, 0);
+  } else {
     void refreshFromSupabase();
-  }, []);
+  }
+}, []);
 
   useEffect(() => {
     const onStorage = (e) => {
