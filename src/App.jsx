@@ -1193,13 +1193,30 @@ const hydrateFromRemote = (matchRows, handRows) => {
     }
   } catch {}
 
+  const mergedPlayersMap = new Map();
+  [...localFallback.players, ...derived.players].forEach((p) => {
+    if (p?.id) mergedPlayersMap.set(p.id, p);
+  });
+
+  const mergedTeamsMap = new Map();
+  [...localFallback.teams, ...derived.teams].forEach((t) => {
+    if (!t?.id) return;
+    const existing = mergedTeamsMap.get(t.id);
+    mergedTeamsMap.set(t.id, {
+      ...(existing || {}),
+      ...t,
+      playerIds: t.playerIds ?? existing?.playerIds ?? [],
+      locked: existing?.locked ?? t.locked ?? false,
+    });
+  });
+
   const payload = {
     appName:
       matchRows?.[0]?.app_name ||
       localFallback.appName ||
       "Coinche Scorekeeper",
-    players: derived.players.length ? derived.players : localFallback.players,
-    teams: derived.teams.length ? derived.teams : localFallback.teams,
+    players: Array.from(mergedPlayersMap.values()),
+    teams: Array.from(mergedTeamsMap.values()),
     avoidSameTeams: localFallback.avoidSameTeams,
     pairHistory: localFallback.pairHistory,
     matches: fullMatches,
