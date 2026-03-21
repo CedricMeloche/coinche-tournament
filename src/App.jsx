@@ -415,9 +415,18 @@ function SuitIcon({ suit }) {
   };
   const s = map[suit] || map.S;
   return (
-    <span title={s.label} style={{ fontWeight: 900, color: s.color }}>
-      {s.ch}
-    </span>
+<span
+  title={s.label}
+  style={{
+    fontWeight: 900,
+    color: s.color,
+    fontSize: "1em",
+    lineHeight: 1,
+    display: "inline-block",
+  }}
+>
+  {s.ch}
+</span>
   );
 }
 
@@ -4947,7 +4956,18 @@ function TableMatchPanel({
             Skip Hand - No Points
           </button>
 
-<span style={{ ...styles.small, marginLeft: "auto" }}>
+<span
+  style={{
+    marginLeft: "auto",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    fontSize: 22,
+    fontWeight: 1000,
+    lineHeight: 1.3,
+    color: "#e5e7eb",
+  }}
+>
   Suit: <SuitIcon suit={d.suit || "S"} /> {suitLabel}
 </span>
 
