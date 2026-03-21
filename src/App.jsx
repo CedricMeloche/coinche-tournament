@@ -3305,8 +3305,11 @@ function FunStatsGrid({ funStats }) {
 
 function ScoreboardTable({ rows }) {
   const headers = ["Rank", "Team", "MP", "W", "L", "P", "PF", "PA", "Diff"];
+  const hasStartedTournament = rows.some((r) => Number(r.matchesPlayed) > 0);
 
   const getRankStyle = (idx) => {
+    if (!hasStartedTournament) return {};
+
     if (idx === 0) {
       return {
         background: "rgba(250,204,21,0.14)",
@@ -3329,6 +3332,7 @@ function ScoreboardTable({ rows }) {
   };
 
   const getRankBadge = (idx) => {
+    if (!hasStartedTournament) return `#${idx + 1}`;
     if (idx === 0) return "🥇";
     if (idx === 1) return "🥈";
     if (idx === 2) return "🥉";
@@ -3377,7 +3381,7 @@ function ScoreboardTable({ rows }) {
                 <td style={tdBold}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span>{r.name}</span>
-                    {idx === 0 ? (
+                    {hasStartedTournament && idx === 0 ? (
                       <span
                         style={{
                           ...styles.tag,
