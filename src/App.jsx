@@ -862,6 +862,40 @@ function derivePeopleAndTeams(matchRows) {
   };
 }
 
+async function saveAppStateToSupabase({
+  appName,
+  players,
+  teams,
+  pairHistory,
+  avoidSameTeams,
+}) {
+  const { error } = await supabase.from("app_state").upsert(
+    {
+      id: "main",
+      app_name: appName || "Coinche Scorekeeper",
+      players: players || [],
+      teams: teams || [],
+      pair_history: pairHistory || [],
+      avoid_same_teams: !!avoidSameTeams,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "id" }
+  );
+
+  if (error) throw error;
+}
+
+async function loadAppStateFromSupabase() {
+  const { data, error } = await supabase
+    .from("app_state")
+    .select("*")
+    .eq("id", "main")
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
 /* =========================
    Styles
 ========================= */
@@ -1119,10 +1153,34 @@ export default function App() {
     } catch {}
   };
 
-  const saveField = (setter, key, value) => {
-    setter(value);
-    persistNow({ [key]: value });
-  };
+const saveField = async (setter, key, value) => {
+  let nextPlayers = players;
+  let nextTeams = teams;
+  let nextPairHistory = pairHistory;
+  let nextAvoidSameTeams = avoidSameTeams;
+  let nextAppName = appName;
+
+  if (key === "players") nextPlayers = value;
+  if (key === "teams") nextTeams = value;
+  if (key === "pairHistory") nextPairHistory = value;
+  if (key === "avoidSameTeams") nextAvoidSameTeams = value;
+  if (key === "appName") nextAppName = value;
+
+  setter(value);
+  persistNow({ [key]: value });
+
+  try {
+    await saveAppStateToSupabase({
+      appName: nextAppName,
+      players: nextPlayers,
+      teams: nextTeams,
+      pairHistory: nextPairHistory,
+      avoidSameTeams: nextAvoidSameTeams,
+    });
+  } catch (err) {
+    console.error(`Failed to save ${key} to Supabase:`, err);
+  }
+};
 
   const hydrateFromPayload = (d) => {
     const savedAt = Number(d?.savedAt) || 0;
@@ -1227,26 +1285,78 @@ const hydrateFromRemote = (matchRows, handRows) => {
   persistNow(payload);
 };
 
-  const refreshFromSupabase = async () => {
-    try {
-      const [{ data: matchRows, error: matchErr }, { data: handRows, error: handErr }] = await Promise.all([
-        supabase.from("matches").select("*").order("last_updated_at", { ascending: false }),
-        supabase.from("hands").select("*").order("match_id", { ascending: true }).order("hand_idx", { ascending: true }),
-      ]);
+const refreshFromSupabase = async () => {
+  try {
+    const [
+      { data: matchRows, error: matchErr },
+      { data: handRows, error: handErr },
+      stateRow,
+    ] = await Promise.all([
+      supabase.from("matches").select("*").order("last_updated_at", { ascending: false }),
+      supabase.from("hands").select("*").order("match_id", { ascending: true }).order("hand_idx", { ascending: true }),
+      loadAppStateFromSupabase(),
+    ]);
 
-      if (matchErr) throw matchErr;
-      if (handErr) throw handErr;
+    if (matchErr) throw matchErr;
+    if (handErr) throw handErr;
 
-      hydrateFromRemote(matchRows || [], handRows || []);
-      setSyncStatus("Live: Supabase");
-      return { matchRows: matchRows || [], handRows: handRows || [] };
-    } catch (err) {
-      console.error("Refresh from Supabase failed:", err);
-      setSyncStatus("Local fallback");
-      maybeHydrateLatest();
-      return null;
-    }
-  };
+    const baseMatches = (matchRows || []).map(rowToMatch);
+    const handsByMatchId = new Map();
+
+    (handRows || []).forEach((row) => {
+      const arr = handsByMatchId.get(row.match_id) || [];
+      arr.push(rowToHand(row));
+      handsByMatchId.set(row.match_id, arr);
+    });
+
+    const fullMatches = baseMatches.map((m) =>
+      recomputeMatch({
+        ...m,
+        hands: (handsByMatchId.get(m.id) || []).sort((a, b) => a.idx - b.idx),
+      })
+    );
+
+    const derived = derivePeopleAndTeams(matchRows || []);
+
+    const mergedPlayersMap = new Map();
+    [...(stateRow?.players || []), ...derived.players].forEach((p) => {
+      if (p?.id) mergedPlayersMap.set(p.id, p);
+    });
+
+    const mergedTeamsMap = new Map();
+    [...(stateRow?.teams || []), ...derived.teams].forEach((t) => {
+      if (!t?.id) return;
+      const existing = mergedTeamsMap.get(t.id);
+      mergedTeamsMap.set(t.id, {
+        ...(existing || {}),
+        ...t,
+        playerIds: t.playerIds ?? existing?.playerIds ?? [],
+        locked: t.locked ?? existing?.locked ?? false,
+      });
+    });
+
+    const payload = {
+      appName: stateRow?.app_name || matchRows?.[0]?.app_name || appName || "Coinche Scorekeeper",
+      players: Array.from(mergedPlayersMap.values()),
+      teams: Array.from(mergedTeamsMap.values()),
+      avoidSameTeams: Boolean(stateRow?.avoid_same_teams ?? avoidSameTeams ?? true),
+      pairHistory: stateRow?.pair_history || pairHistory || [],
+      matches: fullMatches,
+      savedAt: Date.now(),
+    };
+
+    hydrateFromPayload(payload);
+    persistNow(payload);
+
+    setSyncStatus("Live: Supabase");
+    return { matchRows: matchRows || [], handRows: handRows || [] };
+  } catch (err) {
+    console.error("Refresh from Supabase failed:", err);
+    setSyncStatus("Local fallback");
+    maybeHydrateLatest();
+    return null;
+  }
+};
 
   const saveMatchBundleToSupabase = async (nextMatch, nextAppName = appName) => {
     isPushingRef.current = true;
@@ -1324,31 +1434,38 @@ const deleteAllSupabaseData = async () => {
   }
 };
 
-const clearAllLocalTournamentData = () => {
-  setPlayers([]);
-  setTeams([]);
-  setPairHistory([]);
-  setMatches([]);
+const clearAllLocalTournamentData = async () => {
+  const nextPlayers = [];
+  const nextTeams = [];
+  const nextPairHistory = [];
+  const nextMatches = [];
+
+  setPlayers(nextPlayers);
+  setTeams(nextTeams);
+  setPairHistory(nextPairHistory);
+  setMatches(nextMatches);
   setEditingPlayerId(null);
   setEditingPlayerName("");
-  persistNow({
-    players: [],
-    teams: [],
-    pairHistory: [],
-    matches: [],
-  });
-};
 
- const syncMatchLocalAndRemote = async (nextMatch, nextMatches, nextAppName = appName) => {
-    setMatches(nextMatches);
-    persistNow({ matches: nextMatches, appName: nextAppName });
-    try {
-      await saveMatchBundleToSupabase(nextMatch, nextAppName);
-    } catch (err) {
-      console.error("Failed to save match:", err);
-      alert(`Failed to save match: ${err.message || "Unknown error"}`);
-    }
-  };
+  persistNow({
+    players: nextPlayers,
+    teams: nextTeams,
+    pairHistory: nextPairHistory,
+    matches: nextMatches,
+  });
+
+  try {
+    await saveAppStateToSupabase({
+      appName,
+      players: nextPlayers,
+      teams: nextTeams,
+      pairHistory: nextPairHistory,
+      avoidSameTeams,
+    });
+  } catch (err) {
+    console.error("Failed to clear app state in Supabase:", err);
+  }
+};
 
 const saveEditedHandScore = async (matchId, handIdx, newScoreA, newScoreB) => {
   const nextMatches = matches.map((m) => {
@@ -1436,23 +1553,26 @@ useEffect(() => {
     };
   }, []);
 
-  useEffect(() => {
-    const channel = supabase
-      .channel("coinche-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, () => {
-        if (!isPushingRef.current) void refreshFromSupabase();
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "hands" }, () => {
-        if (!isPushingRef.current) void refreshFromSupabase();
-      })
-      .subscribe((status) => {
-        if (status === "SUBSCRIBED") setSyncStatus("Live: Supabase");
-      });
+useEffect(() => {
+  const channel = supabase
+    .channel("coinche-live")
+    .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, () => {
+      if (!isPushingRef.current) void refreshFromSupabase();
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "hands" }, () => {
+      if (!isPushingRef.current) void refreshFromSupabase();
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "app_state" }, () => {
+      if (!isPushingRef.current) void refreshFromSupabase();
+    })
+    .subscribe((status) => {
+      if (status === "SUBSCRIBED") setSyncStatus("Live: Supabase");
+    });
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [appName, players, teams, avoidSameTeams, pairHistory]);
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, []);
 
   const usedPlayerIds = useMemo(() => {
     const s = new Set();
@@ -1552,7 +1672,7 @@ const cancelEditPlayer = () => {
   setEditingPlayerName("");
 };
 
-const saveEditPlayer = () => {
+const saveEditPlayer = async () => {
   const name = editingPlayerName.trim();
   if (!name || !editingPlayerId) return;
 
@@ -1563,15 +1683,27 @@ const saveEditPlayer = () => {
   setPlayers(nextPlayers);
   persistNow({ players: nextPlayers });
 
+  try {
+    await saveAppStateToSupabase({
+      appName,
+      players: nextPlayers,
+      teams,
+      pairHistory,
+      avoidSameTeams,
+    });
+  } catch (err) {
+    console.error("Failed to save edited player to Supabase:", err);
+  }
+
   setEditingPlayerId(null);
   setEditingPlayerName("");
 };
 
-const removePlayer = async (id) => {
-  const playerName = players.find((p) => p.id === id)?.name || "this player";
+const removeTeam = async (teamId) => {
+  const teamName = teams.find((t) => t.id === teamId)?.name || "this team";
   if (
     !window.confirm(
-      `Are you sure you want to remove ${playerName}? This will also reset teams, pair history, matches, and remote live data.`
+      `Are you sure you want to remove ${teamName}? This will also reset matches and remote live data.`
     )
   ) {
     return;
@@ -1580,25 +1712,30 @@ const removePlayer = async (id) => {
   try {
     await deleteAllSupabaseData();
 
-    const nextPlayers = players.filter((p) => p.id !== id);
-    setPlayers(nextPlayers);
-    setTeams([]);
-    setPairHistory([]);
-    setMatches([]);
+    const nextTeams = teams.filter((t) => t.id !== teamId);
+    const nextPairHistory = [];
+    const nextMatches = [];
+
+    setTeams(nextTeams);
+    setPairHistory(nextPairHistory);
+    setMatches(nextMatches);
+
     persistNow({
-      players: nextPlayers,
-      teams: [],
-      pairHistory: [],
-      matches: [],
+      teams: nextTeams,
+      pairHistory: nextPairHistory,
+      matches: nextMatches,
     });
 
-    if (editingPlayerId === id) {
-      setEditingPlayerId(null);
-      setEditingPlayerName("");
-    }
+    await saveAppStateToSupabase({
+      appName,
+      players,
+      teams: nextTeams,
+      pairHistory: nextPairHistory,
+      avoidSameTeams,
+    });
   } catch (err) {
-    console.error("Remove player failed:", err);
-    alert(`Remove player failed: ${err.message || "Unknown error"}`);
+    console.error("Remove team failed:", err);
+    alert(`Remove team failed: ${err.message || "Unknown error"}`);
   }
 };
 
@@ -1707,12 +1844,12 @@ async function buildRandomTeams() {
     if (best?.repeats === 0) break;
   }
 
-let pairIdx = 0;
-const nextTeams = teams.map((t) =>
-  t.locked
-    ? t
-    : { ...t, playerIds: (best?.pairs?.[pairIdx++] || []).filter(Boolean) }
-);
+  let pairIdx = 0;
+  const nextTeams = teams.map((t) =>
+    t.locked
+      ? t
+      : { ...t, playerIds: (best?.pairs?.[pairIdx++] || []).filter(Boolean) }
+  );
 
   const nextPairHistory = Array.from(
     new Set([
@@ -1729,10 +1866,19 @@ const nextTeams = teams.map((t) =>
     setTeams(nextTeams);
     setPairHistory(nextPairHistory);
     setMatches([]);
+
     persistNow({
       teams: nextTeams,
       pairHistory: nextPairHistory,
       matches: [],
+    });
+
+    await saveAppStateToSupabase({
+      appName,
+      players,
+      teams: nextTeams,
+      pairHistory: nextPairHistory,
+      avoidSameTeams,
     });
   } catch (err) {
     console.error("Randomize teams failed:", err);
@@ -2922,37 +3068,51 @@ right={
     <button
       style={styles.btnDanger}
       onClick={async () => {
-        if (
-          !confirm(
-            "Full reset? This will permanently delete all players, teams, matches, and hands from this device and Supabase."
-          )
-        ) {
-          return;
-        }
+  if (
+    !confirm(
+      "Full reset? This will permanently delete all players, teams, matches, and hands from this device and Supabase."
+    )
+  ) {
+    return;
+  }
 
-        try {
-          await deleteAllSupabaseData();
+  try {
+    await deleteAllSupabaseData();
 
-          setAppName("Coinche Scorekeeper");
-          setPlayers([]);
-          setTeams([]);
-          setPairHistory([]);
-          setMatches([]);
-          setEditingPlayerId(null);
-          setEditingPlayerName("");
+    const nextAppName = "Coinche Scorekeeper";
+    const nextPlayers = [];
+    const nextTeams = [];
+    const nextPairHistory = [];
+    const nextMatches = [];
 
-          persistNow({
-            appName: "Coinche Scorekeeper",
-            players: [],
-            teams: [],
-            pairHistory: [],
-            matches: [],
-          });
-        } catch (err) {
-          console.error("Full reset failed:", err);
-          alert(`Full reset failed: ${err.message || "Unknown error"}`);
-        }
-      }}
+    setAppName(nextAppName);
+    setPlayers(nextPlayers);
+    setTeams(nextTeams);
+    setPairHistory(nextPairHistory);
+    setMatches(nextMatches);
+    setEditingPlayerId(null);
+    setEditingPlayerName("");
+
+    persistNow({
+      appName: nextAppName,
+      players: nextPlayers,
+      teams: nextTeams,
+      pairHistory: nextPairHistory,
+      matches: nextMatches,
+    });
+
+    await saveAppStateToSupabase({
+      appName: nextAppName,
+      players: nextPlayers,
+      teams: nextTeams,
+      pairHistory: nextPairHistory,
+      avoidSameTeams: true,
+    });
+  } catch (err) {
+    console.error("Full reset failed:", err);
+    alert(`Full reset failed: ${err.message || "Unknown error"}`);
+  }
+}}
     >
       Full Reset
     </button>
