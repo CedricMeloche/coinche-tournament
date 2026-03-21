@@ -1210,7 +1210,6 @@ const saveField = async (setter, key, value) => {
   const playerById = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
   const teamById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
 
-const hydrateFromRemote = (matchRows, handRows) => {
   const baseMatches = (matchRows || []).map(rowToMatch);
   const handsByMatchId = new Map();
 
@@ -1654,18 +1653,14 @@ useEffect(() => {
     navigateHash(nextHash);
   }
 
-  const addPlayer = () => {
-    const name = newPlayerName.trim();
-    if (!name) return;
-    saveField(setPlayers, "players", [...players, { id: uid("p"), name }]);
-    setNewPlayerName("");
-    setTimeout(() => inputRef.current?.focus?.(), 0);
-  };
+const addPlayer = async () => {
+  const name = newPlayerName.trim();
+  if (!name) return;
 
-    const startEditPlayer = (player) => {
-    setEditingPlayerId(player.id);
-    setEditingPlayerName(player.name || "");
-  };
+  await saveField(setPlayers, "players", [...players, { id: uid("p"), name }]);
+  setNewPlayerName("");
+  setTimeout(() => inputRef.current?.focus?.(), 0);
+};
 
 const cancelEditPlayer = () => {
   setEditingPlayerId(null);
@@ -1739,16 +1734,19 @@ const removeTeam = async (teamId) => {
   }
 };
 
-  const addTeam = () =>
-    saveField(setTeams, "teams", [
-      ...teams,
-      {
-        id: uid("t"),
-        name: (newTeamName || "").trim() || `Team ${teams.length + 1}`,
-        playerIds: [],
-        locked: false,
-      },
-    ]);
+const addTeam = async () => {
+  const nextTeams = [
+    ...teams,
+    {
+      id: uid("t"),
+      name: (newTeamName || "").trim() || `Team ${teams.length + 1}`,
+      playerIds: [],
+      locked: false,
+    },
+  ];
+
+  await saveField(setTeams, "teams", nextTeams);
+};
 
   const resetMatchState = (m) =>
     recomputeMatch({
@@ -1760,34 +1758,6 @@ const removeTeam = async (teamId) => {
       tableOrderPlayerIds: [],
       firstShufflerPlayerId: "",
     });
-
-    const removeTeam = async (teamId) => {
-  const teamName = teams.find((t) => t.id === teamId)?.name || "this team";
-  if (
-    !window.confirm(
-      `Are you sure you want to remove ${teamName}? This will also reset matches and remote live data.`
-    )
-  ) {
-    return;
-  }
-
-  try {
-    await deleteAllSupabaseData();
-
-    const nextTeams = teams.filter((t) => t.id !== teamId);
-    setTeams(nextTeams);
-    setPairHistory([]);
-    setMatches([]);
-    persistNow({
-      teams: nextTeams,
-      pairHistory: [],
-      matches: [],
-    });
-  } catch (err) {
-    console.error("Remove team failed:", err);
-    alert(`Remove team failed: ${err.message || "Unknown error"}`);
-  }
-};
 
   const toggleTeamLock = (teamId, locked) =>
     saveField(
@@ -3141,7 +3111,9 @@ right={
               value={newPlayerName}
               onChange={(e) => setNewPlayerName(e.target.value)}
               placeholder="Add player name"
-              onKeyDown={(e) => e.key === "Enter" && addPlayer()}
+              onKeyDown={async (e) => {
+  if (e.key === "Enter") await addPlayer();
+}}
             />
             <button style={styles.btnPrimary} onClick={addPlayer} disabled={!newPlayerName.trim()}>
               Add Player
@@ -3240,10 +3212,10 @@ right={
               <input style={styles.input(220)} value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} placeholder="Optional team name" />
               <button
                 style={styles.btnPrimary}
-                onClick={() => {
-                  addTeam();
-                  setNewTeamName("");
-                }}
+              onClick={async () => {
+                await addTeam();
+                setNewTeamName("");
+              }}
               >
                 Add Team
               </button>
