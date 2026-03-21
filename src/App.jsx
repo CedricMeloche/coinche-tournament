@@ -1304,18 +1304,37 @@ const clearAllLocalTournamentData = () => {
 
       return recomputeMatch({
         ...m,
-        hands: (m.hands || []).map((h) =>
-          h.idx !== handIdx
-            ? h
-            : {
-                ...h,
-                scoreA: Math.max(0, Number(newScoreA) || 0),
-                scoreB: Math.max(0, Number(newScoreB) || 0),
-                editedAt: Date.now(),
-              }
-        ),
+        hands: (m.hands || []).map((h) => {
+          if (h.idx !== handIdx) return h;
+
+          const nextScoreA = Math.max(0, Number(newScoreA) || 0);
+          const nextScoreB = Math.max(0, Number(newScoreB) || 0);
+
+          return {
+            ...h,
+            scoreA: nextScoreA,
+            scoreB: nextScoreB,
+            editedAt: Date.now(),
+            manualScoreEdit: {
+              wasEdited: true,
+              originalScoreA:
+                h.manualScoreEdit?.originalScoreA ?? (Number(h.scoreA) || 0),
+              originalScoreB:
+                h.manualScoreEdit?.originalScoreB ?? (Number(h.scoreB) || 0),
+              previousScoreA: Number(h.scoreA) || 0,
+              previousScoreB: Number(h.scoreB) || 0,
+              updatedScoreA: nextScoreA,
+              updatedScoreB: nextScoreB,
+              editedAt: Date.now(),
+            },
+          };
+        }),
       });
     });
+
+    const nextMatch = nextMatches.find((m) => m.id === matchId);
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
+  };
 
     const nextMatch = nextMatches.find((m) => m.id === matchId);
     await syncMatchLocalAndRemote(nextMatch, nextMatches);
@@ -4971,7 +4990,7 @@ function TableMatchPanel({
                 .map(([name, pts]) => `${name}: ${pts}`);
 
               return (
-                                <div
+                <div
                   key={h.idx}
                   style={{
                     border: "1px solid rgba(148,163,184,0.16)",
@@ -4983,42 +5002,115 @@ function TableMatchPanel({
                     gap: 12,
                   }}
                 >
-                  <div style={{ minWidth: 260 }}>
-                    <div style={{ fontWeight: 950 }}>Hand {h.idx}</div>
-                    <div style={styles.small}>
-                      {ds.skippedHand ? (
-                        <>Skipped hand • No points awarded</>
-                      ) : (
-                        <>
-                          Bid {ds.bid} <SuitIcon suit={ds.suit || "S"} /> • Bidder {ds.bidder === "A" ? ta : tb} • {ds.coincheLevel}
-                          {ds.capot ? " • Capot Made" : ""} • Bidder tricks {ds.bidderTrickPoints} • Non-bidder tricks{" "}
-                          {ds.nonBidderTrickPoints !== "" && ds.nonBidderTrickPoints !== undefined
-                            ? ds.nonBidderTrickPoints
-                            : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162)}
-                        </>
-                      )}
+                 <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 16,
+                      alignItems: "flex-start",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <div style={{ minWidth: 260, flex: 1 }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <div style={{ fontWeight: 950 }}>Hand {h.idx}</div>
+
+                        {h.manualScoreEdit?.wasEdited ? (
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              padding: "5px 9px",
+                              borderRadius: 999,
+                              background: "rgba(59,130,246,0.16)",
+                              border: "1px solid rgba(59,130,246,0.32)",
+                              color: "#dbeafe",
+                              fontSize: 11,
+                              fontWeight: 900,
+                              lineHeight: 1,
+                            }}
+                          >
+                            Score Edited
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div style={styles.small}>
+                        {ds.skippedHand ? (
+                          <>Skipped hand • No points awarded</>
+                        ) : (
+                          <>
+                            Bid {ds.bid} <SuitIcon suit={ds.suit || "S"} /> • Bidder {ds.bidder === "A" ? ta : tb} • {ds.coincheLevel}
+                            {ds.capot ? " • Capot Made" : ""} • Bidder tricks {ds.bidderTrickPoints} • Non-bidder tricks{" "}
+                            {ds.nonBidderTrickPoints !== "" && ds.nonBidderTrickPoints !== undefined
+                              ? ds.nonBidderTrickPoints
+                              : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162)}
+                          </>
+                        )}
+                      </div>
+
+                      {ds.beloteTeam && ds.beloteTeam !== "NONE" ? (
+                        <div style={{ marginTop: 6, ...styles.small }}>
+                          Belote Made: <span style={{ color: "#e5e7eb" }}>{ds.beloteTeam === "A" ? ta : tb}</span>
+                        </div>
+                      ) : null}
+
+                      {announceParts.length ? (
+                        <div style={{ marginTop: 6, ...styles.small }}>
+                          Announces entered: <span style={{ color: "#e5e7eb" }}>{announceParts.join(" • ")}</span>
+                        </div>
+                      ) : null}
+
+                      {ds.shufflerName ? (
+                        <div style={{ marginTop: 6, ...styles.small }}>
+                          Dealer: <span style={{ color: "#e5e7eb" }}>{ds.shufflerName}</span>
+                        </div>
+                      ) : null}
+
+                      {h.manualScoreEdit?.wasEdited ? (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            fontSize: 12,
+                            color: "#93c5fd",
+                            fontWeight: 800,
+                          }}
+                        >
+                          Score changed from {ta}: {h.manualScoreEdit.originalScoreA} pts / {tb}: {h.manualScoreEdit.originalScoreB} pts
+                          {" → "}
+                          {ta}: {h.scoreA} pts / {tb}: {h.scoreB} pts
+                        </div>
+                      ) : null}
                     </div>
 
-                    {ds.beloteTeam && ds.beloteTeam !== "NONE" ? (
-                      <div style={{ marginTop: 6, ...styles.small }}>
-                        Belote Made: <span style={{ color: "#e5e7eb" }}>{ds.beloteTeam === "A" ? ta : tb}</span>
+                    <div
+                      style={{
+                        minWidth: 180,
+                        textAlign: "right",
+                        alignSelf: "flex-start",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "#94a3b8",
+                          fontWeight: 900,
+                          marginBottom: 6,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.04em",
+                        }}
+                      >
+                        Hand Score
                       </div>
-                    ) : null}
 
-                    {announceParts.length ? (
-                      <div style={{ marginTop: 6, ...styles.small }}>
-                        Announces entered: <span style={{ color: "#e5e7eb" }}>{announceParts.join(" • ")}</span>
+                      <div style={{ fontWeight: 950, color: "#e5e7eb", lineHeight: 1.35 }}>
+                        <div>{ta}: {h.scoreA} pts</div>
+                        <div>{tb}: {h.scoreB} pts</div>
                       </div>
-                    ) : null}
-
-                    {ds.shufflerName ? (
-                      <div style={{ marginTop: 6, ...styles.small }}>
-                        Dealer: <span style={{ color: "#e5e7eb" }}>{ds.shufflerName}</span>
-                      </div>
-                    ) : null}
+                    </div>
                   </div>
 
-                   <div
+                  <div
                     style={{
                       display: "flex",
                       gap: 10,
@@ -5037,10 +5129,6 @@ function TableMatchPanel({
                             gap: 8,
                             alignItems: "center",
                             flexWrap: "wrap",
-                            padding: "8px 10px",
-                            borderRadius: 12,
-                            background: "rgba(59,130,246,0.12)",
-                            border: "1px solid rgba(59,130,246,0.28)",
                           }}
                         >
                           <span style={{ fontWeight: 900 }}>{ta}</span>
@@ -5077,18 +5165,6 @@ function TableMatchPanel({
                       </>
                     ) : (
                       <>
-                        <div
-                          style={{
-                            padding: "8px 12px",
-                            borderRadius: 12,
-                            background: "rgba(255,255,255,0.06)",
-                            border: "1px solid rgba(148,163,184,0.18)",
-                            fontWeight: 900,
-                          }}
-                        >
-                          {ta}: {h.scoreA} • {tb}: {h.scoreB}
-                        </div>
-
                         {!ds.skippedHand && (
                           <>
                             <button
