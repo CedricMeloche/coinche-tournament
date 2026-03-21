@@ -4951,15 +4951,6 @@ function TableMatchPanel({
   Suit: <SuitIcon suit={d.suit || "S"} /> {suitLabel}
 </span>
 
-<button
-  style={styles.btnDanger}
-  onClick={() => {
-    if (!confirm("Are you sure you want to clear all hands for this match?")) return;
-    onClearHands();
-  }}
->
-  Clear Match Hands
-</button>
         </div>
       </div>
 
@@ -5223,6 +5214,18 @@ function TableMatchPanel({
           </div>
         )}
       </div>
+
+      <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
+  <button
+    style={styles.btnDanger}
+    onClick={() => {
+      if (!confirm("Are you sure you want to clear all hands for this match?")) return;
+      onClearHands();
+    }}
+  >
+    Clear Match Hands
+  </button>
+</div>
 
       <ScanPointsModal
         open={scanOpen}
