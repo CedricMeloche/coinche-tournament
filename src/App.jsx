@@ -5026,37 +5026,68 @@ function TableMatchPanel({
                         ) : null}
                       </div>
 
-                      <div style={styles.small}>
-                        {ds.skippedHand ? (
-                          <>Skipped hand • No points awarded</>
-                        ) : (
-                          <>
-                            Bid {ds.bid} <SuitIcon suit={ds.suit || "S"} /> • Bidder {ds.bidder === "A" ? ta : tb} • {ds.coincheLevel}
-                            {ds.capot ? " • Capot Made" : ""} • Bidder tricks {ds.bidderTrickPoints} • Non-bidder tricks{" "}
-                            {ds.nonBidderTrickPoints !== "" && ds.nonBidderTrickPoints !== undefined
-                              ? ds.nonBidderTrickPoints
-                              : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162)}
-                          </>
-                        )}
-                      </div>
+                      <div
+  style={{
+    ...styles.small,
+    fontSize: 14,
+    lineHeight: 1.45,
+    color: "#cbd5e1",
+  }}
+>
+  {ds.skippedHand ? (
+    <>Skipped hand • No points awarded</>
+  ) : (
+    <>
+      Bid {ds.bid} <SuitIcon suit={ds.suit || "S"} /> • Bidder {ds.bidder === "A" ? ta : tb} • {ds.coincheLevel}
+      {ds.capot ? " • Capot Made" : ""} • Bidder tricks {ds.bidderTrickPoints} • Non-bidder tricks{" "}
+      {ds.nonBidderTrickPoints !== "" && ds.nonBidderTrickPoints !== undefined
+        ? ds.nonBidderTrickPoints
+        : clamp(162 - (Number(ds.bidderTrickPoints) || 0), 0, 162)}
+    </>
+  )}
+</div>
 
-                      {ds.beloteTeam && ds.beloteTeam !== "NONE" ? (
-                        <div style={{ marginTop: 6, ...styles.small }}>
-                          Belote Made: <span style={{ color: "#e5e7eb" }}>{ds.beloteTeam === "A" ? ta : tb}</span>
-                        </div>
-                      ) : null}
+{ds.beloteTeam && ds.beloteTeam !== "NONE" ? (
+  <div
+    style={{
+      marginTop: 6,
+      ...styles.small,
+      fontSize: 14,
+      lineHeight: 1.45,
+      color: "#cbd5e1",
+    }}
+  >
+    Belote Made: <span style={{ color: "#e5e7eb" }}>{ds.beloteTeam === "A" ? ta : tb}</span>
+  </div>
+) : null}
 
-                      {announceParts.length ? (
-                        <div style={{ marginTop: 6, ...styles.small }}>
-                          Announces entered: <span style={{ color: "#e5e7eb" }}>{announceParts.join(" • ")}</span>
-                        </div>
-                      ) : null}
+{announceParts.length ? (
+  <div
+    style={{
+      marginTop: 6,
+      ...styles.small,
+      fontSize: 14,
+      lineHeight: 1.45,
+      color: "#cbd5e1",
+    }}
+  >
+    Announces entered: <span style={{ color: "#e5e7eb" }}>{announceParts.join(" • ")}</span>
+  </div>
+) : null}
 
-                      {ds.shufflerName ? (
-                        <div style={{ marginTop: 6, ...styles.small }}>
-                          Dealer: <span style={{ color: "#e5e7eb" }}>{ds.shufflerName}</span>
-                        </div>
-                      ) : null}
+{ds.shufflerName ? (
+  <div
+    style={{
+      marginTop: 6,
+      ...styles.small,
+      fontSize: 14,
+      lineHeight: 1.45,
+      color: "#cbd5e1",
+    }}
+  >
+    Dealer: <span style={{ color: "#e5e7eb" }}>{ds.shufflerName}</span>
+  </div>
+) : null}
 
 {h.draftSnapshot?.manualScoreEdit?.wasEdited ? (
   <div
