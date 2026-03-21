@@ -1311,23 +1311,26 @@ const saveEditedHandScore = async (matchId, handIdx, newScoreA, newScoreB) => {
         const nextScoreB = Math.max(0, Number(newScoreB) || 0);
 
         return {
-          ...h,
-          scoreA: nextScoreA,
-          scoreB: nextScoreB,
-          editedAt: Date.now(),
-          manualScoreEdit: {
-            wasEdited: true,
-            originalScoreA:
-              h.manualScoreEdit?.originalScoreA ?? (Number(h.scoreA) || 0),
-            originalScoreB:
-              h.manualScoreEdit?.originalScoreB ?? (Number(h.scoreB) || 0),
-            previousScoreA: Number(h.scoreA) || 0,
-            previousScoreB: Number(h.scoreB) || 0,
-            updatedScoreA: nextScoreA,
-            updatedScoreB: nextScoreB,
-            editedAt: Date.now(),
-          },
-        };
+  ...h,
+  scoreA: nextScoreA,
+  scoreB: nextScoreB,
+  editedAt: Date.now(),
+  draftSnapshot: {
+    ...(h.draftSnapshot || {}),
+    manualScoreEdit: {
+      wasEdited: true,
+      originalScoreA:
+        h.draftSnapshot?.manualScoreEdit?.originalScoreA ?? (Number(h.scoreA) || 0),
+      originalScoreB:
+        h.draftSnapshot?.manualScoreEdit?.originalScoreB ?? (Number(h.scoreB) || 0),
+      previousScoreA: Number(h.scoreA) || 0,
+      previousScoreB: Number(h.scoreB) || 0,
+      updatedScoreA: nextScoreA,
+      updatedScoreB: nextScoreB,
+      editedAt: Date.now(),
+    },
+  },
+};
       }),
     });
   });
@@ -5063,20 +5066,20 @@ function TableMatchPanel({
                         </div>
                       ) : null}
 
-                      {h.draftSnapshot?.manualScoreEdit?.wasEdited
-                        <div
-                          style={{
-                            marginTop: 8,
-                            fontSize: 12,
-                            color: "#93c5fd",
-                            fontWeight: 800,
-                          }}
-                        >
-                          Score changed from {ta}: {h.draftSnapshot?.manualScoreEdit?.originalScoreA ?? 0} pts / {tb}: {h.draftSnapshot?.manualScoreEdit?.originalScoreB ?? 0} pts
-                          {" → "}
-                          {ta}: {h.scoreA} pts / {tb}: {h.scoreB} pts
-                        </div>
-                      ) : null}
+{h.draftSnapshot?.manualScoreEdit?.wasEdited ? (
+  <div
+    style={{
+      marginTop: 8,
+      fontSize: 12,
+      color: "#93c5fd",
+      fontWeight: 800,
+    }}
+  >
+    Score changed from {ta}: {h.draftSnapshot?.manualScoreEdit?.originalScoreA ?? 0} pts / {tb}: {h.draftSnapshot?.manualScoreEdit?.originalScoreB ?? 0} pts
+    {" → "}
+    {ta}: {h.scoreA} pts / {tb}: {h.scoreB} pts
+  </div>
+) : null}
                     </div>
 
                     <div
