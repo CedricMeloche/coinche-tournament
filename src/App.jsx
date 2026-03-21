@@ -5107,17 +5107,19 @@ function TableMatchPanel({
   </div>
 </div>
 
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 10,
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                      justifyContent: "flex-end",
-                      borderTop: "1px solid rgba(148,163,184,0.14)",
-                      paddingTop: 10,
-                    }}
-                  >
+</div>
+
+<div
+  style={{
+    display: "flex",
+    gap: 10,
+    alignItems: "center",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    borderTop: "1px solid rgba(148,163,184,0.14)",
+    paddingTop: 10,
+  }}
+>
                     {editingHandScoreIdx === h.idx ? (
                       <>
                         <div
