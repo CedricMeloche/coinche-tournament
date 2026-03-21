@@ -281,8 +281,8 @@ function exportCoincheExcel({
     ["Closest Match", funStats?.closest?.diff ?? 0, funStats?.closest?.label ?? ""],
     ["Clutch Finish", funStats?.clutchFinish?.diff ?? 0, funStats?.clutchFinish?.label ?? ""],
     ["Momentum Monster", funStats?.momentumMonster?.swing ?? 0, funStats?.momentumMonster?.label ?? ""],
-    ["Most Points in a Game", funStats?.mostPointsGame?.points ?? 0, funStats?.mostPointsGame?.label ?? ""],
-    ["Least Points in a Game", funStats?.leastPointsGame?.points ?? 0, funStats?.leastPointsGame?.label ?? ""],
+    ["Most Points by a Team in a Match", funStats?.mostPointsGame?.points ?? 0, funStats?.mostPointsGame?.label ?? ""],
+    ["Least Points by a Team in a Match", funStats?.leastPointsGame?.points ?? 0, funStats?.leastPointsGame?.label ?? ""],
     ["Highest Scoring Hand", funStats?.highestScoringHand?.points ?? 0, funStats?.highestScoringHand?.label ?? ""],
     ["Best Avg Score / Hand", funStats?.averageScorePerHand?.value ?? 0, funStats?.averageScorePerHand?.label ?? ""],
     [
@@ -2250,23 +2250,25 @@ const nextTeams = teams.map((t) =>
       const totalA = Number(m.totalA) || 0;
       const totalB = Number(m.totalB) || 0;
       const combinedPoints = totalA + totalB;
-      const diff = Math.abs(totalA - totalB);
+const highestTeamScore = Math.max(totalA, totalB);
+const lowestTeamScore = Math.min(totalA, totalB);
+const diff = Math.abs(totalA - totalB);
 
-      if (diff > biggestBlowout.diff) {
-        biggestBlowout = { diff, label: labelFor(m) };
-      }
+if (diff > biggestBlowout.diff) {
+  biggestBlowout = { diff, label: labelFor(m) };
+}
 
-      if (diff > 0 && diff < closest.diff) {
-        closest = { diff, label: labelFor(m) };
-      }
+if (diff > 0 && diff < closest.diff) {
+  closest = { diff, label: labelFor(m) };
+}
 
-      if (combinedPoints > mostPointsGame.points) {
-        mostPointsGame = { points: combinedPoints, label: labelFor(m) };
-      }
+if (highestTeamScore > mostPointsGame.points) {
+  mostPointsGame = { points: highestTeamScore, label: labelFor(m) };
+}
 
-      if (combinedPoints < leastPointsGame.points) {
-        leastPointsGame = { points: combinedPoints, label: labelFor(m) };
-      }
+if (lowestTeamScore < leastPointsGame.points) {
+  leastPointsGame = { points: lowestTeamScore, label: labelFor(m) };
+}
 
       const diffs = m.timelineDiffs || [];
       if (diffs.length) {
@@ -3178,8 +3180,8 @@ function FunStatsGrid({ funStats }) {
           `${funStats.momentumMonster.swing} pts`,
           funStats.momentumMonster.label,
         ],
-        ["Most Points in a Game", `${funStats.mostPointsGame.points} pts`, funStats.mostPointsGame.label],
-        ["Least Points in a Game", `${funStats.leastPointsGame.points} pts`, funStats.leastPointsGame.label],
+        ["Most Points by a Team in a Match", `${funStats.mostPointsGame.points} pts`, funStats.mostPointsGame.label],
+        ["Least Points by a Team in a Match", `${funStats.leastPointsGame.points} pts`, funStats.leastPointsGame.label],
         ["Highest Scoring Hand", `${funStats.highestScoringHand.points} pts`, funStats.highestScoringHand.label],
       ],
     },
