@@ -1287,7 +1287,7 @@ const clearAllLocalTournamentData = () => {
   });
 };
 
-  const syncMatchLocalAndRemote = async (nextMatch, nextMatches, nextAppName = appName) => {
+ const syncMatchLocalAndRemote = async (nextMatch, nextMatches, nextAppName = appName) => {
     setMatches(nextMatches);
     persistNow({ matches: nextMatches, appName: nextAppName });
     try {
@@ -1296,6 +1296,29 @@ const clearAllLocalTournamentData = () => {
       console.error("Failed to save match:", err);
       alert(`Failed to save match: ${err.message || "Unknown error"}`);
     }
+  };
+
+  const saveEditedHandScore = async (matchId, handIdx, newScoreA, newScoreB) => {
+    const nextMatches = matches.map((m) => {
+      if (m.id !== matchId) return m;
+
+      return recomputeMatch({
+        ...m,
+        hands: (m.hands || []).map((h) =>
+          h.idx !== handIdx
+            ? h
+            : {
+                ...h,
+                scoreA: Math.max(0, Number(newScoreA) || 0),
+                scoreB: Math.max(0, Number(newScoreB) || 0),
+                editedAt: Date.now(),
+              }
+        ),
+      });
+    });
+
+    const nextMatch = nextMatches.find((m) => m.id === matchId);
+    await syncMatchLocalAndRemote(nextMatch, nextMatches);
   };
 
   useEffect(() => {
@@ -2679,7 +2702,7 @@ const completedMatchRecaps = matches
             </Section>
           ) : (
             <Section title={`Your Match • Code ${tableMatch.code}`}>
-              <TableMatchPanel
+             <TableMatchPanel
                 match={tableMatch}
                 teamById={teamById}
                 playerById={playerById}
@@ -2691,6 +2714,9 @@ const completedMatchRecaps = matches
                 onStartEditHand={(handIdx) => startEditHand(tableMatch.id, handIdx)}
                 onCancelEdit={() => cancelEditHand(tableMatch.id)}
                 onFinishNow={() => finishMatchNow(tableMatch.id)}
+                onSaveEditedHandScore={(handIdx, scoreA, scoreB) =>
+                  saveEditedHandScore(tableMatch.id, handIdx, scoreA, scoreB)
+                }
                 bigTotals
               />
             </Section>
@@ -3024,7 +3050,7 @@ right={
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {matches.map((m) => (
-                <CollapsibleMatchCard
+              <CollapsibleMatchCard
                   key={m.id}
                   match={m}
                   teamById={teamById}
@@ -3047,6 +3073,9 @@ right={
                   onStartEditHand={(handIdx) => startEditHand(m.id, handIdx)}
                   onCancelEdit={() => cancelEditHand(m.id)}
                   onFinishNow={() => finishMatchNow(m.id)}
+                  onSaveEditedHandScore={(handIdx, scoreA, scoreB) =>
+                    saveEditedHandScore(m.id, handIdx, scoreA, scoreB)
+                  }
                 />
               ))}
             </div>
@@ -4330,6 +4359,7 @@ function CollapsibleMatchCard({
   onStartEditHand,
   onCancelEdit,
   onFinishNow,
+  onSaveEditedHandScore,
 }) {
   const [collapsed, setCollapsed] = useState(true);
 
@@ -4403,6 +4433,7 @@ function CollapsibleMatchCard({
               onStartEditHand={onStartEditHand}
               onCancelEdit={onCancelEdit}
               onFinishNow={onFinishNow}
+              onSaveEditedHandScore={onSaveEditedHandScore}
             />
           </div>
         </>
@@ -4423,6 +4454,7 @@ function TableMatchPanel({
   onStartEditHand,
   onCancelEdit,
   onFinishNow,
+  onSaveEditedHandScore,
   bigTotals = false,
 }) {
   const teamA = teamById.get(match.teamAId) || null;
@@ -4459,6 +4491,10 @@ function TableMatchPanel({
   const [scanOpen, setScanOpen] = useState(false);
   const [setupCollapsed, setSetupCollapsed] = useState(setupReady);
   const setupAutoCollapsedRef = useRef(false);
+
+  const [editingHandScoreIdx, setEditingHandScoreIdx] = useState(null);
+  const [editingHandScoreA, setEditingHandScoreA] = useState("");
+  const [editingHandScoreB, setEditingHandScoreB] = useState("");
 
   useEffect(() => {
     setSetupCollapsed(setupReady);
@@ -4511,7 +4547,7 @@ function TableMatchPanel({
     });
   }
 
-  function renderAnnounceBlock(side, label, teamPlayers) {
+    function renderAnnounceBlock(side, label, teamPlayers) {
     const keys = {
       a1: `announce${side}1`,
       a2: `announce${side}2`,
@@ -4562,6 +4598,27 @@ function TableMatchPanel({
         </div>
       </div>
     );
+  }
+
+  function beginEditHandScore(hand) {
+    setEditingHandScoreIdx(hand.idx);
+    setEditingHandScoreA(String(Number(hand.scoreA) || 0));
+    setEditingHandScoreB(String(Number(hand.scoreB) || 0));
+  }
+
+  function cancelEditHandScore() {
+    setEditingHandScoreIdx(null);
+    setEditingHandScoreA("");
+    setEditingHandScoreB("");
+  }
+
+  async function saveHandScoreEdit(handIdx) {
+    await onSaveEditedHandScore?.(
+      handIdx,
+      Math.max(0, Number(editingHandScoreA) || 0),
+      Math.max(0, Number(editingHandScoreB) || 0)
+    );
+    cancelEditHandScore();
   }
 
   return (
@@ -4914,7 +4971,18 @@ function TableMatchPanel({
                 .map(([name, pts]) => `${name}: ${pts}`);
 
               return (
-                <div key={h.idx} style={styles.handRow}>
+                                <div
+                  key={h.idx}
+                  style={{
+                    border: "1px solid rgba(148,163,184,0.16)",
+                    background: bg,
+                    borderRadius: 16,
+                    padding: 12,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
+                  }}
+                >
                   <div style={{ minWidth: 260 }}>
                     <div style={{ fontWeight: 950 }}>Hand {h.idx}</div>
                     <div style={styles.small}>
@@ -4950,14 +5018,97 @@ function TableMatchPanel({
                     ) : null}
                   </div>
 
-                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <span style={styles.tag}>
-                      +{h.scoreA} / +{h.scoreB}
-                    </span>
-                    {!ds.skippedHand && (
-                      <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>
-                        Edit
-                      </button>
+                   <div
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      justifyContent: "flex-end",
+                      borderTop: "1px solid rgba(148,163,184,0.14)",
+                      paddingTop: 10,
+                    }}
+                  >
+                    {editingHandScoreIdx === h.idx ? (
+                      <>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 8,
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                            padding: "8px 10px",
+                            borderRadius: 12,
+                            background: "rgba(59,130,246,0.12)",
+                            border: "1px solid rgba(59,130,246,0.28)",
+                          }}
+                        >
+                          <span style={{ fontWeight: 900 }}>{ta}</span>
+                          <input
+                            style={{ ...styles.input(90), padding: "8px 10px" }}
+                            value={editingHandScoreA}
+                            onChange={(e) => setEditingHandScoreA(e.target.value)}
+                            inputMode="numeric"
+                          />
+                          <span style={{ fontWeight: 900 }}>{tb}</span>
+                          <input
+                            style={{ ...styles.input(90), padding: "8px 10px" }}
+                            value={editingHandScoreB}
+                            onChange={(e) => setEditingHandScoreB(e.target.value)}
+                            inputMode="numeric"
+                          />
+                        </div>
+
+                        <button
+                          style={{
+                            ...styles.btnPrimary,
+                            background:
+                              "linear-gradient(180deg, rgba(59,130,246,0.95), rgba(37,99,235,0.9))",
+                            border: "1px solid rgba(59,130,246,0.35)",
+                          }}
+                          onClick={() => saveHandScoreEdit(h.idx)}
+                        >
+                          Save
+                        </button>
+
+                        <button style={styles.btnSecondary} onClick={cancelEditHandScore}>
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <div
+                          style={{
+                            padding: "8px 12px",
+                            borderRadius: 12,
+                            background: "rgba(255,255,255,0.06)",
+                            border: "1px solid rgba(148,163,184,0.18)",
+                            fontWeight: 900,
+                          }}
+                        >
+                          {ta}: {h.scoreA} • {tb}: {h.scoreB}
+                        </div>
+
+                        {!ds.skippedHand && (
+                          <>
+                            <button
+                              style={{
+                                ...styles.btnSecondary,
+                                background: "rgba(59,130,246,0.16)",
+                                border: "1px solid rgba(59,130,246,0.35)",
+                                color: "#dbeafe",
+                              }}
+                              onClick={() => beginEditHandScore(h)}
+                            >
+                              Edit Score
+                            </button>
+
+                            <button style={styles.btnSecondary} onClick={() => onStartEditHand(h.idx)}>
+                              Edit Hand
+                            </button>
+                          </>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
