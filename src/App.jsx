@@ -505,10 +505,15 @@ function computeContractRequirement({ bid, bidder, announceA, announceB, beloteT
   const bidderHasBelote =
     (bidder === "A" && beloteTeam === "A") || (bidder === "B" && beloteTeam === "B");
 
-  const floor = bidderHasBelote ? 71 : 81;
+  const bidderAnnounces = bidder === "A" ? aAnn : bAnn;
+  const beloteReduction = bidderHasBelote ? 20 : 0;
 
-  if (bidVal === 80) return floor;
-  return Math.max(floor, bidVal - (bidder === "A" ? aAnn : bAnn));
+  // Announces can reduce the contract, but never below 81.
+  // Belote is the only announce that can reduce it to 71.
+  const floor = bidderHasBelote ? 71 : 81;
+  const reduction = bidderAnnounces + beloteReduction;
+
+  return Math.max(floor, bidVal - reduction);
 }
 
 function computeFastCoincheScore({
