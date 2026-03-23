@@ -271,10 +271,10 @@ function exportCoincheExcel({
       "Coinche %",
       "Announce Pts",
       "Capots",
+      "Coinche/Surcoinche",
       "Comebacks",
       "Shutouts",
       "Best Hand",
-      "Worst Hand",
     ],
     ...teamStatsRows.map((r) => [
       r.name,
@@ -285,10 +285,10 @@ function exportCoincheExcel({
       Number(r.coincheSuccessPct) || 0,
       Number(r.totalAnnouncePoints) || 0,
       Number(r.capotsMade) || 0,
+      Number(r.coinchesCalled) || 0,
       Number(r.comebackWins) || 0,
       Number(r.shutoutHandsForced) || 0,
       Number(r.bestSingleHand) || 0,
-      Number(r.worstSingleHand) || 0,
     ]),
   ];
 
@@ -4117,10 +4117,10 @@ function TeamStatsTable({ rows }) {
     "Coinche %",
     "Announce Pts",
     "Capots",
+    "Coinche/Surcoinche",
     "Comebacks",
     "Shutouts",
     "Best Hand",
-    "Worst Hand",
   ];
 
   return (
@@ -4156,10 +4156,10 @@ function TeamStatsTable({ rows }) {
               <td style={td}>{r.coincheSuccessPct}%</td>
               <td style={td}>{r.totalAnnouncePoints}</td>
               <td style={td}>{r.capotsMade}</td>
+              <td style={td}>{r.coinchesCalled}</td>
               <td style={td}>{r.comebackWins}</td>
               <td style={td}>{r.shutoutHandsForced}</td>
               <td style={td}>{r.bestSingleHand}</td>
-              <td style={td}>{r.worstSingleHand}</td>
             </tr>
           ))}
           {!rows.length && (
