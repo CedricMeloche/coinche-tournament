@@ -30,6 +30,14 @@ function slugifyTournamentName(value) {
 const uid = (prefix = "id") =>
   `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 
+function getMatchCreatedSortValue(match) {
+  const rawId = String(match?.id || "");
+  const lastPart = rawId.split("_").pop() || "";
+  const parsedHex = Number.parseInt(lastPart, 16);
+  if (Number.isFinite(parsedHex) && parsedHex > 0) return parsedHex;
+  return Number(match?.lastUpdatedAt) || 0;
+}
+
 function shortCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
@@ -1161,6 +1169,7 @@ function compareMatchesByTournamentOrder(a, b) {
 export default function App() {
   const [route, setRoute] = useState(() => parseHashRoute());
   const [tableMissingDelayDone, setTableMissingDelayDone] = useState(false);
+  const [tableRouteLoading, setTableRouteLoading] = useState(false);
   const [syncStatus, setSyncStatus] = useState("Connecting…");
 
   const [appName, setAppName] = useState("Coinche Scorekeeper");
@@ -1794,7 +1803,7 @@ useEffect(() => {
     const run = async () => {
       while (!cancelled && tries < 8) {
         tries += 1;
-        await refreshFromSupabase();
+        await refreshFromSupabase(route.query.tid || currentTournamentId);
 
         const latestRaw = localStorage.getItem(scopedLsKey(route.query.tid || currentTournamentId));
         if (latestRaw) {
@@ -1822,6 +1831,57 @@ useEffect(() => {
       cancelled = true;
     };
   }, [route.path, route.query.code, matches]);
+
+  useEffect(() => {
+    if (route.path !== "/table") {
+      setTableRouteLoading(false);
+      return;
+    }
+
+    const wantedCode = String(route.query.code || "").trim().toUpperCase();
+    if (!wantedCode) {
+      setTableRouteLoading(false);
+      return;
+    }
+
+    if (matches.some((m) => (m.code || "").toUpperCase() === wantedCode)) {
+      setTableRouteLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const run = async () => {
+      setTableRouteLoading(true);
+      try {
+        let queryBuilder = supabase.from("matches").select("*").eq("code", wantedCode);
+        const wantedTid = String(route.query.tid || currentTournamentId || "").trim();
+        if (wantedTid) {
+          queryBuilder = queryBuilder.eq("tournament_id", wantedTid);
+        }
+
+        const { data, error } = await queryBuilder.limit(1).maybeSingle();
+        if (error) throw error;
+
+        if (!cancelled && data?.tournament_id) {
+          if (data.tournament_id !== currentTournamentId) {
+            setCurrentTournamentId(data.tournament_id);
+          }
+          await refreshFromSupabase(data.tournament_id);
+        }
+      } catch (err) {
+        console.error("Failed to load table route match:", err);
+      } finally {
+        if (!cancelled) setTableRouteLoading(false);
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [route.path, route.query.code, route.query.tid, matches, currentTournamentId]);
 
   useEffect(() => {
     if (route.path === "/table") {
@@ -3049,7 +3109,7 @@ if (lowestTeamScore < leastPointsGame.points) {
 if (path === "/public") {
 const liveMatches = matches
   .filter((m) => m.teamAId && m.teamBId && !m.completed)
-  .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
+  .sort((a, b) => getMatchCreatedSortValue(b) - getMatchCreatedSortValue(a));
 
 const completedMatchRecaps = matches
   .filter((m) => m.teamAId && m.teamBId && m.completed)
@@ -3124,13 +3184,13 @@ const completedMatchRecaps = matches
           <Header title={appName} subtitle="Table View • Enter hands for your match only" right={<NavPills showAdmin />} />
 
           {!tableMatch ? (
-            <Section title={hasRequestedCode && !tableMissingDelayDone ? "Loading match..." : "No match found"}>
+            <Section title={hasRequestedCode && (!tableMissingDelayDone || tableRouteLoading) ? "Loading match..." : "No match found"}>
               <div style={styles.small}>
-                {hasRequestedCode && !tableMissingDelayDone
+                {hasRequestedCode && (!tableMissingDelayDone || tableRouteLoading)
                   ? "Opening the table..."
                   : "This table link is missing or incorrect. Ask the organizer for the correct code."}
               </div>
-              {(!hasRequestedCode || tableMissingDelayDone) && (
+              {(!hasRequestedCode || (tableMissingDelayDone && !tableRouteLoading)) && (
                 <div style={{ marginTop: 10 }}>
                   <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
                     Go to Public View
@@ -3590,7 +3650,7 @@ right={
             <div style={styles.small}>Add a match, then assign Team A / Team B.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {[...matches].sort((a, b) => (Number(b.lastUpdatedAt) || 0) - (Number(a.lastUpdatedAt) || 0)).map((m) => (
+              {[...matches].sort((a, b) => getMatchCreatedSortValue(b) - getMatchCreatedSortValue(a)).map((m) => (
               <CollapsibleMatchCard
                   key={m.id}
                   match={m}
