@@ -3016,8 +3016,27 @@ const completedMatchRecaps = matches
               )}
             </Section>
           ) : (
-            <Section title={`Your Match • Code ${tableMatch.code}`}>
-             <TableMatchPanel
+            <Section title="">
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 28, fontWeight: 1000, lineHeight: 1.05, color: fg }}>
+                  {tableMatch.tableName}
+                </div>
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontSize: 22,
+                    fontWeight: 900,
+                    lineHeight: 1.15,
+                    color: "#e2e8f0",
+                  }}
+                >
+                  {tableMatch.label}
+                  <span style={{ color: "#94a3b8", fontWeight: 800 }}>
+                    {" "}• {(teamById.get(tableMatch.teamAId)?.name || "Team A")} vs {(teamById.get(tableMatch.teamBId)?.name || "Team B")}
+                  </span>
+                </div>
+              </div>
+              <TableMatchPanel
                 match={tableMatch}
                 teamById={teamById}
                 playerById={playerById}
