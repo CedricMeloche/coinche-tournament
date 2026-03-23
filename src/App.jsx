@@ -946,6 +946,39 @@ const styles = {
   handRow2: { display: "grid", gridTemplateColumns: "repeat(2, minmax(280px, 1fr))", gap: 10, marginTop: 10, alignItems: "start" },
   handRow3: { display: "grid", gridTemplateColumns: "repeat(4, minmax(180px, 1fr))", gap: 10, marginTop: 10, alignItems: "start" },
   handRow: { border: "1px solid rgba(148,163,184,0.16)", background: bg, borderRadius: 16, padding: 12, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" },
+
+  compactMatchCard: (completed) => ({
+    background: bg,
+    border: completed
+      ? "2px solid rgba(239,68,68,0.55)"
+      : "2px solid rgba(34,197,94,0.50)",
+    borderRadius: 16,
+    padding: 10,
+  }),
+  statusBadge: (completed) => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "5px 10px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 900,
+    lineHeight: 1,
+    border: completed
+      ? "1px solid rgba(239,68,68,0.40)"
+      : "1px solid rgba(34,197,94,0.40)",
+    background: completed
+      ? "rgba(239,68,68,0.14)"
+      : "rgba(34,197,94,0.14)",
+    color: completed ? "#fecaca" : "#dcfce7",
+    whiteSpace: "nowrap",
+  }),
+  compactMatchHeader: {
+    display: "grid",
+    gridTemplateColumns: "minmax(220px, 1.3fr) minmax(110px, auto) minmax(180px, 1fr) auto",
+    gap: 10,
+    alignItems: "center",
+  },
   input: (w = 240) => ({ ...inputBase, width: typeof w === "number" ? `${w}px` : w, padding: "10px 12px" }),
   select: (w = 180) => ({ ...inputBase, width: typeof w === "number" ? `${w}px` : w, padding: "10px 12px" }),
   btnPrimary: {
@@ -1124,6 +1157,8 @@ export default function App() {
   const [newTeamName, setNewTeamName] = useState("");
   const [newTableName, setNewTableName] = useState("Table 1");
   const [newMatchLabel, setNewMatchLabel] = useState("Match 1");
+  const [playersCollapsed, setPlayersCollapsed] = useState(false);
+  const [teamsCollapsed, setTeamsCollapsed] = useState(false);
 
   const [editingPlayerId, setEditingPlayerId] = useState(null);
   const [editingPlayerName, setEditingPlayerName] = useState("");
@@ -1943,6 +1978,9 @@ useEffect(() => {
   };
 
   const setMatchTeam = async (matchId, side, value) => {
+    const target = matches.find((m) => m.id === matchId);
+    if (!target || target.completed) return;
+
     const nextMatches = matches.map((m) =>
       m.id === matchId ? resetMatchState({ ...m, [side]: value || null }) : m
     );
@@ -3165,7 +3203,12 @@ right={
           </div>
         </Section>
 
-        <Section title={`Players (${players.length})`}>
+        <Section
+          title={`Players (${players.length})`}
+          collapsible
+          collapsed={playersCollapsed}
+          onToggleCollapsed={setPlayersCollapsed}
+        >
           <div style={styles.row}>
             <input
               ref={inputRef}
@@ -3269,6 +3312,9 @@ right={
 
         <Section
           title={`Teams (${teams.length})`}
+          collapsible
+          collapsed={teamsCollapsed}
+          onToggleCollapsed={setTeamsCollapsed}
           right={
             <div style={styles.row}>
               <input style={styles.input(220)} value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} placeholder="Optional team name" />
@@ -3325,7 +3371,7 @@ right={
             <div style={styles.small}>Add a match, then assign Team A / Team B.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {matches.map((m) => (
+              {[...matches].sort((a, b) => (Number(b.lastUpdatedAt) || 0) - (Number(a.lastUpdatedAt) || 0)).map((m) => (
               <CollapsibleMatchCard
                   key={m.id}
                   match={m}
@@ -4634,14 +4680,43 @@ function CollapsibleMatchCard({
   onSaveEditedHandScore,
 }) {
   const [collapsed, setCollapsed] = useState(true);
+  const completed = !!match.completed;
+  const teamAName = teamById.get(match.teamAId)?.name || "Team A";
+  const teamBName = teamById.get(match.teamBId)?.name || "Team B";
 
   return (
-    <div style={styles.card}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <div style={{ fontWeight: 950 }}>
+    <div style={styles.compactMatchCard(completed)}>
+      <div style={styles.compactMatchHeader}>
+        <div
+          style={{
+            fontWeight: 950,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            minWidth: 0,
+          }}
+        >
           {match.tableName} • {match.label} <span style={styles.small}>• Code {match.code}</span>
         </div>
-        <div style={styles.row}>
+
+        <div style={styles.statusBadge(completed)}>
+          {completed ? "Completed" : "Live"}
+        </div>
+
+        <div
+          style={{
+            fontSize: 13,
+            color: "#cbd5e1",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            minWidth: 0,
+          }}
+        >
+          {teamAName} {match.totalA} – {match.totalB} {teamBName}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
           <button type="button" style={styles.btnSecondary} onClick={onOpenTable}>
             Open Table
           </button>
@@ -4651,31 +4726,50 @@ function CollapsibleMatchCard({
         </div>
       </div>
 
-      <div style={{ marginTop: 12, ...styles.grid2 }}>
-        <InfoCard title="Table name">
-          <input style={styles.input("100%")} value={match.tableName} onChange={(e) => onRenameMatch({ tableName: e.target.value })} />
-        </InfoCard>
-        <InfoCard title="Match label">
-          <input style={styles.input("100%")} value={match.label} onChange={(e) => onRenameMatch({ label: e.target.value })} />
-        </InfoCard>
-
-        {["teamAId", "teamBId"].map((side, i) => (
-          <div key={side}>
-            <div style={styles.small}>Team {i === 0 ? "A" : "B"}</div>
-            <select style={styles.select("100%")} value={match[side] || ""} onChange={(e) => onSetMatchTeam(side, e.target.value)}>
-              <option value="">— Select —</option>
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        ))}
-      </div>
-
       {!collapsed && (
         <>
+          <div style={{ marginTop: 12, ...styles.grid2 }}>
+            <InfoCard title="Table name">
+              <input
+                style={styles.input("100%")}
+                value={match.tableName}
+                onChange={(e) => onRenameMatch({ tableName: e.target.value })}
+              />
+            </InfoCard>
+
+            <InfoCard title="Match label">
+              <input
+                style={styles.input("100%")}
+                value={match.label}
+                onChange={(e) => onRenameMatch({ label: e.target.value })}
+              />
+            </InfoCard>
+
+            {["teamAId", "teamBId"].map((side, i) => (
+              <div key={side}>
+                <div style={styles.small}>Team {i === 0 ? "A" : "B"}</div>
+                <select
+                  style={styles.select("100%")}
+                  value={match[side] || ""}
+                  onChange={(e) => onSetMatchTeam(side, e.target.value)}
+                  disabled={completed}
+                >
+                  <option value="">— Select —</option>
+                  {teams.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                {completed ? (
+                  <div style={{ marginTop: 6, ...styles.small, color: "#fca5a5" }}>
+                    Locked because the match is completed.
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+
           <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button style={styles.btnSecondary} onClick={onCopyLink}>
               Copy Link
@@ -4686,8 +4780,8 @@ function CollapsibleMatchCard({
           </div>
 
           <div style={{ marginTop: 10, ...styles.card }}>
-            <div style={{ fontWeight: 950, color: match.completed ? "#34d399" : "#94a3b8" }}>
-              {match.completed ? `Completed • Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "In progress"}
+            <div style={{ fontWeight: 950, color: completed ? "#34d399" : "#94a3b8" }}>
+              {completed ? `Completed • Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "In progress"}
             </div>
             <div style={styles.small}>Score: {match.totalA} – {match.totalB}</div>
           </div>
@@ -4807,6 +4901,26 @@ function TableMatchPanel({
     .filter((p) => p.name);
   const seatOrderNames = seatOrderPlayers.map((p) => p.name);
 
+  useEffect(() => {
+    const autoPatch = {};
+    if (playersA[0] && d.announceA1PlayerId !== playersA[0].id) autoPatch.announceA1PlayerId = playersA[0].id;
+    if (playersA[1] && d.announceA2PlayerId !== playersA[1].id) autoPatch.announceA2PlayerId = playersA[1].id;
+    if (playersB[0] && d.announceB1PlayerId !== playersB[0].id) autoPatch.announceB1PlayerId = playersB[0].id;
+    if (playersB[1] && d.announceB2PlayerId !== playersB[1].id) autoPatch.announceB2PlayerId = playersB[1].id;
+
+    if (Object.keys(autoPatch).length) {
+      onDraftPatch(autoPatch);
+    }
+  }, [
+    playersA,
+    playersB,
+    d.announceA1PlayerId,
+    d.announceA2PlayerId,
+    d.announceB1PlayerId,
+    d.announceB2PlayerId,
+    onDraftPatch,
+  ]);
+
   function setSeat(slotIdx, value) {
     const next = [...(match.tableOrderPlayerIds || [])];
     while (next.length < 4) next.push("");
@@ -4827,42 +4941,33 @@ function TableMatchPanel({
       p2: `announce${side}2PlayerId`,
     };
 
+    const player1 = teamPlayers[0] || null;
+    const player2 = teamPlayers[1] || null;
+
     return (
       <div style={styles.card}>
         <div style={{ fontWeight: 950, marginBottom: 10 }}>{label}</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           {[
-            [keys.a1, keys.p1, "Announce 1"],
-            [keys.a2, keys.p2, "Announce 2"],
-          ].map(([amountKey, playerKey, title]) => (
-            <React.Fragment key={amountKey}>
-              <div>
-                <div style={styles.small}>{title}</div>
-                <input
-                  style={handInput}
-                  value={d[amountKey]}
-                  onChange={(e) => onDraftPatch({ [amountKey]: e.target.value })}
-                  inputMode="numeric"
-                  disabled={!setupReady}
-                />
-              </div>
-              <div>
-                <div style={styles.small}>Player</div>
-                <select
-                  style={handSelect}
-                  value={d[playerKey] || ""}
-                  onChange={(e) => onDraftPatch({ [playerKey]: e.target.value })}
-                  disabled={!setupReady}
-                >
-                  <option value="">— Select —</option>
-                  {teamPlayers.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </React.Fragment>
+            [keys.a1, keys.p1, player1?.name || "Player 1"],
+            [keys.a2, keys.p2, player2?.name || "Player 2"],
+          ].map(([amountKey, playerKey, playerLabel]) => (
+            <div key={amountKey}>
+              <div style={styles.small}>{playerLabel}</div>
+              <input
+                style={handInput}
+                value={d[amountKey]}
+                onChange={(e) =>
+                  onDraftPatch({
+                    [amountKey]: e.target.value,
+                    [playerKey]: teamPlayers.find((p) => p.name === playerLabel)?.id || d[playerKey] || "",
+                  })
+                }
+                inputMode="numeric"
+                pattern="[0-9]*"
+                disabled={!setupReady}
+              />
+            </div>
           ))}
         </div>
         <div style={{ marginTop: 8, ...styles.small }}>
@@ -5156,6 +5261,7 @@ function TableMatchPanel({
               }}
               placeholder="ex: 81"
               inputMode="numeric"
+              pattern="[0-9]*"
               disabled={!setupReady || d.trickSource === "NON"}
             />
           </Field>
@@ -5185,6 +5291,7 @@ function TableMatchPanel({
               }}
               placeholder="ex: 81"
               inputMode="numeric"
+              pattern="[0-9]*"
               disabled={!setupReady || d.trickSource === "BIDDER"}
             />
           </Field>
@@ -5233,7 +5340,7 @@ function TableMatchPanel({
           <div style={styles.small}>No hands yet.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {(match.hands || []).map((h) => {
+            {[...(match.hands || [])].sort((a, b) => b.idx - a.idx).map((h) => {
               const ds = h.draftSnapshot || {};
               const announceParts = [
                 [ds.announceA1PlayerName || playerById.get(ds.announceA1PlayerId)?.name || ta, ds.announceA1],
@@ -5431,6 +5538,7 @@ function TableMatchPanel({
                             value={editingHandScoreA}
                             onChange={(e) => setEditingHandScoreA(e.target.value)}
                             inputMode="numeric"
+                    pattern="[0-9]*"
                           />
                           <span style={{ fontWeight: 900 }}>{tb}</span>
                           <input
@@ -5438,6 +5546,7 @@ function TableMatchPanel({
                             value={editingHandScoreB}
                             onChange={(e) => setEditingHandScoreB(e.target.value)}
                             inputMode="numeric"
+                    pattern="[0-9]*"
                           />
                         </div>
 
