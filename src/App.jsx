@@ -13,6 +13,16 @@ const LS_KEY = "coinche_scorekeeper_v1";
 const TARGET_SCORE = 2000;
 const APP_UPDATED_EVENT = "coinche_state_updated";
 
+const scopedLsKey = (tournamentId) => `${LS_KEY}__${tournamentId || "global"}`;
+
+function slugifyTournamentName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || `tournament-${Date.now()}`;
+}
+
 /* =========================
    Helpers
 ========================= */
@@ -745,7 +755,7 @@ function getCurrentDealerInfo(match, playerById) {
    Supabase mapping
 ========================= */
 
-function matchToRow(match, teamById, playerById, appName) {
+function matchToRow(match, teamById, playerById, appName, tournamentId) {
   const teamA = teamById.get(match.teamAId) || null;
   const teamB = teamById.get(match.teamBId) || null;
   const teamAPlayers = getTeamPlayers(teamA, playerById).map((p) => ({ id: p.id, name: p.name }));
@@ -753,6 +763,7 @@ function matchToRow(match, teamById, playerById, appName) {
 
   return {
     id: match.id,
+    tournament_id: tournamentId || null,
     code: match.code,
     table_name: match.tableName,
     label: match.label,
@@ -776,9 +787,10 @@ function matchToRow(match, teamById, playerById, appName) {
   };
 }
 
-function handToRow(match, hand) {
+function handToRow(match, hand, tournamentId) {
   return {
     id: `${match.id}_${hand.idx}`,
+    tournament_id: tournamentId || null,
     match_id: match.id,
     hand_idx: hand.idx,
     created_at_ts: hand.createdAt || Date.now(),
@@ -862,16 +874,19 @@ function derivePeopleAndTeams(matchRows) {
   };
 }
 
-async function saveAppStateToSupabase({
+async function saveTournamentStateToSupabase({
+  tournamentId,
   appName,
   players,
   teams,
   pairHistory,
   avoidSameTeams,
 }) {
-  const { error } = await supabase.from("app_state").upsert(
+  if (!tournamentId) return;
+
+  const { error } = await supabase.from("tournament_state").upsert(
     {
-      id: "main",
+      tournament_id: tournamentId,
       app_name: appName || "Coinche Scorekeeper",
       players: players || [],
       teams: teams || [],
@@ -879,17 +894,19 @@ async function saveAppStateToSupabase({
       avoid_same_teams: !!avoidSameTeams,
       updated_at: new Date().toISOString(),
     },
-    { onConflict: "id" }
+    { onConflict: "tournament_id" }
   );
 
   if (error) throw error;
 }
 
-async function loadAppStateFromSupabase() {
+async function loadTournamentStateFromSupabase(tournamentId) {
+  if (!tournamentId) return null;
+
   const { data, error } = await supabase
-    .from("app_state")
+    .from("tournament_state")
     .select("*")
-    .eq("id", "main")
+    .eq("tournament_id", tournamentId)
     .maybeSingle();
 
   if (error) throw error;
@@ -1147,6 +1164,8 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState("Connecting…");
 
   const [appName, setAppName] = useState("Coinche Scorekeeper");
+  const [tournaments, setTournaments] = useState([]);
+  const [currentTournamentId, setCurrentTournamentId] = useState("");
   const [players, setPlayers] = useState([]);
   const [teams, setTeams] = useState([]);
   const [avoidSameTeams, setAvoidSameTeams] = useState(true);
@@ -1183,8 +1202,8 @@ export default function App() {
         savedAt: Date.now(),
       };
       lastSavedAtRef.current = payload.savedAt;
-      localStorage.setItem(LS_KEY, JSON.stringify(payload));
-      window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { savedAt: payload.savedAt } }));
+      localStorage.setItem(scopedLsKey(currentTournamentId), JSON.stringify(payload));
+      window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { savedAt: payload.savedAt, tournamentId: currentTournamentId } }));
     } catch {}
   };
 
@@ -1212,7 +1231,8 @@ export default function App() {
     });
 
     try {
-      await saveAppStateToSupabase({
+      await saveTournamentStateToSupabase({
+        tournamentId: currentTournamentId,
         appName: nextAppName,
         players: nextPlayers,
         teams: nextTeams,
@@ -1237,7 +1257,7 @@ export default function App() {
 
   const maybeHydrateLatest = () => {
     try {
-      const raw = localStorage.getItem(LS_KEY);
+      const raw = localStorage.getItem(scopedLsKey(currentTournamentId));
       if (!raw) return false;
       const d = JSON.parse(raw);
       const savedAt = Number(d?.savedAt) || 0;
@@ -1280,7 +1300,7 @@ const hydrateFromRemote = (matchRows, handRows) => {
   };
 
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = localStorage.getItem(scopedLsKey(currentTournamentId));
     if (raw) {
       const parsed = JSON.parse(raw);
       localFallback = {
@@ -1327,16 +1347,27 @@ const hydrateFromRemote = (matchRows, handRows) => {
   persistNow(payload);
 };
 
-const refreshFromSupabase = async () => {
+const refreshFromSupabase = async (targetTournamentId = currentTournamentId) => {
+  if (!targetTournamentId) return null;
+
   try {
     const [
       { data: matchRows, error: matchErr },
       { data: handRows, error: handErr },
       stateRow,
     ] = await Promise.all([
-      supabase.from("matches").select("*").order("last_updated_at", { ascending: false }),
-      supabase.from("hands").select("*").order("match_id", { ascending: true }).order("hand_idx", { ascending: true }),
-      loadAppStateFromSupabase(),
+      supabase
+        .from("matches")
+        .select("*")
+        .eq("tournament_id", targetTournamentId)
+        .order("last_updated_at", { ascending: false }),
+      supabase
+        .from("hands")
+        .select("*")
+        .eq("tournament_id", targetTournamentId)
+        .order("match_id", { ascending: true })
+        .order("hand_idx", { ascending: true }),
+      loadTournamentStateFromSupabase(targetTournamentId),
     ]);
 
     if (matchErr) throw matchErr;
@@ -1388,6 +1419,7 @@ const refreshFromSupabase = async () => {
     };
 
     hydrateFromPayload(payload);
+    localStorage.setItem(scopedLsKey(targetTournamentId), JSON.stringify(payload));
     persistNow(payload);
 
     setSyncStatus("Live: Supabase");
@@ -1403,11 +1435,11 @@ const refreshFromSupabase = async () => {
   const saveMatchBundleToSupabase = async (nextMatch, nextAppName = appName) => {
     isPushingRef.current = true;
     try {
-      const matchRow = matchToRow(nextMatch, teamById, playerById, nextAppName);
+      const matchRow = matchToRow(nextMatch, teamById, playerById, nextAppName, currentTournamentId);
       const { error: matchErr } = await supabase.from("matches").upsert(matchRow, { onConflict: "id" });
       if (matchErr) throw matchErr;
 
-      const nextHandRows = (nextMatch.hands || []).map((h) => handToRow(nextMatch, h));
+      const nextHandRows = (nextMatch.hands || []).map((h) => handToRow(nextMatch, h, currentTournamentId));
 
       if (nextHandRows.length) {
         const { error: handsErr } = await supabase
@@ -1419,7 +1451,7 @@ const refreshFromSupabase = async () => {
       const { data: existingHands, error: existingErr } = await supabase
         .from("hands")
         .select("id, hand_idx")
-        .eq("match_id", nextMatch.id);
+        .eq("match_id", nextMatch.id).eq("tournament_id", currentTournamentId);
 
       if (existingErr) throw existingErr;
 
@@ -1427,10 +1459,10 @@ const refreshFromSupabase = async () => {
       const staleIds = (existingHands || []).map((r) => r.id).filter((id) => !nextIds.has(id));
 
       if (!nextHandRows.length) {
-        const { error: deleteAllErr } = await supabase.from("hands").delete().eq("match_id", nextMatch.id);
+        const { error: deleteAllErr } = await supabase.from("hands").delete().eq("match_id", nextMatch.id).eq("tournament_id", currentTournamentId);
         if (deleteAllErr) throw deleteAllErr;
       } else if (staleIds.length) {
-        const { error: deleteStaleErr } = await supabase.from("hands").delete().in("id", staleIds);
+        const { error: deleteStaleErr } = await supabase.from("hands").delete().eq("tournament_id", currentTournamentId).in("id", staleIds);
         if (deleteStaleErr) throw deleteStaleErr;
       }
 
@@ -1462,13 +1494,15 @@ const refreshFromSupabase = async () => {
     const { error: handsErr } = await supabase
       .from("hands")
       .delete()
-      .eq("match_id", matchId);
+      .eq("match_id", matchId)
+      .eq("tournament_id", currentTournamentId);
     if (handsErr) throw handsErr;
 
     const { error: matchErr } = await supabase
       .from("matches")
       .delete()
-      .eq("id", matchId);
+      .eq("id", matchId)
+      .eq("tournament_id", currentTournamentId);
     if (matchErr) throw matchErr;
 
     setSyncStatus("Live: Supabase");
@@ -1478,13 +1512,25 @@ const refreshFromSupabase = async () => {
 };
 
 const deleteAllSupabaseData = async () => {
+  if (!currentTournamentId) return;
   isPushingRef.current = true;
   try {
-    const { error: handsErr } = await supabase.from("hands").delete().not("id", "is", null);
+    const { error: handsErr } = await supabase.from("hands").delete().eq("tournament_id", currentTournamentId);
     if (handsErr) throw handsErr;
 
-    const { error: matchesErr } = await supabase.from("matches").delete().not("id", "is", null);
+    const { error: matchesErr } = await supabase.from("matches").delete().eq("tournament_id", currentTournamentId);
     if (matchesErr) throw matchesErr;
+
+    const { error: stateErr } = await supabase.from("tournament_state").upsert({
+      tournament_id: currentTournamentId,
+      app_name: "Coinche Scorekeeper",
+      players: [],
+      teams: [],
+      pair_history: [],
+      avoid_same_teams: true,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "tournament_id" });
+    if (stateErr) throw stateErr;
 
     setSyncStatus("Live: Supabase");
   } finally {
@@ -1513,7 +1559,7 @@ const clearAllLocalTournamentData = async () => {
   });
 
   try {
-    await saveAppStateToSupabase({
+    await saveTournamentStateToSupabase({
       appName,
       players: nextPlayers,
       teams: nextTeams,
@@ -1577,11 +1623,71 @@ const saveEditedHandScore = async (matchId, handIdx, newScoreA, newScoreB) => {
     };
   }, []);
 
+  const loadTournaments = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("tournaments")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      const list = data || [];
+      setTournaments(list);
+
+      const wantedTid = String(route.query.tid || "").trim();
+      if (wantedTid && list.some((t) => t.id === wantedTid)) {
+        setCurrentTournamentId(wantedTid);
+      } else if (!currentTournamentId && list.length) {
+        setCurrentTournamentId(list[0].id);
+      }
+    } catch (err) {
+      console.error("Failed to load tournaments:", err);
+    }
+  };
+
+  const createTournament = async (name, cloneCurrentSetup = false) => {
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return;
+
+    const { data: created, error: createErr } = await supabase
+      .from("tournaments")
+      .insert({
+        name: trimmed,
+        slug: slugifyTournamentName(trimmed),
+        status: "active",
+      })
+      .select("*")
+      .single();
+
+    if (createErr) throw createErr;
+
+    const { error: stateErr } = await supabase.from("tournament_state").upsert({
+      tournament_id: created.id,
+      app_name: appName || "Coinche Scorekeeper",
+      players: cloneCurrentSetup ? players : [],
+      teams: cloneCurrentSetup ? teams : [],
+      pair_history: cloneCurrentSetup ? pairHistory : [],
+      avoid_same_teams: !!avoidSameTeams,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "tournament_id" });
+
+    if (stateErr) throw stateErr;
+
+    setTournaments((prev) => [created, ...prev]);
+    setCurrentTournamentId(created.id);
+    return created;
+  };
+
 useEffect(() => {
+  void loadTournaments();
+}, []);
+
+useEffect(() => {
+  if (!currentTournamentId) return;
+
   let hadLocal = false;
 
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = localStorage.getItem(scopedLsKey(currentTournamentId));
     if (raw) {
       hydrateFromPayload(JSON.parse(raw));
       hadLocal = true;
@@ -1590,16 +1696,16 @@ useEffect(() => {
 
   if (hadLocal) {
     setTimeout(() => {
-      void refreshFromSupabase();
+      void refreshFromSupabase(currentTournamentId);
     }, 0);
   } else {
-    void refreshFromSupabase();
+    void refreshFromSupabase(currentTournamentId);
   }
-}, []);
+}, [currentTournamentId]);
 
   useEffect(() => {
     const onStorage = (e) => {
-      if (!e || e.key === LS_KEY) maybeHydrateLatest();
+      if (!e || !e.key || e.key.startsWith(LS_KEY)) maybeHydrateLatest();
     };
     const onAppUpdated = () => maybeHydrateLatest();
 
@@ -1620,8 +1726,11 @@ useEffect(() => {
     .on("postgres_changes", { event: "*", schema: "public", table: "hands" }, () => {
       if (!isPushingRef.current) void refreshFromSupabase();
     })
-    .on("postgres_changes", { event: "*", schema: "public", table: "app_state" }, () => {
+    .on("postgres_changes", { event: "*", schema: "public", table: "tournament_state" }, () => {
       if (!isPushingRef.current) void refreshFromSupabase();
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "tournaments" }, () => {
+      if (!isPushingRef.current) void loadTournaments();
     })
     .subscribe((status) => {
       if (status === "SUBSCRIBED") setSyncStatus("Live: Supabase");
@@ -1648,6 +1757,16 @@ useEffect(() => {
     }
   }, [matches]);
 
+
+  useEffect(() => {
+    const wantedTid = String(route.query.tid || "").trim();
+    if (!wantedTid) return;
+    if (wantedTid === currentTournamentId) return;
+    if (tournaments.some((t) => t.id === wantedTid)) {
+      setCurrentTournamentId(wantedTid);
+    }
+  }, [route.query.tid, tournaments, currentTournamentId]);
+
   useEffect(() => {
     if (route.path !== "/table") {
       setTableMissingDelayDone(false);
@@ -1659,7 +1778,7 @@ useEffect(() => {
     }
     const t = setTimeout(() => setTableMissingDelayDone(true), 350);
     return () => clearTimeout(t);
-  }, [route.path, route.query.code]);
+  }, [route.path, route.query.code, route.query.tid]);
 
   useEffect(() => {
     if (route.path !== "/table") return;
@@ -1677,7 +1796,7 @@ useEffect(() => {
         tries += 1;
         await refreshFromSupabase();
 
-        const latestRaw = localStorage.getItem(LS_KEY);
+        const latestRaw = localStorage.getItem(scopedLsKey(route.query.tid || currentTournamentId));
         if (latestRaw) {
           try {
             const parsed = JSON.parse(latestRaw);
@@ -1715,10 +1834,11 @@ useEffect(() => {
   }, [route.path, route.query.code]);
 
   function openTableRoute(code) {
-    const nextHash = `#/table?code=${code}`;
+    const query = { code, tid: currentTournamentId };
+    const nextHash = `#/table?code=${encodeURIComponent(code)}${currentTournamentId ? `&tid=${encodeURIComponent(currentTournamentId)}` : ""}`;
     persistNow();
-    window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { code } }));
-    setRoute({ path: "/table", query: { code } });
+    window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { code, tournamentId: currentTournamentId } }));
+    setRoute({ path: "/table", query });
     navigateHash(nextHash);
     requestAnimationFrame(() => {
       try {
@@ -1792,7 +1912,8 @@ useEffect(() => {
         matches: nextMatches,
       });
 
-      await saveAppStateToSupabase({
+      await saveTournamentStateToSupabase({
+        tournamentId: currentTournamentId,
         appName,
         players: nextPlayers,
         teams: nextTeams,
@@ -1860,7 +1981,8 @@ useEffect(() => {
         matches: nextMatches,
       });
 
-      await saveAppStateToSupabase({
+      await saveTournamentStateToSupabase({
+        tournamentId: currentTournamentId,
         appName,
         players,
         teams: nextTeams,
@@ -1957,7 +2079,8 @@ useEffect(() => {
         matches: [],
       });
 
-      await saveAppStateToSupabase({
+      await saveTournamentStateToSupabase({
+        tournamentId: currentTournamentId,
         appName,
         players,
         teams: nextTeams,
@@ -1971,7 +2094,7 @@ useEffect(() => {
   }
 
   const addMatch = async () => {
-    if (!teams.length) return;
+    if (!currentTournamentId || !teams.length) return;
     const nextMatch = recomputeMatch(
       makeEmptyMatch({
         tableName: newTableName.trim() || `Table ${matches.length + 1}`,
@@ -2879,13 +3002,13 @@ if (lowestTeamScore < leastPointsGame.points) {
     };
   }, [matches, teamById, playerById]);
 
-  const publicLink = useMemo(() => `${window.location.origin}${window.location.pathname}#/public`, []);
+  const publicLink = useMemo(() => `${window.location.origin}${window.location.pathname}#/public${currentTournamentId ? `?tid=${encodeURIComponent(currentTournamentId)}` : ""}`, [currentTournamentId]);
   const tableLinks = useMemo(
     () =>
       matches.map((m) => ({
         label: `${m.tableName} • ${m.label}`,
         code: m.code,
-        href: `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`,
+        href: `${window.location.origin}${window.location.pathname}#/table?code=${encodeURIComponent(m.code)}${currentTournamentId ? `&tid=${encodeURIComponent(currentTournamentId)}` : ""}`,
       })),
     [matches]
   );
@@ -2900,14 +3023,14 @@ if (lowestTeamScore < leastPointsGame.points) {
     if (direct) return direct;
 
     try {
-      const raw = localStorage.getItem(LS_KEY);
+      const raw = localStorage.getItem(scopedLsKey(query.tid || currentTournamentId));
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       return (parsed.matches || []).find((m) => (m.code || "").toUpperCase() === code) || null;
     } catch {
       return null;
     }
-  }, [query.code, matches]);
+  }, [query.code, query.tid, matches, currentTournamentId]);
 
   const NavPills = ({ showAdmin = true }) => (
     <div style={styles.pillRow}>
@@ -3100,6 +3223,65 @@ const completedMatchRecaps = matches
         />
 
 <Section
+  title="Tournament"
+  right={
+    <div style={styles.row}>
+      <select
+        style={styles.select(260)}
+        value={currentTournamentId || ""}
+        onChange={(e) => setCurrentTournamentId(e.target.value)}
+      >
+        <option value="">Select tournament</option>
+        {tournaments.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.name}
+          </option>
+        ))}
+      </select>
+
+      <button
+        style={styles.btnPrimary}
+        onClick={async () => {
+          const name = window.prompt("New tournament name:");
+          if (!name) return;
+          try {
+            await createTournament(name, false);
+          } catch (err) {
+            console.error("Create tournament failed:", err);
+            alert(`Create tournament failed: ${err.message || "Unknown error"}`);
+          }
+        }}
+      >
+        New Tournament
+      </button>
+
+      <button
+        style={styles.btnSecondary}
+        onClick={async () => {
+          const name = window.prompt("Name for the cloned tournament:");
+          if (!name) return;
+          try {
+            await createTournament(name, true);
+          } catch (err) {
+            console.error("Clone tournament failed:", err);
+            alert(`Clone tournament failed: ${err.message || "Unknown error"}`);
+          }
+        }}
+      >
+        Clone Setup
+      </button>
+    </div>
+  }
+>
+  <div style={styles.small}>
+    Current tournament: <span style={{ color: "#e5e7eb" }}>{tournaments.find((t) => t.id === currentTournamentId)?.name || "None selected"}</span>
+  </div>
+  <div style={{ marginTop: 8, ...styles.small }}>
+    Table and public links now include the tournament id so each event stays separate.
+  </div>
+</Section>
+
+<Section
   title="Quick Links"
   collapsible
   defaultCollapsed
@@ -3207,7 +3389,8 @@ right={
       matches: nextMatches,
     });
 
-    await saveAppStateToSupabase({
+    await saveTournamentStateToSupabase({
+      tournamentId: currentTournamentId,
       appName: nextAppName,
       players: nextPlayers,
       teams: nextTeams,
@@ -3416,7 +3599,7 @@ right={
                   teams={teams}
                   onOpenTable={() => openTableRoute(m.code)}
                   onCopyLink={() => {
-                    const href = `${window.location.origin}${window.location.pathname}#/table?code=${m.code}`;
+                    const href = `${window.location.origin}${window.location.pathname}#/table?code=${encodeURIComponent(m.code)}${currentTournamentId ? `&tid=${encodeURIComponent(currentTournamentId)}` : ""}`;
                     navigator.clipboard?.writeText(href);
                     alert("Table link copied!");
                   }}
