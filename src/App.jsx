@@ -3232,22 +3232,40 @@ const completedMatchRecaps = matches
           ) : (
             <Section title="">
               <div style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 28, fontWeight: 1000, lineHeight: 1.05, color: fg }}>
-                  {tableMatch.tableName}
+                <div
+                  style={{
+                    fontSize: 28,
+                    fontWeight: 1000,
+                    lineHeight: 1.1,
+                    color: fg,
+                    display: "flex",
+                    gap: 10,
+                    flexWrap: "wrap",
+                    alignItems: "baseline",
+                  }}
+                >
+                  <span>{tableMatch.tableName}</span>
+                  <span style={{ color: "#94a3b8" }}>•</span>
+                  <span>{tableMatch.label}</span>
                 </div>
                 <div
                   style={{
-                    marginTop: 6,
-                    fontSize: 22,
-                    fontWeight: 900,
-                    lineHeight: 1.15,
-                    color: "#e2e8f0",
+                    marginTop: 8,
+                    fontSize: 17,
+                    fontWeight: 800,
+                    lineHeight: 1.35,
+                    color: "#cbd5e1",
                   }}
                 >
-                  {tableMatch.label}
-                  <span style={{ color: "#94a3b8", fontWeight: 800 }}>
-                    {" "}• {(teamById.get(tableMatch.teamAId)?.name || "Team A")} vs {(teamById.get(tableMatch.teamBId)?.name || "Team B")}
-                  </span>
+                  {(teamById.get(tableMatch.teamAId)?.playerIds || [])
+                    .map((pid) => playerById.get(pid)?.name)
+                    .filter(Boolean)
+                    .join(" / ") || "Team A Players"}
+                  <span style={{ color: "#94a3b8", fontWeight: 700 }}>  •  </span>
+                  {(teamById.get(tableMatch.teamBId)?.playerIds || [])
+                    .map((pid) => playerById.get(pid)?.name)
+                    .filter(Boolean)
+                    .join(" / ") || "Team B Players"}
                 </div>
               </div>
               <TableMatchPanel
@@ -5324,11 +5342,7 @@ function TableMatchPanel({
 
   return (
     <div style={{ ...styles.card, borderRadius: 18 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <div style={{ fontWeight: 950 }}>
-          {match.tableName} • {match.label}
-        </div>
-
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
             {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
