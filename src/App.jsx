@@ -1704,12 +1704,29 @@ useEffect(() => {
     };
   }, [route.path, route.query.code, matches]);
 
+  useEffect(() => {
+    if (route.path === "/table") {
+      try {
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      } catch {
+        window.scrollTo(0, 0);
+      }
+    }
+  }, [route.path, route.query.code]);
+
   function openTableRoute(code) {
     const nextHash = `#/table?code=${code}`;
     persistNow();
     window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { code } }));
     setRoute({ path: "/table", query: { code } });
     navigateHash(nextHash);
+    requestAnimationFrame(() => {
+      try {
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      } catch {
+        window.scrollTo(0, 0);
+      }
+    });
   }
 
   const addPlayer = async () => {
@@ -4726,83 +4743,79 @@ function CollapsibleMatchCard({
         </div>
       </div>
 
+      <div
+        style={{
+          marginTop: 10,
+          display: "grid",
+          gridTemplateColumns: "minmax(140px, 1fr) minmax(140px, 1fr) minmax(150px, 1fr) minmax(150px, 1fr) auto auto",
+          gap: 8,
+          alignItems: "center",
+        }}
+      >
+        <input
+          style={styles.input("100%")}
+          value={match.tableName}
+          onChange={(e) => onRenameMatch({ tableName: e.target.value })}
+          placeholder="Table name"
+        />
+
+        <input
+          style={styles.input("100%")}
+          value={match.label}
+          onChange={(e) => onRenameMatch({ label: e.target.value })}
+          placeholder="Match label"
+        />
+
+        {["teamAId", "teamBId"].map((side, i) => (
+          <div key={side} style={{ minWidth: 0 }}>
+            <select
+              style={styles.select("100%")}
+              value={match[side] || ""}
+              onChange={(e) => onSetMatchTeam(side, e.target.value)}
+              disabled={completed}
+              title={completed ? "Locked because the match is completed" : `Team ${i === 0 ? "A" : "B"}`}
+            >
+              <option value="">{`Team ${i === 0 ? "A" : "B"}`}</option>
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+
+        <button style={styles.btnSecondary} onClick={onCopyLink}>
+          Copy Link
+        </button>
+        <button style={styles.btnDanger} onClick={onRemove}>
+          Remove
+        </button>
+      </div>
+
+      {completed ? (
+        <div style={{ marginTop: 6, ...styles.small, color: "#fca5a5" }}>
+          Teams are locked because the match is completed.
+        </div>
+      ) : null}
+
       {!collapsed && (
-        <>
-          <div style={{ marginTop: 12, ...styles.grid2 }}>
-            <InfoCard title="Table name">
-              <input
-                style={styles.input("100%")}
-                value={match.tableName}
-                onChange={(e) => onRenameMatch({ tableName: e.target.value })}
-              />
-            </InfoCard>
-
-            <InfoCard title="Match label">
-              <input
-                style={styles.input("100%")}
-                value={match.label}
-                onChange={(e) => onRenameMatch({ label: e.target.value })}
-              />
-            </InfoCard>
-
-            {["teamAId", "teamBId"].map((side, i) => (
-              <div key={side}>
-                <div style={styles.small}>Team {i === 0 ? "A" : "B"}</div>
-                <select
-                  style={styles.select("100%")}
-                  value={match[side] || ""}
-                  onChange={(e) => onSetMatchTeam(side, e.target.value)}
-                  disabled={completed}
-                >
-                  <option value="">— Select —</option>
-                  {teams.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-                {completed ? (
-                  <div style={{ marginTop: 6, ...styles.small, color: "#fca5a5" }}>
-                    Locked because the match is completed.
-                  </div>
-                ) : null}
-              </div>
-            ))}
-          </div>
-
-          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button style={styles.btnSecondary} onClick={onCopyLink}>
-              Copy Link
-            </button>
-            <button style={styles.btnDanger} onClick={onRemove}>
-              Remove
-            </button>
-          </div>
-
-          <div style={{ marginTop: 10, ...styles.card }}>
-            <div style={{ fontWeight: 950, color: completed ? "#34d399" : "#94a3b8" }}>
-              {completed ? `Completed • Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "In progress"}
-            </div>
-            <div style={styles.small}>Score: {match.totalA} – {match.totalB}</div>
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <TableMatchPanel
-              match={match}
-              teamById={teamById}
-              playerById={playerById}
-              onTableSetupPatch={onTableSetupPatch}
-              onDraftPatch={onDraftPatch}
-              onAddHand={onAddHand}
-              onSkipHand={onSkipHand}
-              onClearHands={onClearHands}
-              onStartEditHand={onStartEditHand}
-              onCancelEdit={onCancelEdit}
-              onFinishNow={onFinishNow}
-              onSaveEditedHandScore={onSaveEditedHandScore}
-            />
-          </div>
-        </>
+        <div style={{ marginTop: 12 }}>
+          <TableMatchPanel
+            match={match}
+            teamById={teamById}
+            playerById={playerById}
+            onTableSetupPatch={onTableSetupPatch}
+            onDraftPatch={onDraftPatch}
+            onAddHand={onAddHand}
+            onSkipHand={onSkipHand}
+            onClearHands={onClearHands}
+            onStartEditHand={onStartEditHand}
+            onCancelEdit={onCancelEdit}
+            onFinishNow={onFinishNow}
+            onSaveEditedHandScore={onSaveEditedHandScore}
+          />
+        </div>
       )}
     </div>
   );
@@ -5173,6 +5186,8 @@ function TableMatchPanel({
               value={d.bid}
               onChange={(e) => onDraftPatch({ bid: e.target.value })}
               placeholder='80, 90, 110... or "250"'
+              inputMode="numeric"
+              pattern="[0-9]*"
               disabled={!setupReady}
             />
           </Field>
