@@ -3231,41 +3231,74 @@ const completedMatchRecaps = matches
             </Section>
           ) : (
             <Section title="">
-              <div style={{ marginBottom: 14 }}>
-                <div
-                  style={{
-                    fontSize: 28,
-                    fontWeight: 1000,
-                    lineHeight: 1.1,
-                    color: fg,
-                    display: "flex",
-                    gap: 10,
-                    flexWrap: "wrap",
-                    alignItems: "baseline",
-                  }}
-                >
-                  <span>{tableMatch.tableName}</span>
-                  <span style={{ color: "#94a3b8" }}>•</span>
-                  <span>{tableMatch.label}</span>
+              <div
+                style={{
+                  marginBottom: 14,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 14,
+                  alignItems: "flex-start",
+                  flexWrap: "wrap",
+                }}
+              >
+                <div>
+                  <div
+                    style={{
+                      fontSize: 28,
+                      fontWeight: 1000,
+                      lineHeight: 1.1,
+                      color: fg,
+                      display: "flex",
+                      gap: 10,
+                      flexWrap: "wrap",
+                      alignItems: "baseline",
+                    }}
+                  >
+                    <span>{tableMatch.tableName}</span>
+                    <span style={{ color: "#94a3b8" }}>•</span>
+                    <span>{tableMatch.label}</span>
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 8,
+                      fontSize: 17,
+                      fontWeight: 800,
+                      lineHeight: 1.35,
+                      color: "#cbd5e1",
+                    }}
+                  >
+                    {(teamById.get(tableMatch.teamAId)?.playerIds || [])
+                      .map((pid) => playerById.get(pid)?.name)
+                      .filter(Boolean)
+                      .join(" / ") || "Team A Players"}
+                    <span style={{ color: "#94a3b8", fontWeight: 700 }}>  •  </span>
+                    {(teamById.get(tableMatch.teamBId)?.playerIds || [])
+                      .map((pid) => playerById.get(pid)?.name)
+                      .filter(Boolean)
+                      .join(" / ") || "Team B Players"}
+                  </div>
                 </div>
-                <div
-                  style={{
-                    marginTop: 8,
-                    fontSize: 17,
-                    fontWeight: 800,
-                    lineHeight: 1.35,
-                    color: "#cbd5e1",
-                  }}
-                >
-                  {(teamById.get(tableMatch.teamAId)?.playerIds || [])
-                    .map((pid) => playerById.get(pid)?.name)
-                    .filter(Boolean)
-                    .join(" / ") || "Team A Players"}
-                  <span style={{ color: "#94a3b8", fontWeight: 700 }}>  •  </span>
-                  {(teamById.get(tableMatch.teamBId)?.playerIds || [])
-                    .map((pid) => playerById.get(pid)?.name)
-                    .filter(Boolean)
-                    .join(" / ") || "Team B Players"}
+
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ color: tableMatch.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
+                    {tableMatch.completed
+                      ? `Winner: ${teamById.get(tableMatch.winnerId)?.name ?? "—"}`
+                      : "Live"}
+                  </div>
+
+                  {!tableMatch.completed && (
+                    <button
+                      style={{ ...styles.btnDanger, ...(tableMatch.teamAId && tableMatch.teamBId ? {} : styles.disabled) }}
+                      onClick={() => {
+                        if (!(tableMatch.teamAId && tableMatch.teamBId)) return;
+                        if (!confirm("Finish this game now? Winner will be the higher total score.")) return;
+                        finishMatchNow(tableMatch.id);
+                      }}
+                      disabled={!(tableMatch.teamAId && tableMatch.teamBId)}
+                    >
+                      Finish Game Now
+                    </button>
+                  )}
                 </div>
               </div>
               <TableMatchPanel
@@ -3284,6 +3317,7 @@ const completedMatchRecaps = matches
                   saveEditedHandScore(tableMatch.id, handIdx, scoreA, scoreB)
                 }
                 bigTotals
+                hideTopStatusRow
               />
             </Section>
           )}
@@ -5164,6 +5198,7 @@ function TableMatchPanel({
   onFinishNow,
   onSaveEditedHandScore,
   bigTotals = false,
+  hideTopStatusRow = false,
 }) {
   const teamA = teamById.get(match.teamAId) || null;
   const teamB = teamById.get(match.teamBId) || null;
@@ -5342,29 +5377,33 @@ function TableMatchPanel({
 
   return (
     <div style={{ ...styles.card, borderRadius: 18 }}>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
-            {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
+      {!hideTopStatusRow && (
+        <>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ color: match.completed ? "#34d399" : "#94a3b8", fontWeight: 950 }}>
+                {match.completed ? `Winner: ${teamById.get(match.winnerId)?.name ?? "—"}` : "Live"}
+              </div>
+
+              {!match.completed && (
+                <button
+                  style={{ ...styles.btnDanger, ...(setupReady ? {} : styles.disabled) }}
+                  onClick={() => {
+                    if (!setupReady) return;
+                    if (!confirm("Finish this game now? Winner will be the higher total score.")) return;
+                    onFinishNow?.();
+                  }}
+                  disabled={!setupReady}
+                >
+                  Finish Game Now
+                </button>
+              )}
+            </div>
           </div>
+        </>
+      )}
 
-          {!match.completed && (
-            <button
-              style={{ ...styles.btnDanger, ...(setupReady ? {} : styles.disabled) }}
-              onClick={() => {
-                if (!setupReady) return;
-                if (!confirm("Finish this game now? Winner will be the higher total score.")) return;
-                onFinishNow?.();
-              }}
-              disabled={!setupReady}
-            >
-              Finish Game Now
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div style={{ marginTop: 14, borderTop: "1px solid rgba(148,163,184,0.18)", paddingTop: 12 }}>
+      <div style={{ marginTop: hideTopStatusRow ? 0 : 14, borderTop: hideTopStatusRow ? "none" : "1px solid rgba(148,163,184,0.18)", paddingTop: hideTopStatusRow ? 0 : 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
           <div style={{ fontWeight: 950 }}>Table Setup</div>
           {canPlay && (
