@@ -1686,6 +1686,37 @@ const saveEditedHandScore = async (matchId, handIdx, newScoreA, newScoreB) => {
     return created;
   };
 
+  const renameTournament = async (tournamentId, nextName) => {
+    const trimmed = String(nextName || "").trim();
+    if (!tournamentId || !trimmed) return;
+
+    const duplicate = tournaments.find(
+      (t) => t.id !== tournamentId && String(t.name || "").trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    if (duplicate) {
+      throw new Error("A tournament with that name already exists.");
+    }
+
+    const { data: updated, error } = await supabase
+      .from("tournaments")
+      .update({
+        name: trimmed,
+        slug: slugifyTournamentName(trimmed),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", tournamentId)
+      .select("*")
+      .single();
+
+    if (error) throw error;
+
+    setTournaments((prev) =>
+      prev.map((t) => (t.id === tournamentId ? { ...t, ...updated } : t))
+    );
+
+    return updated;
+  };
+
 useEffect(() => {
   void loadTournaments();
 }, []);
@@ -3313,6 +3344,24 @@ const completedMatchRecaps = matches
         }}
       >
         New Tournament
+      </button>
+
+      <button
+        style={styles.btnSecondary}
+        onClick={async () => {
+          const current = tournaments.find((t) => t.id === currentTournamentId);
+          const name = window.prompt("Rename tournament:", current?.name || "");
+          if (!name) return;
+          try {
+            await renameTournament(currentTournamentId, name);
+          } catch (err) {
+            console.error("Rename tournament failed:", err);
+            alert(`Rename tournament failed: ${err.message || "Unknown error"}`);
+          }
+        }}
+        disabled={!currentTournamentId}
+      >
+        Rename Tournament
       </button>
 
       <button
