@@ -1043,6 +1043,7 @@ async function loadTournamentStateFromSupabase(tournamentId) {
 ========================= */
 
 const bg = "rgba(2,6,23,0.35)";
+const fg = "#e5e7eb";
 const bd = "1px solid rgba(148,163,184,0.18)";
 const inputBase = {
   borderRadius: 14,
