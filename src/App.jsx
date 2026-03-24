@@ -750,6 +750,36 @@ function buildShareHref(path, query = {}) {
   return `${window.location.origin}${window.location.pathname}${buildHashRoute(path, query)}`;
 }
 
+
+function safeGetStorage(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetStorage(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function detectMobileLike() {
+  try {
+    if (typeof window === "undefined") return false;
+    const narrow = typeof window.innerWidth === "number" && window.innerWidth <= 1024;
+    const touch = typeof navigator !== "undefined" && (navigator.maxTouchPoints || 0) > 0;
+    const coarse = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+    return Boolean(narrow || touch || coarse);
+  } catch {
+    return false;
+  }
+}
+
 /* =========================
    Match helpers
 ========================= */
@@ -1255,6 +1285,8 @@ function compareMatchesByTournamentOrder(a, b) {
 
 export default function App() {
   const [route, setRoute] = useState(() => parseHashRoute());
+  const [isMobileLike, setIsMobileLike] = useState(() => detectMobileLike());
+  const [showTableExtras, setShowTableExtras] = useState(() => !detectMobileLike());
   const [tableMissingDelayDone, setTableMissingDelayDone] = useState(false);
   const [tableRouteLoading, setTableRouteLoading] = useState(false);
   const [syncStatus, setSyncStatus] = useState("Connecting…");
@@ -1285,6 +1317,19 @@ export default function App() {
   const routeRefreshAttemptRef = useRef("");
 
   useEffect(() => ensureGlobalCSS(), []);
+  useEffect(() => {
+    const syncMobileLike = () => setIsMobileLike(detectMobileLike());
+    syncMobileLike();
+    window.addEventListener("resize", syncMobileLike);
+    window.addEventListener("orientationchange", syncMobileLike);
+    return () => {
+      window.removeEventListener("resize", syncMobileLike);
+      window.removeEventListener("orientationchange", syncMobileLike);
+    };
+  }, []);
+  useEffect(() => {
+    if (!isMobileLike) setShowTableExtras(true);
+  }, [isMobileLike]);
 
   const persistNow = (next = {}) => {
     try {
@@ -1298,7 +1343,7 @@ export default function App() {
         savedAt: Date.now(),
       };
       lastSavedAtRef.current = payload.savedAt;
-      localStorage.setItem(scopedLsKey(currentTournamentId), JSON.stringify(payload));
+      safeSetStorage(scopedLsKey(currentTournamentId), JSON.stringify(payload));
       window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { savedAt: payload.savedAt, tournamentId: currentTournamentId } }));
     } catch {}
   };
@@ -1353,7 +1398,7 @@ export default function App() {
 
   const maybeHydrateLatest = () => {
     try {
-      const raw = localStorage.getItem(scopedLsKey(currentTournamentId));
+      const raw = safeGetStorage(scopedLsKey(currentTournamentId));
       if (!raw) return false;
       const d = JSON.parse(raw);
       const savedAt = Number(d?.savedAt) || 0;
@@ -1396,7 +1441,7 @@ const hydrateFromRemote = (matchRows, handRows) => {
   };
 
   try {
-    const raw = localStorage.getItem(scopedLsKey(currentTournamentId));
+    const raw = safeGetStorage(scopedLsKey(currentTournamentId));
     if (raw) {
       const parsed = JSON.parse(raw);
       localFallback = {
@@ -1515,7 +1560,7 @@ const refreshFromSupabase = async (targetTournamentId = currentTournamentId) => 
     };
 
     hydrateFromPayload(payload);
-    localStorage.setItem(scopedLsKey(targetTournamentId), JSON.stringify(payload));
+    safeSetStorage(scopedLsKey(targetTournamentId), JSON.stringify(payload));
     persistNow(payload);
 
     setSyncStatus("Live: Supabase");
@@ -1732,7 +1777,7 @@ const saveEditedHandScore = async (matchId, handIdx, newScoreA, newScoreB) => {
       const wantedTid = String(route.query.tid || "").trim();
       const savedTid = (() => {
         try {
-          return String(localStorage.getItem(CURRENT_TOURNAMENT_KEY) || "").trim();
+          return String(safeGetStorage(CURRENT_TOURNAMENT_KEY) || "").trim();
         } catch {
           return "";
         }
@@ -1823,7 +1868,7 @@ useEffect(() => {
   let hadLocal = false;
 
   try {
-    const raw = localStorage.getItem(scopedLsKey(currentTournamentId));
+    const raw = safeGetStorage(scopedLsKey(currentTournamentId));
     if (raw) {
       hydrateFromPayload(JSON.parse(raw));
       hadLocal = true;
@@ -1843,7 +1888,7 @@ useEffect(() => {
 useEffect(() => {
   if (!currentTournamentId) return;
   try {
-    localStorage.setItem(CURRENT_TOURNAMENT_KEY, currentTournamentId);
+    safeSetStorage(CURRENT_TOURNAMENT_KEY, currentTournamentId);
   } catch {}
 
   if (route.path === "/admin" || route.path === "/public") {
@@ -1947,7 +1992,7 @@ useEffect(() => {
         tries += 1;
         await refreshFromSupabase(route.query.tid || currentTournamentId);
 
-        const latestRaw = localStorage.getItem(scopedLsKey(route.query.tid || currentTournamentId));
+        const latestRaw = safeGetStorage(scopedLsKey(route.query.tid || currentTournamentId));
         if (latestRaw) {
           try {
             const parsed = JSON.parse(latestRaw);
@@ -3246,7 +3291,7 @@ if (lowestTeamScore < leastPointsGame.points) {
     if (direct) return direct;
 
     try {
-      const raw = localStorage.getItem(scopedLsKey(query.tid || currentTournamentId));
+      const raw = safeGetStorage(scopedLsKey(query.tid || currentTournamentId));
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       return (parsed.matches || []).find((m) => (m.code || "").toUpperCase() === code) || null;
@@ -3435,6 +3480,7 @@ const completedMatchRecaps = matches
                 </div>
               </div>
               <TableMatchPanel
+                key={`table-panel-${tableMatch.id}-${tableMatch.code || ""}`}
                 match={tableMatch}
                 teamById={teamById}
                 playerById={playerById}
@@ -3455,35 +3501,52 @@ const completedMatchRecaps = matches
             </Section>
           )}
 
-          <Section title="Live Scoreboard (read-only)">
-            <ScoreboardTable rows={scoreboardRows} />
-          </Section>
-
-          <Section title="Other Tables Live Scores">
-            {matches.filter((m) => m.teamAId && m.teamBId && !m.completed).length ? (
-              <div style={styles.grid3}>
-                {matches
-                  .filter((m) => m.teamAId && m.teamBId && !m.completed)
-                  .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0))
-                  .map((m) => (
-                    <LiveMatchCard
-                      key={m.id}
-                      match={m}
-                      teamById={teamById}
-                      hideOpenButton
-                    />
-                  ))}
+          {isMobileLike ? (
+            <Section title="More">
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <button type="button" style={styles.btnSecondary} onClick={() => setShowTableExtras((v) => !v)}>
+                  {showTableExtras ? "Hide Extra Sections" : "Show Live Scoreboard"}
+                </button>
+                <a href={publicLink} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                  Open Public View
+                </a>
               </div>
-            ) : (
-              <div style={styles.small}>No live matches right now.</div>
-            )}
-          </Section>
-
-            <Section title="Public View Link">
-              <a href={publicLink} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
-                Open Public View
-              </a>
             </Section>
+          ) : null}
+
+          {(!isMobileLike || showTableExtras) && (
+            <>
+              <Section title="Live Scoreboard (read-only)">
+                <ScoreboardTable rows={scoreboardRows} />
+              </Section>
+
+              <Section title="Other Tables Live Scores">
+                {matches.filter((m) => m.teamAId && m.teamBId && !m.completed).length ? (
+                  <div style={styles.grid3}>
+                    {matches
+                      .filter((m) => m.teamAId && m.teamBId && !m.completed)
+                      .sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0))
+                      .map((m) => (
+                        <LiveMatchCard
+                          key={m.id}
+                          match={m}
+                          teamById={teamById}
+                          hideOpenButton
+                        />
+                      ))}
+                  </div>
+                ) : (
+                  <div style={styles.small}>No live matches right now.</div>
+                )}
+              </Section>
+
+              <Section title="Public View Link">
+                <a href={publicLink} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                  Open Public View
+                </a>
+              </Section>
+            </>
+          )}
           </div>
         </div>
       </TableErrorBoundary>
