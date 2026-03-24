@@ -3210,9 +3210,10 @@ const completedMatchRecaps = matches
     const hasRequestedCode = Boolean((query.code || "").trim());
 
     return (
-      <div style={styles.page}>
-        <div style={styles.container}>
-          <Header title={appName} subtitle="Table View • Enter hands for your match only" right={<NavPills showAdmin />} />
+      <TableErrorBoundary>
+        <div style={styles.page}>
+          <div style={styles.container}>
+            <Header title={appName} subtitle="Table View • Enter hands for your match only" right={<NavPills showAdmin />} />
 
           {!tableMatch ? (
             <Section title={hasRequestedCode && (!tableMissingDelayDone || tableRouteLoading) ? "Loading match..." : "No match found"}>
@@ -3346,13 +3347,14 @@ const completedMatchRecaps = matches
             )}
           </Section>
 
-          <Section title="Public View Link">
-            <a href={publicLink} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
-              Open Public View
-            </a>
-          </Section>
+            <Section title="Public View Link">
+              <a href={publicLink} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                Open Public View
+              </a>
+            </Section>
+          </div>
         </div>
-      </div>
+      </TableErrorBoundary>
     );
   }
 
@@ -4849,17 +4851,32 @@ function ScanPointsModal({ open, onClose, trumpSuit, onApplyPoints }) {
 
     (async () => {
       try {
+        if (
+          typeof navigator === "undefined" ||
+          !navigator.mediaDevices ||
+          typeof navigator.mediaDevices.getUserMedia !== "function"
+        ) {
+          throw new Error("Camera is not supported in this browser.");
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } },
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
           audio: false,
         });
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          await videoRef.current.play();
+          const playPromise = videoRef.current.play();
+          if (playPromise && typeof playPromise.then === "function") {
+            await playPromise;
+          }
         }
-      } catch {
-        setErr("Camera permission denied or not available in this browser.");
+      } catch (e) {
+        setErr(e?.message || "Camera permission denied or not available in this browser.");
       }
     })();
 
@@ -5988,21 +6005,62 @@ function TableMatchPanel({
   </button>
 </div>
 
-      <ScanPointsModal
-        open={scanOpen}
-        onClose={() => setScanOpen(false)}
-        trumpSuit={d.suit || "S"}
-        onApplyPoints={({ pileSide, points }) => {
-          const p = clamp(Number(points) || 0, 0, 162);
-          onDraftPatch(
-            pileSide === "BIDDER"
-              ? { bidderTrickPoints: String(p), nonBidderTrickPoints: String(162 - p), trickSource: "BIDDER", skippedHand: false }
-              : { nonBidderTrickPoints: String(p), bidderTrickPoints: String(162 - p), trickSource: "NON", skippedHand: false }
-          );
-        }}
-      />
+      {scanOpen ? (
+        <ScanPointsModal
+          open={scanOpen}
+          onClose={() => setScanOpen(false)}
+          trumpSuit={d.suit || "S"}
+          onApplyPoints={({ pileSide, points }) => {
+            const p = clamp(Number(points) || 0, 0, 162);
+            onDraftPatch(
+              pileSide === "BIDDER"
+                ? { bidderTrickPoints: String(p), nonBidderTrickPoints: String(162 - p), trickSource: "BIDDER", skippedHand: false }
+                : { nonBidderTrickPoints: String(p), bidderTrickPoints: String(162 - p), trickSource: "NON", skippedHand: false }
+            );
+          }}
+        />
+      ) : null}
     </div>
   );
+}
+
+
+class TableErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: "" };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, message: error?.message || "Unknown error" };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("Table view crashed:", error, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ minHeight: "100vh", background: bg, color: fg, padding: 20 }}>
+          <div style={{ maxWidth: 920, margin: "0 auto" }}>
+            <div style={{ ...styles.section, border: "1px solid rgba(239,68,68,0.35)" }}>
+              <div style={{ fontSize: 22, fontWeight: 1000, marginBottom: 8 }}>
+                Table view failed to load
+              </div>
+              <div style={{ color: "#fecaca", marginBottom: 10 }}>
+                {this.state.message || "Unknown rendering error"}
+              </div>
+              <div style={{ ...styles.small, color: "#cbd5e1" }}>
+                Try reopening the table link. If it still fails, reload the page on this device.
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function Field({ label, labelStyle, children }) {
