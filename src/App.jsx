@@ -12,6 +12,7 @@ import { supabase } from "./supabaseClient";
 const LS_KEY = "coinche_scorekeeper_v1";
 const TARGET_SCORE = 2000;
 const APP_UPDATED_EVENT = "coinche_state_updated";
+const CURRENT_TOURNAMENT_KEY = "coinche_current_tournament_id";
 
 const scopedLsKey = (tournamentId) => `${LS_KEY}__${tournamentId || "global"}`;
 
@@ -645,10 +646,29 @@ function computeFastCoincheScore({
 
 function parseHashRoute() {
   const raw = window.location.hash || "#/admin";
-  const [pathPart, queryPart] = raw.replace(/^#/, "").split("?");
-  const path = pathPart || "/admin";
+  const withoutHash = raw.replace(/^#/, "") || "/admin";
+  const [pathPart, queryPart] = withoutHash.split("?");
   const query = Object.fromEntries(new URLSearchParams(queryPart || "").entries());
-  return { path, query };
+  const cleanPath = pathPart || "/admin";
+  const segments = cleanPath.split("/").filter(Boolean);
+
+  if (segments[0] === "table") {
+    const code = decodeURIComponent(segments[1] || query.code || "");
+    const tid = decodeURIComponent(segments[2] || query.tid || "");
+    return { path: "/table", query: { ...query, code, tid } };
+  }
+
+  if (segments[0] === "public") {
+    const tid = decodeURIComponent(segments[1] || query.tid || "");
+    return { path: "/public", query: { ...query, tid } };
+  }
+
+  if (segments[0] === "admin") {
+    const tid = decodeURIComponent(segments[1] || query.tid || "");
+    return { path: "/admin", query: { ...query, tid } };
+  }
+
+  return { path: cleanPath || "/admin", query };
 }
 
 function navigateHash(nextHash) {
@@ -661,6 +681,30 @@ function navigateHash(nextHash) {
     return;
   }
   window.location.hash = nextHash;
+}
+
+function buildHashRoute(path, query = {}) {
+  const cleanPath = String(path || "/admin").replace(/\/+$/, "") || "/admin";
+  const tid = String(query.tid || "").trim();
+  const code = String(query.code || "").trim();
+
+  if (cleanPath === "/table") {
+    const parts = ["#/table"];
+    if (code) parts.push(encodeURIComponent(code));
+    if (tid) parts.push(encodeURIComponent(tid));
+    return parts.join("/");
+  }
+
+  if (cleanPath === "/public" || cleanPath === "/admin") {
+    return tid ? `#${cleanPath}/${encodeURIComponent(tid)}` : `#${cleanPath}`;
+  }
+
+  const params = new URLSearchParams();
+  Object.entries(query || {}).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && String(v).trim() !== "") params.set(k, String(v));
+  });
+  const qs = params.toString();
+  return `#${cleanPath}${qs ? `?${qs}` : ""}`;
 }
 
 /* =========================
@@ -1643,8 +1687,17 @@ const saveEditedHandScore = async (matchId, handIdx, newScoreA, newScoreB) => {
       setTournaments(list);
 
       const wantedTid = String(route.query.tid || "").trim();
+      const savedTid = (() => {
+        try {
+          return String(localStorage.getItem(CURRENT_TOURNAMENT_KEY) || "").trim();
+        } catch {
+          return "";
+        }
+      })();
       if (wantedTid && list.some((t) => t.id === wantedTid)) {
         setCurrentTournamentId(wantedTid);
+      } else if (savedTid && list.some((t) => t.id === savedTid)) {
+        setCurrentTournamentId(savedTid);
       } else if (!currentTournamentId && list.length) {
         setCurrentTournamentId(list[0].id);
       }
@@ -1742,6 +1795,21 @@ useEffect(() => {
     void refreshFromSupabase(currentTournamentId);
   }
 }, [currentTournamentId]);
+
+
+useEffect(() => {
+  if (!currentTournamentId) return;
+  try {
+    localStorage.setItem(CURRENT_TOURNAMENT_KEY, currentTournamentId);
+  } catch {}
+
+  if (route.path === "/admin" || route.path === "/public") {
+    const nextHash = buildHashRoute(route.path, { tid: currentTournamentId });
+    if (window.location.hash !== nextHash) {
+      navigateHash(nextHash);
+    }
+  }
+}, [currentTournamentId, route.path]);
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -1926,7 +1994,7 @@ useEffect(() => {
 
   function openTableRoute(code) {
     const query = { code, tid: currentTournamentId };
-    const nextHash = `#/table?code=${encodeURIComponent(code)}${currentTournamentId ? `&tid=${encodeURIComponent(currentTournamentId)}` : ""}`;
+    const nextHash = buildHashRoute("/table", query);
     persistNow();
     window.dispatchEvent(new CustomEvent(APP_UPDATED_EVENT, { detail: { code, tournamentId: currentTournamentId } }));
     setRoute({ path: "/table", query });
@@ -3093,13 +3161,13 @@ if (lowestTeamScore < leastPointsGame.points) {
     };
   }, [matches, teamById, playerById]);
 
-  const publicLink = useMemo(() => `${window.location.origin}${window.location.pathname}#/public${currentTournamentId ? `?tid=${encodeURIComponent(currentTournamentId)}` : ""}`, [currentTournamentId]);
+  const publicLink = useMemo(() => `${window.location.origin}${window.location.pathname}${buildHashRoute("/public", { tid: currentTournamentId })}`, [currentTournamentId]);
   const tableLinks = useMemo(
     () =>
       matches.map((m) => ({
         label: `${m.tableName} • ${m.label}`,
         code: m.code,
-        href: `${window.location.origin}${window.location.pathname}#/table?code=${encodeURIComponent(m.code)}${currentTournamentId ? `&tid=${encodeURIComponent(currentTournamentId)}` : ""}`,
+        href: `${window.location.origin}${window.location.pathname}${buildHashRoute("/table", { code: m.code, tid: currentTournamentId })}`,
       })),
     [matches]
   );
@@ -3126,11 +3194,11 @@ if (lowestTeamScore < leastPointsGame.points) {
   const NavPills = ({ showAdmin = true }) => (
     <div style={styles.pillRow}>
       {showAdmin ? (
-        <a href="#/admin" style={{ ...styles.tag, textDecoration: "none" }}>
+        <a href={buildHashRoute("/admin", { tid: currentTournamentId })} style={{ ...styles.tag, textDecoration: "none" }}>
           Admin
         </a>
       ) : null}
-      <a href="#/public" style={{ ...styles.tag, textDecoration: "none" }}>
+      <a href={buildHashRoute("/public", { tid: currentTournamentId })} style={{ ...styles.tag, textDecoration: "none" }}>
         Public View
       </a>
       <span style={styles.tag}>{syncStatus}</span>
@@ -3224,7 +3292,7 @@ const completedMatchRecaps = matches
               </div>
               {(!hasRequestedCode || (tableMissingDelayDone && !tableRouteLoading)) && (
                 <div style={{ marginTop: 10 }}>
-                  <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+                  <a href={buildHashRoute("/public", { tid: currentTournamentId || query.tid })} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
                     Go to Public View
                   </a>
                 </div>
@@ -3374,7 +3442,11 @@ const completedMatchRecaps = matches
       <select
         style={styles.select(260)}
         value={currentTournamentId || ""}
-        onChange={(e) => setCurrentTournamentId(e.target.value)}
+        onChange={(e) => {
+          const nextTid = e.target.value;
+          setCurrentTournamentId(nextTid);
+          navigateHash(buildHashRoute("/admin", { tid: nextTid }));
+        }}
       >
         <option value="">Select tournament</option>
         {tournaments.map((t) => (
@@ -3450,7 +3522,7 @@ const completedMatchRecaps = matches
   defaultCollapsed
   right={
     <div style={styles.row}>
-      <a href="#/public" style={{ ...styles.btnSecondary, textDecoration: "none" }}>
+      <a href={buildHashRoute("/public", { tid: currentTournamentId })} style={{ ...styles.btnSecondary, textDecoration: "none" }}>
         Public View
       </a>
 
@@ -3510,7 +3582,7 @@ right={
     <button
       style={styles.btnSecondary}
       onClick={() => {
-        void refreshFromSupabase();
+        void refreshFromSupabase(currentTournamentId);
       }}
     >
       Refresh Live Data
@@ -3762,7 +3834,7 @@ right={
                   teams={teams}
                   onOpenTable={() => openTableRoute(m.code)}
                   onCopyLink={() => {
-                    const href = `${window.location.origin}${window.location.pathname}#/table?code=${encodeURIComponent(m.code)}${currentTournamentId ? `&tid=${encodeURIComponent(currentTournamentId)}` : ""}`;
+                    const href = `${window.location.origin}${window.location.pathname}${buildHashRoute("/table", { code: m.code, tid: currentTournamentId })}`;
                     navigator.clipboard?.writeText(href);
                     alert("Table link copied!");
                   }}
