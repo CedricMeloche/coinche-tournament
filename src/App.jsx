@@ -645,26 +645,42 @@ function computeFastCoincheScore({
 ========================= */
 
 function parseHashRoute() {
+  const searchQuery = Object.fromEntries(new URLSearchParams(window.location.search || "").entries());
+  const directView = String(searchQuery.view || searchQuery.route || "").trim().toLowerCase();
+  const directCode = String(searchQuery.code || "").trim();
+  const directTid = String(searchQuery.tid || searchQuery.tournament_id || "").trim();
+
+  if (directView === "table" && directCode) {
+    return { path: "/table", query: { ...searchQuery, code: directCode, tid: directTid } };
+  }
+  if (directView === "public") {
+    return { path: "/public", query: { ...searchQuery, tid: directTid } };
+  }
+  if (directView === "admin") {
+    return { path: "/admin", query: { ...searchQuery, tid: directTid } };
+  }
+
   const raw = window.location.hash || "#/admin";
   const withoutHash = raw.replace(/^#/, "") || "/admin";
   const [pathPart, queryPart] = withoutHash.split("?");
-  const query = Object.fromEntries(new URLSearchParams(queryPart || "").entries());
+  const hashQuery = Object.fromEntries(new URLSearchParams(queryPart || "").entries());
+  const query = { ...searchQuery, ...hashQuery };
   const cleanPath = pathPart || "/admin";
   const segments = cleanPath.split("/").filter(Boolean);
 
   if (segments[0] === "table") {
-    const code = decodeURIComponent(segments[1] || query.code || "");
-    const tid = decodeURIComponent(segments[2] || query.tid || "");
+    const code = decodeURIComponent(segments[1] || query.code || directCode || "");
+    const tid = decodeURIComponent(segments[2] || query.tid || directTid || "");
     return { path: "/table", query: { ...query, code, tid } };
   }
 
   if (segments[0] === "public") {
-    const tid = decodeURIComponent(segments[1] || query.tid || "");
+    const tid = decodeURIComponent(segments[1] || query.tid || directTid || "");
     return { path: "/public", query: { ...query, tid } };
   }
 
   if (segments[0] === "admin") {
-    const tid = decodeURIComponent(segments[1] || query.tid || "");
+    const tid = decodeURIComponent(segments[1] || query.tid || directTid || "");
     return { path: "/admin", query: { ...query, tid } };
   }
 
@@ -705,6 +721,33 @@ function buildHashRoute(path, query = {}) {
   });
   const qs = params.toString();
   return `#${cleanPath}${qs ? `?${qs}` : ""}`;
+}
+
+function buildShareHref(path, query = {}) {
+  const tid = String(query.tid || "").trim();
+  const code = String(query.code || "").trim();
+  const params = new URLSearchParams();
+
+  if (path === "/table") {
+    params.set("view", "table");
+    if (code) params.set("code", code);
+    if (tid) params.set("tid", tid);
+    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+  }
+
+  if (path === "/public") {
+    params.set("view", "public");
+    if (tid) params.set("tid", tid);
+    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+  }
+
+  if (path === "/admin") {
+    params.set("view", "admin");
+    if (tid) params.set("tid", tid);
+    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+  }
+
+  return `${window.location.origin}${window.location.pathname}${buildHashRoute(path, query)}`;
 }
 
 /* =========================
@@ -3161,13 +3204,13 @@ if (lowestTeamScore < leastPointsGame.points) {
     };
   }, [matches, teamById, playerById]);
 
-  const publicLink = useMemo(() => `${window.location.origin}${window.location.pathname}${buildHashRoute("/public", { tid: currentTournamentId })}`, [currentTournamentId]);
+  const publicLink = useMemo(() => buildShareHref("/public", { tid: currentTournamentId }), [currentTournamentId]);
   const tableLinks = useMemo(
     () =>
       matches.map((m) => ({
         label: `${m.tableName} • ${m.label}`,
         code: m.code,
-        href: `${window.location.origin}${window.location.pathname}${buildHashRoute("/table", { code: m.code, tid: currentTournamentId })}`,
+        href: buildShareHref("/table", { code: m.code, tid: currentTournamentId }),
       })),
     [matches]
   );
@@ -3834,7 +3877,7 @@ right={
                   teams={teams}
                   onOpenTable={() => openTableRoute(m.code)}
                   onCopyLink={() => {
-                    const href = `${window.location.origin}${window.location.pathname}${buildHashRoute("/table", { code: m.code, tid: currentTournamentId })}`;
+                    const href = buildShareHref("/table", { code: m.code, tid: currentTournamentId });
                     navigator.clipboard?.writeText(href);
                     alert("Table link copied!");
                   }}
