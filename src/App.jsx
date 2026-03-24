@@ -732,19 +732,19 @@ function buildShareHref(path, query = {}) {
     params.set("view", "table");
     if (code) params.set("code", code);
     if (tid) params.set("tid", tid);
-    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+    return `${window.location.origin}${window.location.pathname}?${params.toString()}${buildHashRoute("/table", { code, tid })}`;
   }
 
   if (path === "/public") {
     params.set("view", "public");
     if (tid) params.set("tid", tid);
-    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+    return `${window.location.origin}${window.location.pathname}?${params.toString()}${buildHashRoute("/public", { tid })}`;
   }
 
   if (path === "/admin") {
     params.set("view", "admin");
     if (tid) params.set("tid", tid);
-    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+    return `${window.location.origin}${window.location.pathname}?${params.toString()}${buildHashRoute("/admin", { tid })}`;
   }
 
   return `${window.location.origin}${window.location.pathname}${buildHashRoute(path, query)}`;
@@ -1996,13 +1996,34 @@ useEffect(() => {
     const run = async () => {
       setTableRouteLoading(true);
       try {
-        let queryBuilder = supabase.from("matches").select("*").eq("code", wantedCode);
         const wantedTid = String(route.query.tid || currentTournamentId || "").trim();
+
+        let data = null;
+        let error = null;
+
         if (wantedTid) {
-          queryBuilder = queryBuilder.eq("tournament_id", wantedTid);
+          const scoped = await supabase
+            .from("matches")
+            .select("*")
+            .eq("code", wantedCode)
+            .eq("tournament_id", wantedTid)
+            .limit(1)
+            .maybeSingle();
+          data = scoped.data;
+          error = scoped.error;
         }
 
-        const { data, error } = await queryBuilder.limit(1).maybeSingle();
+        if (!data) {
+          const fallback = await supabase
+            .from("matches")
+            .select("*")
+            .eq("code", wantedCode)
+            .limit(1)
+            .maybeSingle();
+          data = fallback.data;
+          error = fallback.error;
+        }
+
         if (error) throw error;
 
         if (!cancelled && data?.tournament_id) {
